@@ -2,7 +2,7 @@
 
 use ink::design::shape_derivatives as sensitivity;
 use ink::eval::{Ctx, ParamSpans};
-use ink::query::{BOXES, Verdict, Way, clearance, moments, prove_empty};
+use ink::query::{BOXES, Verdict, Way, clearance, prove_empty, sums};
 use ink::ranged::{ProofOptions, prove};
 use std::sync::Arc;
 
@@ -48,8 +48,8 @@ fn every_answer_is_the_same_at_any_thread_count() {
             let (_, b) = super::geometry::field("(def f (move (sphere 2.9) 7.13 0.234 0.355))", "f");
             let (touch, a, b) = (Arc::new(touch), Arc::new(a), Arc::new(b));
             let mut bits = Vec::new();
-            let m = moments(&shape, None, &ctx, [-4.1; 3], [4.2; 3], 0.35);
-            bits.extend(m.m.iter().chain([&m.volume]).map(|v| v.to_bits()));
+            let m = sums(&shape, &[None, None], true, &ctx, [-4.1; 3], [4.2; 3], 0.35);
+            bits.extend(m.sums.iter().map(|v| v.to_bits()));
             let (area, gradients) = sensitivity(&shape, &[&|_| 1.0], &ctx, [-4.1; 3], [4.2; 3], 0.35);
             bits.push(area.to_bits());
             bits.extend(gradients.into_iter().flatten().map(f64::to_bits));

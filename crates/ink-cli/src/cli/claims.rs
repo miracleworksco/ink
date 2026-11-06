@@ -168,7 +168,10 @@ pub(crate) fn cmd_interfere(s: &mut Session, a: &Args) -> Result<J, InkError> {
     // what it reads; one reading none is static.
     let target = s.doc.target(a.get("target").unwrap_or("root"));
     s.motion_over(s.doc.spans_hull())?;
-    let all = s.items(a)?;
+    let all = match a.get("target") {
+        Some(t) => s.doc.items(t)?,
+        None => interfere::default_items(s)?,
+    };
     let res = a.cell("res")?;
     let plan = interfere::plan(s, all, target.as_ref(), res)?;
     let names = param_names(s);
@@ -199,7 +202,7 @@ pub(crate) fn cmd_interfere(s: &mut Session, a: &Args) -> Result<J, InkError> {
     ink::claims::progress(json!({"answer": out.clone()}));
     let checked = plan.run(s, res, &|p| Some(pair_json(p, &rows)))?;
     let mut pairs = Vec::with_capacity(checked.len());
-    let (mut overlaps, mut estimated_overlaps, mut estimated_holds, mut undecided) = (0, 0, 0, 0);
+    let (mut overlaps, mut estimated_overlaps, mut estimated_holds, mut undecided, mut near) = (0, 0, 0, 0, 0);
     for p in &checked {
         let r = pair_json(p, &rows);
         if p.overlaps() {
@@ -208,10 +211,12 @@ pub(crate) fn cmd_interfere(s: &mut Session, a: &Args) -> Result<J, InkError> {
         }
         estimated_holds += usize::from(r["status"] == "holds" && r["accuracy"].is_null());
         undecided += usize::from(r["status"] == "unknown");
+        near += usize::from(r["near"]["depth"].as_f64().is_some_and(|d| d > 0.0));
         pairs.push(r);
     }
     out["overlapping_pairs"] = json!(overlaps);
     out["undecided_pairs"] = json!(undecided);
+    out["near_pairs"] = json!(near);
     if estimated_overlaps > 0 {
         out["overlapping_pairs_estimated"] = json!(estimated_overlaps);
     }

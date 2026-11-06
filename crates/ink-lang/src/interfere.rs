@@ -140,6 +140,8 @@ struct Facts {
     inexact: Inexact,
     whole: bool,
     one_moment: Option<f64>,
+    /// A still pair's field as placed, with its zones (Plan::world_question).
+    world: Option<u32>,
 }
 
 impl Facts {
@@ -177,6 +179,16 @@ fn outside(v: &mut ModelView, f: u32, zone: Option<u32>) -> u32 {
             v.doc.g.max(f, out)
         }
     }
+}
+
+/// What interfere checks without a target: root, else every body, each
+/// unplaced at its own origin, so refused once an assembly places a body.
+pub fn default_items(v: &mut ModelView) -> Result<Vec<Item>, InkError> {
+    let d = &v.doc;
+    if d.body("root").is_none() && d.assembly("root").is_none() && d.assemblies.iter().any(|a| a.instances.iter().any(|i| d.body(&i.child).is_some())) {
+        return Err(InkError::msg("the file has no root and its bodies sit unplaced: name an assembly, --target NAME, or write (assembly root ...) placing the parts"));
+    }
+    Ok(v.doc.default_items()?)
 }
 
 /// The pairs of `all` (a target's items, `target` what it places, where
@@ -356,6 +368,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
                 inexact,
                 whole: pair_whole[k],
                 one_moment: pair_one_moment[k],
+                world: None,
             }
         })
         .collect();
@@ -388,6 +401,8 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
     // where it lies, its fields placed.
     let mut asked: HashMap<u32, usize> = HashMap::new();
     for &k in &still {
+        let world = plan.world_question(v, k);
+        plan.facts[k].world = Some(world.node);
         let (i, j) = plan.candidates[k];
         let parts: Option<Vec<(u32, &str)>> =
             plan.facts[k].zones.iter().map(|&z| plan.relations[z].local.filter(|l| l.b.is_none()).map(|l| (l.a, plan.relations[z].a.as_str()))).collect();
@@ -398,8 +413,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
             if plan.riding[k] {
                 continue;
             }
-            let q = plan.world_question(v, k);
-            plan.questions.push(q);
+            plan.questions.push(world);
             plan.asks.push((k, plan.questions.len() - 1, None));
             continue;
         };
@@ -488,12 +502,14 @@ pub fn at_one_moment(v: &mut ModelView) -> Vec<String> {
     if !claims::model_reads_t(v) || v.motion_over(v.doc.spans_hull()).is_err() || v.unspanned_moment().is_none() {
         return out;
     }
-    let placed: std::collections::HashSet<String> = v.doc.assemblies.iter().flat_map(|a| a.instances.iter().map(|i| i.child.clone())).collect();
+    // Placed, or a copy of it built with arguments is.
+    let placed: std::collections::HashSet<String> =
+        v.doc.assemblies.iter().flat_map(|a| a.instances.iter()).flat_map(|i| [Some(i.child.clone()), v.doc.assembly(&i.child).and_then(|c| c.of.clone())]).flatten().collect();
     let tops: Vec<String> = v.doc.assemblies.iter().filter(|a| a.of.is_none() && !placed.contains(&a.name) && a.name != "root").map(|a| a.name.clone()).collect();
     for name in std::iter::once(None).chain(tops.into_iter().map(Some)) {
         let items = match &name {
-            None => v.doc.default_items(),
-            Some(n) => v.doc.items(n),
+            None => default_items(v),
+            Some(n) => v.doc.items(n).map_err(InkError::from),
         };
         let target = v.doc.target(name.as_deref().unwrap_or("root"));
         let Ok(items) = items else { continue };
@@ -695,6 +711,8 @@ fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Opt
     let reads: Vec<Vec<(u32, (f64, f64))>> = questions.iter().map(|q| v.ranged_reads(&[q.node])).collect();
     let quantity = Some(crate::units::Quantity::Length);
     let g = &v.doc.g;
+    // Each pair's held unsaid where it reads ranged params or t as placed.
+    let unsaid: Vec<bool> = facts.iter().map(|f| f.world.is_none_or(|w| claims::held_unsaid(v, w))).collect();
     let why: Vec<Option<String>> =
         asks.iter().map(|(_, q, fr)| crate::validity::outside_region(&v.doc, &ctx, questions[*q].region, fr.as_ref().map(|fr| &fr.at), tol, res)).collect();
     questions
@@ -728,7 +746,28 @@ fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Opt
             // world measures its own).
             let measured = std::cell::OnceCell::new();
             let volume = || *measured.get_or_init(|| p.disproven().then(|| overlap_volume(&tape, &ctx, q.region)).flatten());
-            let check = |p: Proof, k: usize| claims::answer(claims::emptied(p, facts[k].whole), tol, facts[k].inexact.clone(), quantity, read.clone());
+            // How it held: unsaid where the pair as placed reads ranged
+            // params or t (`unsaid`); outright only where a frame reads back
+            // exactly; its near point found in the question (once), moved to
+            // each pair's world and confirmed on the pair's world field.
+            let candidates = std::cell::OnceCell::new();
+            let check = |c: Proof, k: usize, fr: Option<&Framed>| {
+                let held = (!unsaid[k]).then(|| match fr {
+                    Some(fr) if p.exact && fr.error > 0.0 => claims::Held::ToAccuracy { near: None },
+                    _ => {
+                        let points: Vec<V3> = match p.exact {
+                            true => Vec::new(),
+                            false => candidates.get_or_init(|| claims::Held::candidates(&p, &tape, &ctx)).iter().map(|&c| fr.map_or(c, |fr| fr.world(c).0)).collect(),
+                        };
+                        let world = match (fr, facts[k].world) {
+                            (Some(_), Some(w)) if !points.is_empty() => Arc::new(Tape::new(g, w)),
+                            _ => tape.clone(),
+                        };
+                        claims::Held::confirmed(p.exact, points, &world, &ctx)
+                    }
+                });
+                Check { held, ..claims::answer(claims::emptied(c, facts[k].whole), tol, facts[k].inexact.clone(), quantity, read.clone()) }
+            };
             let mut first = true;
             of.iter()
                 .map(|&a| {
@@ -736,11 +775,11 @@ fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Opt
                     let start = Instant::now();
                     let answer = match frame {
                         _ if let Some(w) = &why[a] => Some(outside(*k, w)),
-                        None => Some(Answer::Still { check: check(p.clone(), *k), volume: volume().map(|estimate| Volume { estimate }) }),
+                        None => Some(Answer::Still { check: check(p.clone(), *k, None), volume: volume().map(|estimate| Volume { estimate }) }),
                         Some(fr) => framed(&p, fr, &tape, &ctx, tol).map(|proof| {
                             // Its volume is the frame's, measured.
                             let volume = volume().map(|x| Volume { estimate: x * fr.det.mid() });
-                            Answer::Still { check: check(proof, *k), volume }
+                            Answer::Still { check: check(proof, *k, Some(fr)), volume }
                         }),
                     };
                     let pair = answer.map(|answer| {
@@ -788,7 +827,7 @@ fn framed(p: &Proof, fr: &Framed, tape: &Tape, ctx: &Ctx, tol: f64) -> Option<Pr
             Verdict::Unknown { cells: *cells, volume: volume * fr.det.mid(), ended: *ended, cell, attained: None }
         }
     };
-    Some(Proof { verdict, res: p.res, tol, exact: p.exact })
+    Some(Proof { verdict, res: p.res, tol, exact: p.exact, loose: Vec::new() })
 }
 
 /// A moving pair checked over the motion as a claim (claims::ask), a
@@ -803,7 +842,7 @@ fn over_motion(v: &mut ModelView, (a, b): (u32, u32), zone: Option<u32>, opts: C
 /// box.
 fn overlap_volume(tape: &Arc<Tape>, ctx: &Ctx, (lo, hi): (V3, V3)) -> Option<f64> {
     let (blo, bhi, _) = query::bounds_quick(tape, ctx, lo, hi)?;
-    Some(query::measured(tape, None, ctx, blo, bhi, None).moments.volume)
+    Some(query::measured(tape, &[None], false, ctx, blo, bhi, None).sums[0])
 }
 
 #[cfg(test)]

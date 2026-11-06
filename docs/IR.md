@@ -734,12 +734,14 @@ outside declared contact zones, as `disjoint` at accuracy 0.1 mm (twice
 a claim's default, for speed), wherever the model lies. So an overlap up
 to 0.2 mm thick passes (Claims: Accuracy): a shaft 0.2 mm over its bore's
 radius, or a thread out of phase. Check a fit with a `disjoint` claim and
-its `(accuracy x)`.
+its `(accuracy x)`. Without root it checks every body, unless an
+assembly places one: then it refuses; name one with `--target`.
 
 `pairs` lists the pairs whose bounding boxes overlap, each row the
 answer of its `disjoint` claim (Results) with the contacts it used. The
 summary counts `overlapping_pairs` (`overlapping_pairs_estimated` of them
-estimates) and `undecided_pairs`. Pairs placed alike (every copy of a
+estimates), `near_pairs` (holding, with a `near` depth above 0) and
+`undecided_pairs`. Pairs placed alike (every copy of a
 sub-assembly) are asked once.
 
 `ink check` lists each body's and assembly's frames (origin and axes at
@@ -956,12 +958,8 @@ arithmetic on one is an error: use `place`.
   ```
 
   Integrals, means and volumes are estimates (`"accuracy": null`),
-  at cells `(res r)` sets. Without it, a claim is decided at coarse
-  cells (a 100th, then a 200th of its largest part's size) where its
-  status survives their error; else cells are halved until
-  the first integral (a mean's weight) moves by at most 2% on a halving,
-  the other values measured at the same cells, however much they still
-  move. Over ranged params they are estimated at evenly spaced values
+  measured as `ink mass` measures a mass (Geometric queries), or at cells
+  `(res r)` sets. Over ranged params they are estimated at evenly spaced values
   (`sampled_values`) and fail where one fails (`params`). A body not
   proven bounded is not integrated: `unknown`, `unbounded`.
 - `(METRIC FORM < v)`: a package's metric of one of its forms, or of a
@@ -1005,6 +1003,7 @@ Its other fields say what the answer rests on:
 | `value` | fails; a number claim | what the claim measured: a clearance's `gap`; a shape claim's field at the witness, negative (`-depth`); a value, volume, metric, integral or mean claim's number (a mass is an integral). Of several fields, each is under `integrals` or `means`, with its status |
 | `gap` | a clearance fails | the distance between `witness_pair`: the first pair found closer than the clearance, so the smallest gap may be smaller (`ink distance` measures it) |
 | `depth` | an emptiness claim fails (`empty`, `disjoint`, `subset`, `range`, a clearance of 0) | how deep `witness` lies in what violates the claim (inside both shapes for disjoint; inside a and outside b for subset), as the fields measure distance: the overlap is at least this deep |
+| `held`, `near` | an emptiness claim holds, guaranteed, and it (an `interfere` pair as placed, with its zones) reads no ranged param nor t over a span | `held`: `outright` (nothing violates it) or `to the accuracy` (some cells held only by its allowance). Then `near`, where measured: `depth`, the deepest violating point found in those cells, by bounds of the field as placed there (to a µm: seated faces read 0), and `at` where above 0 |
 | `params`, `t` | fails over ranged params or a motion | the params' values and the moment there |
 | `hint` | unknown, where it can say; measured over a motion | what would decide it: a smaller `(accuracy x)`, a finer `(res r)`, a probe. Over a motion, why ranging t did not, and that search's hint (`motion.t_ranged`) |
 | `undecided_cells`, `undecided_volume`, `undecided_cell` | unknown, by a search that kept them | how many cells it left undecided, their total volume, and one of them (the cell that ended the search, where one did): `centre` and `size` |
@@ -1069,9 +1068,6 @@ that would test over four million cells.
 - Elsewhere `--res` is the sample size, used as given: `ink mesh`,
   `render`, `slice` and `components` sample at it, `ink mass` measures
   at it.
-
-A ranged param, and t over a motion, are axes of the same search, halved
-where they blur a cell's bounds most.
 
 ### Where analysis looks
 
@@ -1171,9 +1167,13 @@ gives each command's options.
   - A target with no density has null `mass` and `center_of_mass`, its
     volume measured; `total.without_mass` names such bodies, `total.no_mass`
     what would give them one.
-  - Mass and volume are estimates: cells are halved until the mass moves
-    by at most 2% on a halving. Each target gives its cells (`res`), those
-    before (`coarse_res`) and how far the mass moved (`relative_change`);
+  - Mass, volume and a claim's integrals are estimates: cells start at a
+    100th of the body's size (a claim's: each part's) and halve until the
+    `spread`, a sampled estimate of the change left (twice what the last
+    halving moved it), is within 2% of the
+    mass (a mean's weight), or leaves a claim's status as it is.
+    Each target gives `res`, `spread` (relative), and the cells before
+    (`coarse_res`) and the mass's move from them (`relative_change`);
     one that did not settle says so (`unsettled`), as does every answer
     reading a published mass's density that did not. `--res` gives the
     cells instead.
@@ -1205,20 +1205,20 @@ report says how far to trust it.
 
 - **Sampling.** The field is sampled on a grid of cells `--res` wide and
   meshed by manifold dual contouring: watertight, sharp edges and corners
-  kept, a thin wall's two sides apart. Default res:
-  - STL and 3MF: the target's size / 256, no finer than the size of all
-    the targets / 2048. A small part beside a large one is coarse: mesh it
-    alone or give `--res`.
-  - `components`: the target's size / 160.
-  - `--max-res R`: no coarser than R.
-
-  A feature thinner than res can go missing. Each report counts the cells
-  where it sees that (`unresolved`, with one `at`) and warns, but one that
-  misses every cell centre goes uncounted.
-- **Simplification.** `ink mesh` simplifies to `--accuracy` (default
-  res / 30; `0` keeps the uniform mesh); a GLB and a render to res / 4.
-  Topology is kept, and every vertex of the uniform mesh stays within the
-  accuracy.
+  kept, a thin wall's two sides apart. A feature thinner than res can go
+  missing. Each report counts the cells where it sees that (`unresolved`,
+  with one `at`) and warns, but one that misses every cell centre goes
+  uncounted. `--max-res R`: no coarser than R.
+- **A mesh for a file** (STL, 3MF): res is the target's size / 256, no
+  finer than all the targets' / 2048 (mesh a small part beside a large one
+  alone, or give `--res`). It is simplified to `--accuracy` (default
+  res / 30; `0`: uniform), topology kept and every vertex of the uniform
+  mesh within it. `components`: size / 160, made again finer where it
+  leaves material out.
+- **A mesh for seeing** (GLB, render): each body's res fits the whole
+  model in a triangle budget, made again finer where a mesh leaves
+  material out (a render's, no finer than half a pixel); `--res` replaces
+  it. It is simplified to `--accuracy` (default res / 4).
 - **The report** (each object of `ink mesh`): `res`;
   `uniform_triangles` (before simplifying) and `triangles` (in the file);
   `watertight`; `unresolved`; and `deviation`:
@@ -1239,7 +1239,6 @@ report says how far to trust it.
     its path (`extras.body` its body), placed by its placement's numbers.
     In mm with Z up, under a root node `ink` that scales to metres and
     turns to glTF's Y up.
-  - Each body's res is set to fit a triangle budget for the whole model.
   - An instance whose placement reads t is animated over the file's
     `(t-span)` (else 0 to 1). A body whose shape reads t is meshed at
     `--t`, and the answer says so.
@@ -1251,8 +1250,8 @@ report says how far to trust it.
     `--view '[x,y,z]'` looks from that direction.
   - Views are labelled (`TOP: FROM +Z`). Lines mark silhouettes, creases
     over 30 degrees and steps in depth.
-  - It draws the GLB's meshes, no finer than half a pixel. `legend` gives
-    each target's res; it warns where thinner features went missing.
+  - It draws the GLB's meshes. `legend` gives each target's res; it warns
+    where thinner features went missing.
     Naming no target, it names the assemblies it left out
     (`other_assemblies`).
   - `transmission` is drawn as surface transparency, without refraction.
@@ -1318,8 +1317,7 @@ bridge a printer can span fails as an overhang where wider than 2 h tan a.
 - **Enclosed voids.** `(cavities f < n)` counts f's enclosed voids, air
   no path leads out of (trapped powder or resin). A shape metric of the
   design package: the inward-facing shells of the mesh `ink components`
-  makes, at `(res r)` or f's longest side / 160, made again finer where
-  it leaves material out.
+  makes (Meshes), or one at `(res r)`.
   - Where the mesh is open or sees it missed a wall, the claim is
     `unknown`.
   - A skin thinner than about half a cell can seal a void unseen: give a
@@ -1360,56 +1358,48 @@ second. A joint's rate is in deg/s (turn) or mm/s (slide); `3000rpm` is
 evaluates any command at one moment.
 
 `(t-span 0 1)` in a file makes `ink assert` and `ink interfere` check
-every claim and pair that reads t at every moment of the span.
-`--t-span 0:1` or `--t T` replaces every file's span, for every claim.
+every claim and pair that reads t at every moment of the span;
+`--t-span 0:1` or `--t T` replaces every file's span. A claim takes its
+own file's span, imported or not (`ink check`: `import_t_spans`); an
+`interfere` pair, the hull of the model's spans, whatever the target. A
+claim reading t under no span is asked at one moment (its `one_moment`,
+named in the answer's `note`; `ink check` warns, with `--load` of claims
+only). One that does not read t, or whose fields do not change over the
+span, is checked once: at `--t` where in the span, else at its start
+(`ink check`: `t_span`).
 
-- A claim is checked over the span of the file it is written in,
-  imported or not, so imports keep their own spans (`ink check`:
-  `import_t_spans`).
-- `interfere` checks each pair that reads t (through its parts'
-  placements, joints or shapes, its contact zones, or a solve on t) over
-  the hull of every span the model's files state, whatever the target. A
-  pair reading no t is static.
-- A claim reading t with no span over it is asked at one moment: its
-  row's `one_moment` is that t (an interfere pair's, where its items or
-  contact zones read t), and the answer's top-level `note` names them
-  once. `ink check` warns of each (with `--load`, of claims only).
+A claim that reads t is asked with t ranged over the span, as a
+tolerance band is (Tolerances; `param_spans`: `t`): a hold the search
+decides covers every moment, a failure gives a moment that violates it.
+What it leaves undecided in the call's time, or cannot range, is
+estimated (`"accuracy": null`) at sampled moments (`steps`, `step`,
+`basis`: the span's ends and the middles of 32 steps, or a package's own
+steps; sampling stops at a failure or the time limit), and the `hint`
+says why (`motion.not_ranged`, `motion.t_ranged`). A failure at a sampled
+moment is guaranteed only when its `accuracy` is a number; a moment where
+what the claim reads has no value (a solve that does not solve) makes it
+`unknown`. Not ranged: a claim
+reading a solve on t; a metric, integral or mean; a body travelling more
+than 256 times its own size over the span (a chain's pin: shorten the
+span); in `interfere`, a shape whose own field reads t (a belt's teeth).
 
-A claim over a span is first **measured** at moments across it: holding
-there is an estimate (`"accuracy": null`); a failure at a moment is
-guaranteed only where the claim, in real numbers, fails there too (float
-cancellation alone can make one), else an estimate. A
-moment where what it reads has no value (a solve that does not solve)
-makes the claim `unknown`. It is then **searched** with t ranged over the
-span (`param_spans`: `t`), in the time left: a hold there covers every
-moment, to its accuracy. Left measured, the `hint` says why
-(`motion.not_ranged`) and what the search left undecided
-(`motion.t_ranged`). Never searched: a claim reading a solve on t, a
-metric, integral or mean; a body travelling more than 256 times its own
-size over the span (a chain's pin: shorten the span); in `interfere`, a pair whose shape's own field
-reads t (a belt's teeth).
+- **Name the moving part first.** Two shapes (`disjoint`, `clearance`,
+  `subset`, `overlaps`, `touches`) are searched in the frame the first
+  rests in, so gears or a carriage on its rail are one search and a pin
+  turning in its hole does not move: a pin's `subset` of its hole, a
+  link's `disjoint` of the sprocket. Two shapes riding one moving
+  instance are asked once. Witnesses are given in the world. A turn
+  rounded off in floats (a CAD converter's) may leave a pair measured.
+- **Speeds** (`speed-limits`, `diff` along t) are the formula's
+  derivative, blind to a jump: where a drive may jump (a `select` or
+  `floor` on t, an angle wrapped by `mod`) the speed is `unknown`. Write
+  profiles with `min`, `max` and `clamp`, and angles unwrapped
+  (`(* 360 t)`).
 
-- **Two shapes** (`disjoint`, `clearance`, `subset`, `overlaps`,
-  `touches`) are searched in the frame the first shape rests in, so
-  gears, a rotor in its housing or a carriage on its rail are one search
-  over t, and a pin turning in its hole does not move at all. Name the
-  moving part first: a pin's `subset` of its hole, a link's `disjoint` of
-  the sprocket. The witness is given in the world, at its moment. A part
-  placed by a turn rounded off in floats (a CAD converter's) may be left
-  measured.
-- **Speeds** (`speed-limits`, a claim's `diff` along t) are the formula's
-  derivative, which misses a jump in a drive. Where a drive may jump (a
-  `select` or `floor` switching on t, an angle wrapped by `mod`), the
-  speed is `unknown`, never held. Write profiles with `min`, `max` and
-  `clamp` (continuous) and angles unwrapped (`(* 360 t)`).
-- A claim whose fields read t but do not change over the span is checked
-  once. One that does not read t is checked at `--t` where in the span,
-  else at its start. `ink check` reports `t_span`.
-
-Each answer over a span has a `motion` block: `how` (`t ranged`, `asked
-once` for parts riding one moving instance, or `measured`), the undecided
-t ranges, a failure's moment (`t`), and for `measured` the moments checked
-(`steps`, `step`).
+The answer's `motion` block gives `how` (`t ranged`, `asked once` or
+`measured`), the `undecided` t ranges, and for `measured` the moments
+checked (`steps`, and `step` or a package's `basis`). A failure gives its
+moment, `t`.
 
 ```lisp
 (import "std")

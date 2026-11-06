@@ -253,6 +253,38 @@ fn a_contact_declared_above_a_target_holds_for_it() {
 }
 
 #[test]
+fn interfere_without_a_root_is_refused_once_an_assembly_places_a_body() {
+    // Unplaced, every body sits at its own origin: refused, own or imported.
+    // Bodies alone, or beside a library of frames, are checked as written.
+    let s = sc("no-root");
+    let bodies = "(import \"std\")\n(body a (shape (box 1 1 1)))\n(body b (shape (move (box 1 1 1) 5 0 0)))\n";
+    let pair = s.model("pair.ink", &format!("{bodies}(assembly pair (instance a a) (instance b b))\n"));
+    for m in [pair, s.model("uses.ink", "(import \"pair.ink\" as p)\n")] {
+        assert!(msg(&refused(&s, &["interfere", &m])).contains("--target NAME"), "{m}");
+    }
+    s.model("lib.ink", "(import \"std\")\n(assembly datum (frame top (at (move 0 0 10))))\n");
+    for m in [s.model("bodies.ink", bodies), s.model("frames.ink", &format!("{bodies}(import \"lib.ink\" as lib)\n"))] {
+        let d = run(&s, &["interfere", &m]);
+        assert!(d["overlapping_pairs"] == 0 && d["pairs_apart_by_bounding_boxes"] == 1, "{m}: {}", pretty(&d));
+    }
+}
+
+#[test]
+fn checks_survey_plans_only_what_interfere_would_check() {
+    // What interfere asks at one moment: pair's, placed, not its bodies
+    // unplaced; fit's, not its template's at the defaults.
+    let s = sc("no-root-survey");
+    let bodies = "(import \"std\")\n(body a (shape (box 1 1 1)))\n(body b (shape (move (box 1 1 1) t 0 0)))\n";
+    for (asm, said) in [
+        ("(assembly pair (instance a a) (instance b b (at (move 5 0 0))))", "(instance pair/b)"),
+        ("(assembly (unit (d 0)) (instance a a) (instance b b (at (move d 0 0))))\n(assembly fit (instance u (unit 5)))", "(instance fit/u/b)"),
+    ] {
+        let d = run(&s, &["check", &s.model("survey.ink", &format!("{bodies}{asm}\n"))]);
+        assert!(d["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains(&format!("t = 0 {said}"))), "{asm}: {}", pretty(&d));
+    }
+}
+
+#[test]
 fn a_contact_zone_not_proven_bounded_is_an_error() {
     // It would hide every clash.
     let s = sc("contact-open");

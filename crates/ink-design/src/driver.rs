@@ -204,8 +204,7 @@ fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String
             Some((lo, hi, _)) => {
                 let t = v.clipped(f);
                 let g = g.map(|g| Tape::new(&v.doc.g, g));
-                let m = query::moments(&t, g.as_ref(), &v.ctx, lo, hi, max_extent(lo, hi) / 100.0);
-                if g.is_some() { m.m[0] } else { m.volume }
+                query::sums(&t, &[g.as_ref()], false, &v.ctx, lo, hi, max_extent(lo, hi) / 100.0).sums[0]
             }
         }
     };

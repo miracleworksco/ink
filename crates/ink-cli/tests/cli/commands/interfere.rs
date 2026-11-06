@@ -208,7 +208,7 @@ fn a_press_fit_interfere_passes_is_one_its_answer_says_passes_and_a_claim_catche
         (body shaft (shape (cylinder-z (/ shaft-d 2) 12)))\n(assembly fit (instance b bush) (instance s shaft))\n\
         (assert pressed (disjoint (shape-of bush) (shape-of shaft)))\n",
     );
-    let d = ink(["interfere", &m]);
+    let d = ink(["interfere", &m, "--target", "fit"]);
     assert!(d["overlapping_pairs"] == 0, "{}", pretty(&d));
     assert!(d["accuracy_why"].as_str().is_some_and(|w| w.contains("0.4 mm over its bore's diameter") && w.contains("(disjoint shaft bore)")), "{}", d["accuracy_why"]);
     assert_eq!(verdict(&ink(["assert", &m])["asserts"][0]), "fails");
@@ -226,8 +226,139 @@ fn an_undecided_pair_is_counted_and_its_hint_names_what_interfere_takes() {
         "(import \"std\")\n(param shaft-d 10.4)\n(body bush (shape (subtract (cylinder-z 10 12) (cylinder-z 5 20))))\n\
         (body shaft (shape (min (cylinder-z (/ shaft-d 2) 12) (move (cylinder-z 8 2) 0 0 12))))\n(assembly fit (instance b bush) (instance s shaft))\n",
     );
-    let d = ink(["interfere", &m]);
+    let d = ink(["interfere", &m, "--target", "fit"]);
     let rows: Vec<&Value> = pairs(&d).iter().filter(|p| verdict(p) == "unknown").collect();
     assert!(d["undecided_pairs"] == rows.len() && !rows.is_empty(), "{}", pretty(&d));
     assert!(rows.iter().all(|p| p["hint"].as_str().is_some_and(|h| !h.contains("A smaller (accuracy x)") && h.contains("(disjoint a b) (accuracy x)"))), "{}", pretty(&d));
+}
+
+#[test]
+fn a_pair_held_only_to_the_accuracy_says_how_deep_it_was_found_and_seated_faces_read_0() {
+    // A shaft 0.1 over its bore's radius overlaps it in a shell 0.1 thick,
+    // 0.05 deep, which interfere's 0.1 lets pass: the pair says so, with a
+    // point on the bore. Seated (shaft and bore alike) it reads 0 and is
+    // not counted; 0.5 clear, it held outright. A disjoint claim alike.
+    let s = Scratch::new("near-pairs");
+    for (shaft_d, held, near) in [(10.2, "to the accuracy", 1), (10.0, "to the accuracy", 0), (9.0, "outright", 0)] {
+        let m = s.model(
+            &format!("fit-{shaft_d}.ink"),
+            &format!(
+                "(import \"std\")\n(body bush (shape (subtract (cylinder-z 10 12) (cylinder-z 5 20))))\n\
+                 (body shaft (shape (cylinder-z {} 12)))\n(assembly fit (instance b bush) (instance s shaft))\n\
+                 (assert fit (disjoint (shape-of bush) (shape-of shaft)) (accuracy 0.1))\n",
+                shaft_d / 2.0
+            ),
+        );
+        for (d, row) in [(ink(["interfere", &m, "--target", "fit"]), "pairs"), (ink(["assert", &m]), "asserts")] {
+            let p = &d[row][0];
+            assert!(verdict(p) == "holds" && p["held"] == held, "{shaft_d}: {}", pretty(&d));
+            let depth = p["near"]["depth"].as_f64();
+            match near {
+                1 => {
+                    let r = p["near"]["at"].as_array().map(|a| a[0].as_f64().unwrap().hypot(a[1].as_f64().unwrap()));
+                    assert!(depth.is_some_and(|x| (x - 0.05).abs() <= 0.005) && r.is_some_and(|r| (5.0..=5.1).contains(&r)), "{shaft_d}: {}", pretty(p));
+                }
+                _ => assert!(depth == (held != "outright").then_some(0.0) && p["near"].get("at").is_none(), "{shaft_d}: {}", pretty(p)),
+            }
+            if row == "pairs" {
+                assert!(d["near_pairs"] == near, "{shaft_d}: {}", pretty(&d));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_near_point_is_confirmed_by_its_bounds_not_a_float_that_rounds_t_away() {
+    // (2^53 + t) - 2^53 is 0 in floats, 0.2 at t 0.2: the ball is at 0.2,
+    // and a float sample inside the one at 0 is no point inside it.
+    let s = Scratch::new("near-confirmed");
+    let m = s.model(
+        "time.ink",
+        "(import \"std\")\n(def d (- (+ 9007199254740992 t) 9007199254740992))\n(def f (move (sphere 0.05) d 0 0))\n(assert no-ball (empty f) (accuracy 0.1))\n",
+    );
+    let p = &ink(["assert", &m, "--t", "0.2"])["asserts"][0];
+    let inside = |a: &Vec<Value>| (a[0].as_f64().unwrap() - 0.2).hypot(a[1].as_f64().unwrap().hypot(a[2].as_f64().unwrap())) <= 0.05;
+    assert!(verdict(p) == "holds" && p["near"].get("at").and_then(Value::as_array).is_none_or(inside), "{}", pretty(p));
+}
+
+#[test]
+fn a_pair_in_a_frame_that_reads_back_inexactly_never_held_outright() {
+    // Boxes overlapping by 6e-10, asked in the block's frame, whose
+    // placement is off by about as much: outright in the frame says nothing
+    // of the world, where the claim held only to the accuracy.
+    let s = Scratch::new("frame-not-outright");
+    let m = s.model(
+        "boxes.ink",
+        "(import \"std\")\n(body block (shape (box 10 10 10)))\n(body plate (shape (box 3.999999999 4 4)))\n\
+         (assembly root (instance block block (at (move 100 0 0))) (instance plate plate (at (move 106.9999999994 0 0))))\n",
+    );
+    let d = ink(["interfere", &m]);
+    assert!(verdict(&pairs(&d)[0]) == "holds" && pairs(&d)[0]["held"] == "to the accuracy", "{}", pretty(&d));
+}
+
+const FIT: &str = "(import \"std\")\n(body bush (shape (subtract (cylinder-z 10 12) (cylinder-z 5 20))))\n(body shaft (shape (cylinder-z r 12)))\n(assembly fit (instance b bush) (instance s shaft))\n";
+
+/// No `held` nor `near` in the first row of each answer, whether the
+/// proof needed the accuracy or not.
+fn held_unsaid(answers: &[(Value, &str)]) {
+    for (d, row) in answers {
+        let p = &d[*row][0];
+        assert!(verdict(p) == "holds" && p.get("held").is_none() && p.get("near").is_none(), "{}", pretty(d));
+    }
+}
+
+#[test]
+fn how_a_claim_held_is_not_said_over_ranged_params() {
+    let s = Scratch::new("held-over-ranged-params");
+    let m = s.model("ranged.ink", &format!("(param r 5.05 (tol -0.01 0.01))\n{FIT}(assert fit (disjoint (shape-of bush) (shape-of shaft)) (accuracy 0.1))\n"));
+    held_unsaid(&[(ink(["assert", &m]), "asserts"), (ink(["interfere", &m, "--target", "fit"]), "pairs")]);
+}
+
+#[test]
+fn how_a_pair_riding_a_moving_frame_held_is_not_said() {
+    // Asked once in the frame it rides, but over the motion.
+    let s = Scratch::new("held-riding");
+    let m = s.model("moving.ink", &format!("(t-span 0 1)\n(param r 5.05)\n{FIT}(assembly root (instance unit fit (at) (slide x (* 10 t))))\n"));
+    held_unsaid(&[(ink(["interfere", &m]), "pairs")]);
+}
+
+#[test]
+fn every_near_point_of_a_pair_in_a_shared_frame_is_inside_both_shapes_as_placed() {
+    // A bush whose field also reads sin(1e10 x), its shaft 1e-9 off, asked
+    // in the bush's frame: a point inside both there was outside the bush
+    // as placed. And copies of a press fit placed apart still give theirs.
+    let s = Scratch::new("near-framed");
+    let wavy = s.model(
+        "wavy.ink",
+        "(import \"std\")\n(body bush (shape (max (subtract (cylinder-z 10 12) (cylinder-z 5 20)) (* 0.1 (sin (* 10000000000 x))))))\n\
+         (body shaft (shape (cylinder-z 5.05 12)))\n(assembly root (instance b bush (at (move 100 0 0))) (instance s shaft (at (move 100.000000001 0 0))))\n",
+    );
+    let copies = s.model(
+        "copies.ink",
+        &format!("(param r 5.05)\n{FIT}(assembly root (instance c0 fit (at (move 100 0 0))) (instance c1 fit (at (rot-z 30) (move -400 10 0))) (instance c2 fit (at (rot-x 90) (move 1e5 -3e4 12.25))))\n"),
+    );
+    for (m, near) in [(&wavy, None), (&copies, Some(3))] {
+        let d = ink(["interfere", m]);
+        assert!(near.is_none_or(|n| d["near_pairs"] == n), "{}", pretty(&d));
+        let src = std::fs::read_to_string(m).unwrap();
+        for p in pairs(&d).iter().filter(|p| p["near"].get("at").is_some()) {
+            let at = &p["near"]["at"];
+            let probe = format!("(probe {} {} {})", at[0], at[1], at[2]);
+            let both: String =
+                p["pair"].as_array().unwrap().iter().enumerate().map(|(k, x)| format!("(assert in-{k} (subset {probe} (shape-of {})))\n", x.as_str().unwrap())).collect();
+            let check = s.model("check.ink", &format!("{src}{both}"));
+            let a = ink(["assert", &check]);
+            assert!(a["asserts"].as_array().is_some_and(|r| r.len() == 2 && r.iter().all(|r| verdict(r) == "holds")), "{probe} of {}: {}", p["pair"], pretty(&a));
+        }
+    }
+}
+
+#[test]
+fn how_a_pair_in_a_shared_frame_held_is_not_said_where_its_placement_reads_a_ranged_param() {
+    // The frame takes the move up, ranged by 1e-9: the pair as placed reads it.
+    let s = Scratch::new("held-framed-ranged");
+    let m = s.model("ranged.ink", &format!("(param dx 100 (tol -1e-09 1e-09))\n(param r 5.05)\n{FIT}(assembly root (instance unit fit (at (move dx 0 0))))\n"));
+    let d = ink(["interfere", &m]);
+    held_unsaid(&[(d.clone(), "pairs")]);
+    assert!(d["near_pairs"] == 0, "{}", pretty(&d));
 }

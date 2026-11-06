@@ -12,7 +12,7 @@ use crate::motion::Asked;
 use crate::view::ModelView;
 use crate::{Claim, Cmp, FormMetric, Measured, Placed, RunOpts};
 use ink_core::V3;
-use ink_core::eval::Ctx;
+use ink_core::eval::{Ctx, eval_interval, eval_points};
 use ink_core::graph::Var;
 use ink_core::interval::{I, add_o};
 use ink_core::tape::Tape;
@@ -163,6 +163,74 @@ pub struct Check {
     /// (`reads_t`): no span covered it and the run asked for none, so it
     /// holds or fails there only. Recorded as it is asked (`asserted`).
     pub one_moment: Option<f64>,
+    /// An emptiness claim's at a moment: how it held (`held`).
+    pub held: Option<Held>,
+}
+
+/// How an emptiness claim (empty, disjoint, subset) held.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Held {
+    /// No cell needed the accuracy's allowance: nothing violates it.
+    Outright,
+    /// Some cells held only to the accuracy. `near`: the deepest violating
+    /// point found among NEAR_SAMPLES^3 points through each (depth 0 and no
+    /// point: none found), a measurement; None where the field reads
+    /// ranged params or t.
+    ToAccuracy { near: Option<(f64, Option<V3>)> },
+}
+
+/// Points measured along each side of a loose cell (Held::candidates).
+const NEAR_SAMPLES: usize = 8;
+
+/// A proof's deepest points below 0 tried for confirmation (Held::candidates).
+const CONFIRM_TRIES: usize = 16;
+
+impl Held {
+    /// Where a proof's loose cells may hold a violating point: each
+    /// cell's NEAR_SAMPLES^3 points below 0 on `tape` (the question's, in
+    /// its frame, simplified over the cell), the CONFIRM_TRIES deepest.
+    pub fn candidates(p: &Proof, tape: &Tape, ctx: &Ctx) -> Vec<V3> {
+        let (mut values, mut below) = (Vec::new(), Vec::new());
+        for [lo, hi] in &p.loose {
+            let mut ch = vec![ink_core::tape::BOTH; tape.len()];
+            eval_interval(tape, ctx, std::array::from_fn(|k| I::new(lo[k], hi[k])), Some(&mut ch));
+            let sub = tape.simplify(&ch);
+            let points: Vec<V3> = (0..NEAR_SAMPLES.pow(3))
+                .map(|i| {
+                    let at = [i % NEAR_SAMPLES, i / NEAR_SAMPLES % NEAR_SAMPLES, i / NEAR_SAMPLES / NEAR_SAMPLES];
+                    std::array::from_fn(|k| lo[k] + (hi[k] - lo[k]) * (at[k] as f64 + 0.5) / NEAR_SAMPLES as f64)
+                })
+                .collect();
+            eval_points(&sub, ctx, &points, &mut values);
+            below.extend(values.iter().zip(points).filter(|x| *x.0 < 0.0).map(|(f, c)| (*f, c)));
+        }
+        below.sort_by(|a, b| a.0.total_cmp(&b.0));
+        below.into_iter().take(CONFIRM_TRIES).map(|x| x.1).collect()
+    }
+
+    /// How a claim whose proof was `exact` (or not) held, its near point
+    /// the deepest of `points` (in the world) where `world`, the claim's
+    /// field as placed (a pair's, with its zones), is below 0 by bounds
+    /// rounded outward (a float value may round away what the real one
+    /// is), as deep as the bound.
+    pub fn confirmed(exact: bool, points: impl IntoIterator<Item = V3>, world: &Tape, ctx: &Ctx) -> Held {
+        if exact {
+            return Held::Outright;
+        }
+        let deepest = points.into_iter().map(|c| (eval_interval(world, ctx, c.map(I::point), None).hi, c)).filter(|x| x.0 < 0.0).min_by(|a, b| a.0.total_cmp(&b.0));
+        Held::ToAccuracy { near: Some(Held::near(deepest.map_or(0.0, |d| -d.0), deepest.map(|d| d.1))) }
+    }
+
+    /// A near point at least `depth` deep, rounded to a µm: none at 0.
+    pub fn near(depth: f64, at: Option<V3>) -> (f64, Option<V3>) {
+        let depth = (depth * 1e3).round().max(0.0) / 1e3;
+        (depth, at.filter(|_| depth > 0.0))
+    }
+
+    /// Measured deeper than 0.
+    pub fn near_depth(&self) -> bool {
+        matches!(self, Held::ToAccuracy { near: Some((d, _)) } if *d > 0.0)
+    }
 }
 
 impl Check {
@@ -563,7 +631,8 @@ fn ask_in(v: &mut ModelView, claim: Claim, bound: Option<u32>, opts: ClaimOption
         return Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact)));
     }
     let c = match motion {
-        Some(span) => crate::motion::over_span(v, claim.clone(), bound, span, opts)?,
+        // Over a motion, how it held is not kept (Check::held).
+        Some(span) => crate::motion::over_span(v, claim.clone(), bound, span, opts)?.then(v, |_, c| Ok(Asked::Done(Check { held: None, ..c })))?,
         None => Asked::Done(decide(v, claim.clone(), opts)?),
     };
     c.then(v, move |v, c| Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact))))
@@ -627,7 +696,8 @@ pub(crate) fn decide(v: &mut ModelView, claim: Claim, opts: ClaimOptions) -> Res
     }
     let mut c = match claim {
         // Values in a region are compared exactly: their accuracy is 0.
-        Claim::Empty(f) | Claim::Range(f) => shallow(v, f, tol, res),
+        Claim::Empty(f) => shallow(v, f, tol, res),
+        Claim::Range(f) => Check { held: None, ..shallow(v, f, tol, res) },
         // A clearance d: no point of one within d of the other, exactly,
         // with cells down to half the accuracy, or a sixteenth of d where
         // finer (a clearance sets its own scale): a gap within about that
@@ -835,7 +905,12 @@ const POINT_MARGIN: f64 = 1e-9;
 /// claim, or an overlap's, a subset's, a clearance of 0's).
 fn shallow(v: &mut ModelView, f: u32, tol: f64, res: Option<f64>) -> Check {
     let (p, whole) = v.prove(f, res, tol);
-    emptied(p, whole)
+    let held = (!held_unsaid(v, f)).then(|| {
+        let tape = v.clipped(f);
+        let points = if p.exact { Vec::new() } else { Held::candidates(&p, &tape, &v.ctx) };
+        Held::confirmed(p.exact, points, &tape, &v.ctx)
+    });
+    Check { held, ..emptied(p, whole) }
 }
 
 /// An emptiness claim's answer from its proof, all of its field examined
@@ -999,7 +1074,7 @@ type Part = (u32, Vec<Option<u32>>, Option<Placed>);
 struct Summed {
     /// One per integrand: the sum over the parts.
     sums: Vec<f64>,
-    /// The coarsest cells a part settled at (0: none had material).
+    /// The coarsest cells a part stopped at (0: none had material).
     res: f64,
     /// Every part is proven bounded (else the sums are of the rest).
     whole: bool,
@@ -1007,18 +1082,16 @@ struct Summed {
 }
 
 /// Sums over `parts` of each integrand's integral over the part's shape,
-/// estimated at the view's params and moment (query::measured_sums: every
-/// integrand in one descent, its cells halved from a 100th of the part's
-/// box until the first integrand moves by at most query::ACCURACY of
-/// itself; at `res` where given). A placed body is integrated in
-/// its own frame (frame::in_frame), times 1 / |det R|: copies of a body
-/// are one question there, answered once (the cache). A part not proven
-/// bounded is left out (`whole`).
-/// At `halved`, every part at cells of a 100th of the largest part's box
-/// halved that many times instead.
-fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, halved: Option<i32>) -> (Vec<f64>, Vec<f64>, f64, bool) {
+/// estimated at the view's params and moment, each part halved as
+/// query::refine halves one, from a 100th of its own box (at `res`, once,
+/// where given), all stopping once every part is halved and `done` takes
+/// the sums with their spreads; the sums, the coarsest cells a part stopped at, and whether
+/// every part is proven bounded (else the sums are of the rest, and
+/// `done` takes none). A placed body is integrated in its own frame
+/// (frame::in_frame), times 1 / |det R|: copies of a body are one
+/// question there, answered once (the cache).
+fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, done: impl Fn(&[f64], &[f64]) -> bool) -> (Vec<f64>, f64, bool) {
     let n = parts.first().map_or(0, |p| p.1.len());
-    let (mut sums, mut widths, mut cells, mut whole) = (vec![0.0; n], vec![0.0; n], 0.0f64, true);
     // Each part as integrated (its frame's shape and integrands), alike
     // parts once, with how many and their scale.
     let mut alike: Vec<((u32, Vec<Option<u32>>), f64)> = Vec::new();
@@ -1033,23 +1106,38 @@ fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, halved: O
             None => alike.push((key, scale)),
         }
     }
-    let boxes: Vec<Option<(V3, V3, f64)>> = alike.iter().map(|((s, _), _)| v.bounds(*s).filter(|_| v.whole(*s))).collect();
-    let largest = boxes.iter().flatten().map(|b| query::max_extent(b.0, b.1)).fold(0.0, f64::max);
-    for (((shape, gs), scale), b) in alike.into_iter().zip(boxes) {
-        whole &= v.whole(shape);
-        let Some((lo, hi, _)) = b else { continue };
-        let tape = v.clipped(shape);
+    let whole = alike.iter().all(|((s, _), _)| v.whole(*s));
+    let mut each = Vec::new();
+    for ((shape, gs), scale) in alike {
+        let Some((lo, hi, _)) = v.bounds(shape).filter(|_| v.whole(shape)) else { continue };
         let tapes: Vec<Option<Tape>> = gs.iter().map(|g| g.map(|g| Tape::new(&v.doc.g, g))).collect();
+        each.push((v.clipped(shape), tapes, lo, hi, scale));
+    }
+    let ctx = &v.ctx;
+    let at = |(tape, tapes, lo, hi, _): &(Arc<Tape>, Vec<Option<Tape>>, V3, V3, f64), h: f64| {
         let gs: Vec<Option<&Tape>> = tapes.iter().map(Option::as_ref).collect();
-        let at = halved.map(|k| largest / 100.0 * 0.5f64.powi(k)).or(res);
-        let (each, width, h, _) = query::measured_sums(&tape, &gs, &v.ctx, lo, hi, at);
-        cells = cells.max(h);
-        for ((sum, w), (x, e)) in sums.iter_mut().zip(&mut widths).zip(each.into_iter().zip(width)) {
-            *sum += scale * x;
-            *w += scale * e;
+        let m = query::measured(tape, &gs, false, ctx, *lo, *hi, Some(h));
+        query::Sums { sums: m.sums, cells: m.cells }
+    };
+    let mut found: Vec<query::Measured> =
+        each.iter().map(|p| query::Measured { settled: res.is_some(), ..query::Measured::first(res.unwrap_or(query::max_extent(p.2, p.3) / 100.0), |h| at(p, h)) }).collect();
+    loop {
+        let (mut sums, mut spread) = (vec![0.0; n], vec![0.0; n]);
+        for (m, p) in found.iter().zip(&each) {
+            for k in 0..n {
+                sums[k] += p.4 * m.sums[k];
+                spread[k] += p.4 * m.spread.get(k).unwrap_or(&0.0);
+            }
+        }
+        if !found.iter().any(query::Measured::halves) || (whole && found.iter().all(|m| m.coarse.is_some()) && done(&sums, &spread)) {
+            return (sums, found.iter().map(|m| m.res).fold(0.0, f64::max), whole);
+        }
+        for (m, p) in found.iter_mut().zip(&each) {
+            if m.halves() {
+                *m = m.halved(|h| at(p, h));
+            }
         }
     }
-    (sums, widths, cells, whole)
 }
 
 /// Values of each ranged param an estimate over them is taken at, where
@@ -1083,31 +1171,15 @@ fn estimate_scope(v: &mut ModelView, parts: &[Part], res: Option<f64>, status: i
     }
     let read = ranged_reads(v, &fields);
     let summed = |v: &mut ModelView| {
-        // Decided at cells of the largest part's 100th where the status
-        // stays with the sums moved by their surface cells' shares, and
-        // else at its 200th where it stays with them moved by twice what
-        // that halving moved them (each way, the first and the rest apart
-        // too: a mean's weight and moments): the next halvings move them
-        // less. Else measured to query::ACCURACY.
-        if res.is_none() {
-            let stays = |x: &[f64], d: &[f64]| {
-                let st = status(x);
-                let moved = |a: f64, b: f64| x.iter().zip(d).enumerate().map(|(k, (x, d))| x + if k == 0 { a } else { b } * d).collect::<Vec<f64>>();
-                (st != Status::Unknown && [(1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)].iter().all(|&(a, b)| status(&moved(a, b)) == st)).then_some(st)
-            };
-            let (coarse, widths, h, w) = estimate_parts(v, parts, None, Some(0));
-            if w && let Some(st) = stays(&coarse, &widths) {
-                return Summed { sums: coarse, res: h, whole: w, status: st };
-            }
-            let (fine, _, h, whole) = estimate_parts(v, parts, None, Some(1));
-            let moved: Vec<f64> = fine.iter().zip(&coarse).map(|(x, c)| 2.0 * (x - c).abs()).collect();
-            if w && whole
-                && let Some(st) = stays(&fine, &moved)
-            {
-                return Summed { sums: fine, res: h, whole, status: st };
-            }
-        }
-        let (sums, _, res, whole) = estimate_parts(v, parts, res, None);
+        // Settled where the status stays with the sums moved by their
+        // spreads, each way (the first and the rest apart too: a mean's
+        // weight and moments).
+        let stays = |x: &[f64], d: &[f64]| {
+            let st = status(x);
+            let moved = |a: f64, b: f64| x.iter().zip(d).enumerate().map(|(k, (x, d))| x + if k == 0 { a } else { b } * d).collect::<Vec<f64>>();
+            st != Status::Unknown && [(1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)].iter().all(|&(a, b)| status(&moved(a, b)) == st)
+        };
+        let (sums, res, whole) = estimate_parts(v, parts, res, stays);
         let status = if whole { status(&sums) } else { Status::Unknown };
         Summed { sums, res, whole, status }
     };
@@ -1174,6 +1246,7 @@ pub(crate) fn checked(status: Status, evidence: Evidence) -> Check {
         inexact: Default::default(),
         motion: None,
         one_moment: None,
+        held: None,
     }
 }
 
@@ -1245,6 +1318,12 @@ pub fn claims_at_one_moment(v: &mut ModelView) -> Result<Vec<String>, InkError> 
 /// Time may enter through a provider's param as well as through the graph.
 pub fn reads_t(v: &ModelView, nodes: &[u32]) -> bool {
     nodes.iter().any(|&f| v.doc.g.depends_on(f, |x| x == Var::T)) || v.doc.solves_read(nodes).iter().any(|&i| v.doc.solves[i].on_t)
+}
+
+/// Whether how a claim on `node` held goes unsaid: it reads ranged params,
+/// or t over a span.
+pub(crate) fn held_unsaid(v: &ModelView, node: u32) -> bool {
+    !v.ranged_reads(&[node]).is_empty() || (v.motion.is_some() || v.ctx.t_span.is_some()) && reads_t(v, &[node])
 }
 
 /// Whether fields `nodes` change with t over `span`: through a solve that

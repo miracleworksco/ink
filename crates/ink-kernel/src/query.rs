@@ -11,7 +11,6 @@ use ink_core::tape::{BOTH, Tape};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub fn max_extent(lo: V3, hi: V3) -> f64 {
     (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max)
@@ -596,71 +595,127 @@ fn bounds_cells(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, root: Cell) -> ((V3, V
     ((lo, hi), visited)
 }
 
-/// The relative accuracy integrals are measured to where no cell size is
-/// asked for (`measured`): a mass, a volume, a published mass's density.
+/// The relative spread an estimated integral settles to (`refine`): a
+/// mass, a volume, a published mass's density, a claim's integrals at
+/// the latest.
 pub const ACCURACY: f64 = 0.02;
 
-/// Cells a halving of `measured` may make: one that would make more is not
+/// Cells a halving of `refine` may make: one that would make more is not
 /// made (surfaces over a large area at fine cells: a few seconds' work).
 pub const PASS_CELLS: usize = 1 << 21;
 
-/// `moments` as `measured` left them: at cells of `res`, and the size
-/// before (`coarse`: it, and how far the integral of rho moved from there,
-/// relative to it). Unsettled where it moved more than ACCURACY, or no cell
-/// was proven full, when the next halving would have passed PASS_CELLS.
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+/// Integrals at one cell size (`sums`), and the cells they took, full and
+/// surface.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Sums {
+    pub sums: Vec<f64>,
+    pub cells: [usize; 2],
+}
+
+/// Integrals as `refine` left them, at cells of `res`: each with its
+/// spread (none before a halving), the size before (`coarse`: it, and how far the first integral
+/// moved from there, relative to it), the cells it took (full of
+/// material, and the surface's), and whether it settled.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Measured {
-    pub moments: Moments,
+    pub sums: Vec<f64>,
+    pub spread: Vec<f64>,
     pub res: f64,
     pub coarse: Option<(f64, f64)>,
+    pub cells: [usize; 2],
     pub settled: bool,
 }
 
 impl Measured {
+    /// `at`'s integrals at cells of `h`, before any halving: no spread.
+    /// Settled where there are none.
+    pub fn first(h: f64, at: impl FnOnce(f64) -> Sums) -> Measured {
+        let s = at(h);
+        Measured { settled: s.sums.is_empty(), sums: s.sums, spread: Vec::new(), res: h, coarse: None, cells: s.cells }
+    }
+
+    /// Halved once (`refine`).
+    pub fn halved(&self, at: impl FnOnce(f64) -> Sums) -> Measured {
+        let next = at(self.res / 2.0);
+        let spread: Vec<f64> = next.sums.iter().zip(&self.sums).map(|(a, b)| 2.0 * (a - b).abs()).collect();
+        let (first, change) = (next.sums[0], (next.sums[0] - self.sums[0]).abs());
+        let settled = next.cells == [0; 2] || (next.cells[0] > 0 && spread[0] <= ACCURACY * first.abs());
+        let coarse = Some((self.res, if change == 0.0 { 0.0 } else { change / first.abs() }));
+        Measured { sums: next.sums, spread, res: self.res / 2.0, coarse, cells: next.cells, settled }
+    }
+
+    /// Whether `refine` halves it again: unsettled, finite, and (past the
+    /// first halving) the next within PASS_CELLS.
+    pub fn halves(&self) -> bool {
+        let cells = self.cells[0] + self.cells[1];
+        !self.settled && self.sums[0].is_finite() && !(self.coarse.is_some() && cells.saturating_mul(4) > PASS_CELLS)
+    }
+
+    /// Of `measured` with moments: rho * [1, x, y, z, xx, yy, zz, xy, yz,
+    /// zx], then (the second integrand's, where it is 1) the volume.
+    pub fn moments(&self) -> [f64; 10] {
+        std::array::from_fn(|k| self.sums[k])
+    }
+    pub fn volume(&self) -> f64 {
+        self.sums[10]
+    }
+
+    /// The first integral's spread, relative to it (None before a halving).
+    pub fn relative_spread(&self) -> Option<f64> {
+        self.spread.first().map(|&s| if s == 0.0 { 0.0 } else { s / self.sums[0].abs() })
+    }
+
     /// Why it did not settle (None: it did).
     pub fn unsettled(&self) -> Option<String> {
-        let why = match self.moments.full {
+        let why = match self.cells[0] {
             0 => "no cell is proven full of material (a wall thinner than every cell)".to_string(),
-            _ => format!("the mass moved more than {}% on the last halving", ACCURACY * 100.0),
+            _ => format!("its spread is over {}% of it", ACCURACY * 100.0),
         };
         (!self.settled).then(|| format!("{why}, and the next halving would take over {PASS_CELLS} cells"))
     }
 }
 
-/// `moments` measured to ACCURACY: at cells of a 100th of the box, halved
-/// until the integral of rho (the mass; the volume where rho is None) moves
-/// by at most ACCURACY of itself on a halving, at cells some of which are
-/// proven full of material. A grid comparison, as a study's `--converge`
-/// makes, so an estimate, not a bound. Cells none of which fits inside the
-/// material resolve none of its walls, and can read them alike at every
-/// size that leaves them so (a 0.25 mm plate 200 mm across is 48% heavy at
-/// cells of 2 and of 1 mm). A halving takes about four times the cells
-/// (they cover a surface): past a 200th of the box, one that would pass
-/// PASS_CELLS is not made. Given a `res`, at cells of that, once. The cells
-/// follow walls, not length (a 1200 mm tube's 0.71 mm walls measure 59%
-/// heavy at a 200th of its length). Cached, as the kernel's other answers are.
-pub fn measured(shape: &Arc<Tape>, rho: Option<&Tape>, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>) -> Measured {
-    let tapes: Vec<&Tape> = std::iter::once(&**shape).chain(rho).collect();
+/// Integrals estimated, the one way they are: `at` (integrals at a cell
+/// size) at cells of `h`, halved until the first's spread is within
+/// ACCURACY of it, at cells some of which are proven full of material. A
+/// spread is a sampled estimate of the change left: twice what the last
+/// halving moved it. So at least one halving is made, and the answer is an estimate, not a
+/// bound. Cells none of which fits inside the material resolve none of
+/// its walls, and can read them alike at every size that leaves them so
+/// (a 0.25 mm plate 200 mm across is 48% heavy at cells of 2 and of 1
+/// mm). A halving takes about four times the cells (they cover a
+/// surface): after the first, one that would pass PASS_CELLS is not made,
+/// and the answer is unsettled. A claim's parts are halved this way each,
+/// and stop sooner where the claim's status survives their spreads
+/// (claims::estimate_parts).
+pub fn refine(h: f64, mut at: impl FnMut(f64) -> Sums) -> Measured {
+    let mut m = Measured::first(h, &mut at);
+    while m.halves() {
+        m = m.halved(&mut at);
+    }
+    m
+}
+
+/// `sums` refined (`refine`) from cells of a 100th of the box, to
+/// ACCURACY; at `res`, once, where given. Cached, as the kernel's other
+/// answers are. The cells follow walls, not length (a 1200 mm tube's
+/// 0.71 mm walls measure 59% heavy at a 200th of its length).
+pub fn measured(shape: &Arc<Tape>, gs: &[Option<&Tape>], moments: bool, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>) -> Measured {
+    let tapes: Vec<&Tape> = std::iter::once(&**shape).chain(gs.iter().flatten().copied()).collect();
     crate::cache::memo_region(
         "measured",
         &tapes,
         ctx,
         (lo, hi),
-        |fp| _ = fp.word(res.map_or(0, |r| 1 + r.to_bits())),
+        |fp| {
+            fp.word(res.map_or(0, |r| 1 + r.to_bits())).word(gs.len() as u64).word(moments as u64);
+            gs.iter().for_each(|g| _ = fp.word(g.is_some() as u64));
+        },
         |ctx| {
-            let mut h = res.unwrap_or(max_extent(lo, hi) / 100.0);
-            let mut now = moments(shape, rho, ctx, lo, hi, h);
-            let mut coarse: Option<(f64, f64)> = None;
-            loop {
-                let settled = res.is_some() || (now.full > 0 && coarse.is_some_and(|c| c.1 <= ACCURACY));
-                let cells = now.full + now.surface;
-                if settled || !now.m[0].is_finite() || (coarse.is_some() && cells.saturating_mul(4) > PASS_CELLS) {
-                    return Measured { moments: now, res: h, coarse, settled };
-                }
-                let next = moments(shape, rho, ctx, lo, hi, h / 2.0);
-                let change = (next.m[0] - now.m[0]).abs();
-                coarse = Some((h, if change == 0.0 { 0.0 } else { change / next.m[0].abs() }));
-                (h, now) = (h / 2.0, next);
+            let at = |h| sums(shape, gs, moments, ctx, lo, hi, h);
+            match res {
+                Some(h) => Measured { settled: true, ..Measured::first(h, at) },
+                None => refine(max_extent(lo, hi) / 100.0, at),
             }
         },
     )
@@ -753,14 +808,20 @@ pub enum Ended {
 /// An emptiness search's answer: its verdict, the cell size it reached,
 /// the tolerance it was asked to (mm; 0: exactly), and whether a proof
 /// needed it (`exact` false: some cell was shown only to hold no point
-/// deeper than it, so the solid may not be empty; `Proof::exact`).
+/// deeper than it, so the solid may not be empty; `Proof::exact`), with
+/// up to LOOSE such cells, the lowest bounds first, where a point of the
+/// solid may be (`loose`: lo, hi).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
     pub verdict: Verdict,
     pub res: f64,
     pub tol: f64,
     pub exact: bool,
+    pub loose: Vec<[V3; 2]>,
 }
+
+/// How many cells a proof that needed its tolerance keeps (Proof::loose).
+pub const LOOSE: usize = 64;
 
 /// Confirms candidate witnesses: whether a tape is below a level at a point
 /// (at time ctx.t) by bounds rounded outward. Searches find witnesses with
@@ -974,7 +1035,7 @@ pub fn prove_empty(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>
 fn empty_now(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>, floor: f64, tol: f64) -> (Proof, usize) {
     assert!(floor > 0.0, "an emptiness search needs a positive floor to stop at");
     let ctx = Arc::new(in_span(ctx));
-    let proven = Proof { verdict: Verdict::Proven, res: max_extent(lo, hi) / 32.0, tol, exact: true };
+    let proven = Proof { verdict: Verdict::Proven, res: max_extent(lo, hi) / 32.0, tol, exact: true, loose: Vec::new() };
     let Some((blo, bhi, _)) = bounds_quick(tape, &ctx, lo, hi) else { return (proven, 0) };
     let (first, floor) = first_cells(max_extent(blo, bhi), res, floor);
     // Narrowed once more, not again inside the narrowed box.
@@ -984,15 +1045,19 @@ fn empty_now(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>, floo
         finest *= 0.5;
     }
     let Some(root) = lattice(blo, bhi, finest) else {
-        return (Proof { verdict: Verdict::Unknown { cells: 1, volume: f64::INFINITY, ended: Ended::Limit, cell: None, attained: None }, res: finest, tol, exact: false }, 0);
+        return (
+            Proof {
+                verdict: Verdict::Unknown { cells: 1, volume: f64::INFINITY, ended: Ended::Limit, cell: None, attained: None },
+                res: finest,
+                tol,
+                exact: false,
+                loose: Vec::new(),
+            },
+            0,
+        );
     };
-    let q = Empty {
-        tol,
-        region: std::array::from_fn(|k| I::new(blo[k], bhi[k])),
-        asked: std::array::from_fn(|k| I::new(lo[k], hi[k])),
-        loose: AtomicBool::new(false),
-        t_band: ctx.t_span,
-    };
+    let q =
+        Empty { tol, region: std::array::from_fn(|k| I::new(blo[k], bhi[k])), asked: std::array::from_fn(|k| I::new(lo[k], hi[k])), loose: Default::default(), t_band: ctx.t_span };
     let (searched, s) = empty_run(&q, vec![search::Node { b: root, ctx: ctx.clone(), state: (Kept::of(tape), Kept::of(tape)) }], finest);
     (searched, s.tested())
 }
@@ -1007,7 +1072,7 @@ fn empty_run(q: &Empty, roots: Vec<search::Node<Pieces>>, finest: f64) -> (Proof
     // The cells it reached: the lattice's, the smallest side tested (as
     // rounded) taken to the power of two of the finest it is.
     let res = finest * (s.res() / finest).log2().round().exp2();
-    let exact = !q.loose.load(Ordering::Relaxed);
+    let loose: Vec<[V3; 2]> = q.loose.lock().unwrap().iter().map(|c| c.1).collect();
     let verdict = match outcome {
         search::Outcome::Proven => Verdict::Proven,
         search::Outcome::Found((witness, at, value)) => Verdict::Disproven { witness, t: at.t, value, params: at.params },
@@ -1015,14 +1080,16 @@ fn empty_run(q: &Empty, roots: Vec<search::Node<Pieces>>, finest: f64) -> (Proof
             let left: Vec<&search::Node<Pieces>> = s.left().collect();
             let attained = (u.ended != Ended::Stopped).then(|| q.attained(&left));
             if attained.is_some_and(|a| q.tol > 0.0 && a <= q.tol) {
-                return (Proof { verdict: Verdict::Proven, res, tol: q.tol, exact: false }, s);
+                // Every box left is held to the tolerance only.
+                let loose = left.iter().filter_map(|n| q.clip(n.b)).take(LOOSE).map(|b| [b.map(|x| x.lo), b.map(|x| x.hi)]).collect();
+                return (Proof { verdict: Verdict::Proven, res, tol: q.tol, exact: false, loose }, s);
             }
             let volume = left.iter().filter_map(|n| q.clip(n.b)).map(|b| b.iter().map(|x| x.hi - x.lo).product::<f64>()).sum();
             let cell = u.cell.and_then(|[a, b]| q.clip(std::array::from_fn(|k| I::new(a[k], b[k])))).map(|b| [b.map(|x| x.lo), b.map(|x| x.hi)]);
             Verdict::Unknown { cells: u.cells, volume, ended: u.ended, cell, attained }
         }
     };
-    (Proof { verdict, res, tol: q.tol, exact }, s)
+    (Proof { verdict, res, tol: q.tol, exact: loose.is_empty(), loose }, s)
 }
 
 /// The cube of a lattice of cells of side h anchored at lo that holds
@@ -1120,7 +1187,8 @@ impl Kept {
 ///   size (centred::centred_settles: faces that touch, or overlap thinner
 ///   than the tolerance), or by points shown outside near each of its
 ///   samples (`covered`, at boxes of a few tolerances): none of its solid
-///   is deeper (`loose`: a proof that needed the tolerance).
+///   is deeper (`loose`: a proof that needed the tolerance, which keeps
+///   the LOOSE such boxes of lowest bound).
 ///
 /// A witness is its centre where the field is below 0 all over it and the
 /// cube about it fits (or is shown inside), or one of its samples, the
@@ -1151,7 +1219,7 @@ struct Empty {
     tol: f64,
     region: [I; 3],
     asked: [I; 3],
-    loose: AtomicBool,
+    loose: std::sync::Mutex<Vec<(f64, [V3; 2])>>,
     /// Time's span over the search (a step of a motion), which a box's
     /// share of it is of.
     t_band: Option<(f64, f64)>,
@@ -1244,14 +1312,14 @@ impl search::Question for Empty {
         match settles {
             Settles::AtLeast => return Settled,
             Settles::Covered => {
-                self.loose.store(true, Ordering::Relaxed);
+                self.keep_loose(r.lo, b);
                 return Settled;
             }
             Settles::No => {}
         }
         let sides = b.map(|x| x.hi - x.lo);
         if self.covered(&sub, &wide, ctx, b, sides, &pts, &v) {
-            self.loose.store(true, Ordering::Relaxed);
+            self.keep_loose(r.lo, b);
             return Settled;
         }
         // Covered at the scope's middle but not over it: the axis of it
@@ -1328,6 +1396,24 @@ impl search::Question for Empty {
 }
 
 impl Empty {
+    /// Keep box `b`, settled only by the tolerance with `lo` its field's
+    /// lower bound, among the LOOSE of lowest bound (ties by place, so the
+    /// boxes kept do not depend on the order threads settle them in).
+    fn keep_loose(&self, lo: f64, b: [I; 3]) {
+        let cell = [b.map(|x| x.lo), b.map(|x| x.hi)];
+        let key = |c: &(f64, [V3; 2])| -> [f64; 7] {
+            let [l, h] = c.1;
+            [c.0, l[0], l[1], l[2], h[0], h[1], h[2]]
+        };
+        let new = key(&(lo, cell));
+        let mut kept = self.loose.lock().unwrap();
+        let at = kept.partition_point(|c| key(c).iter().zip(&new).map(|(x, y)| x.total_cmp(y)).find(|o| o.is_ne()).is_none_or(|o| o.is_lt()));
+        if at < LOOSE {
+            kept.insert(at, (lo, cell));
+            kept.truncate(LOOSE);
+        }
+    }
+
     /// How many times time's span has been halved in ctx from the search's
     /// (log2 of their widths' ratio).
     fn t_halvings(&self, ctx: &Ctx) -> f64 {
@@ -2406,131 +2492,35 @@ fn segment_box(o: V3, dir: V3, t0: f64, t1: f64) -> [I; 3] {
     std::array::from_fn(|k| add_o(I::point(o[k]), mul_o(I::new(t0, t1), I::point(dir[k]))))
 }
 
-// ---------------------------------------------------------------- mass properties
-
-/// What `moments` sums over a region: rho * [1, x, y, z, xx, yy, zz, xy,
-/// yz, zx], the region's volume, and the cells it summed.
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Moments {
-    pub m: [f64; 10],
-    pub volume: f64,
-    /// Cells proven full of material, and cells the surface may cross.
-    pub full: usize,
-    pub surface: usize,
-}
-
-/// Integrals of rho * [1, x, y, z, xx, yy, zz, xy, yz, zx] over the region
-/// shape < 0 (rho = 1 when None), and its volume, at cells of `h`. Full
-/// cells use 2x2x2 Gauss points, exact where rho is linear across them
-/// (`full_moments`); surface cells use partial-volume weighted samples.
-pub fn moments(shape: &Arc<Tape>, rho: Option<&Tape>, ctx: &Ctx, lo: V3, hi: V3, h: f64) -> Moments {
-    let (grid, root) = root_for(lo, hi, h, 1);
-    // The weighted terms, then the volume.
-    let terms = |p: V3, v: f64, r: f64| -> [f64; 11] {
-        let w = v * r;
-        [w, w * p[0], w * p[1], w * p[2], w * p[0] * p[0], w * p[1] * p[1], w * p[2] * p[2], w * p[0] * p[1], w * p[1] * p[2], w * p[2] * p[0], v]
-    };
-    let rho_at = |pts: &[V3]| -> Vec<f64> {
-        match rho {
-            Some(r) => {
-                let mut v = Vec::new();
-                eval_points(r, ctx, pts, &mut v);
-                v
-            }
-            None => vec![1.0; pts.len()],
-        }
-    };
-    let gauss = |c: Cell| -> [f64; 11] {
-        let (a, b) = grid.cell_bounds(c);
-        let g = 0.5 / 3f64.sqrt();
-        let mut pts = Vec::with_capacity(8);
-        for k in 0..8 {
-            pts.push(std::array::from_fn(|ax| {
-                let (m, hw) = (0.5 * (a[ax] + b[ax]), b[ax] - a[ax]);
-                m + if (k >> ax) & 1 == 1 { g } else { -g } * hw
-            }));
-        }
-        let r = rho_at(&pts);
-        let vol = (grid.h * c.size as f64).powi(3) / 8.0;
-        let mut acc = [0.0; 11];
-        for (p, r) in pts.iter().zip(&r) {
-            for (x, y) in acc.iter_mut().zip(terms(*p, vol, *r)) {
-                *x += y;
-            }
-        }
-        acc
-    };
-    // Each cell's moments, and the full and surface cells they took.
-    let parts: Vec<([usize; 2], [f64; 11])> = descend(
-        shape,
-        ctx,
-        &grid,
-        root,
-        1,
-        &|t: &Arc<Tape>, c| {
-            let pts = samples(&grid, c, 2);
-            let fg = eval_grads(t, ctx, &pts);
-            let r = rho_at(&pts);
-            let vol = cell_volume(&grid, c) / pts.len() as f64;
-            let s = grid.cell_sides(c).map(|x| x / 2.0);
-            let mut acc = [0.0; 11];
-            for ((p, f), r) in pts.iter().zip(&fg).zip(&r) {
-                for (a, x) in acc.iter_mut().zip(terms(*p, occupancy(f, s) * vol, *r)) {
-                    *a += x;
-                }
-            }
-            Some(([0, 1], acc))
-        },
-        &|_: &Arc<Tape>, c| Some(full_moments(rho, ctx, &grid, c, &gauss)),
-    );
-    let (cells, out) = sum_moments(&parts);
-    Moments { m: std::array::from_fn(|k| out[k]), volume: out[10], full: cells[0], surface: cells[1] }
-}
-
-/// A full cell's moments (`gauss`, its Gauss points') and the cells they
-/// took: its halves' where rho is not linear across it and its integral
-/// over it is not bounded (`full_integral`) to ACCURACY of itself, down to
-/// cells of one grid step. Points alone miss a layer of density between
-/// them at every cell size; bounds see it.
-fn full_moments(rho: Option<&Tape>, ctx: &Ctx, grid: &Grid, c: Cell, gauss: &(dyn Fn(Cell) -> [f64; 11] + Sync)) -> ([usize; 2], [f64; 11]) {
-    if let Some(r) = rho
-        && c.size > 1
-    {
-        let (b, linear) = full_integral(r, ctx, grid, c, c.size);
-        if !linear && !(b.hi - b.lo <= ACCURACY * ink_core::interval::mag(b)) {
-            let halves: Vec<([usize; 2], [f64; 11])> = c.children().par_iter().map(|&k| full_moments(rho, ctx, grid, k, gauss)).collect();
-            return sum_moments(&halves);
-        }
-    }
-    ([1, 0], gauss(c))
-}
+// ---------------------------------------------------------------- integrals
 
 /// Integrals of each of `gs` (None: 1) over the region shape < 0 at cells
-/// of `h`, taken as `moments` takes rho's: at the 2x2x2 Gauss points of
-/// cells full of material (halved where the first integrand is not linear
-/// across one and its integral there is not bounded to ACCURACY of itself,
-/// as `full_moments` does), at samples weighted by the material in them
-/// (`occupancy`) in cells the surface may cross. Every integrand at the
-/// same points, in one descent. With each integral, its surface cells'
-/// share of it were they empty or full (the sum of |g| times a sample's
-/// whole share of its cell: how far the estimate could move, sampled, not
-/// bounded), and the cells it took, full and surface.
-pub fn sums(shape: &Arc<Tape>, gs: &[Option<&Tape>], ctx: &Ctx, lo: V3, hi: V3, h: f64) -> (Vec<f64>, Vec<f64>, [usize; 2]) {
+/// of `h`; with `moments`, the first's times [1, x, y, z, xx, yy, zz, xy,
+/// yz, zx] in its place (mass moments, rho the first). Cells full of
+/// material use their 2x2x2 Gauss points, exact where an integrand is
+/// linear across them, halved where the first is not and its integral
+/// there is not bounded (`full_integral`) to ACCURACY of itself, down to
+/// cells of one grid step: points alone miss a layer of density between
+/// them at every cell size; bounds see it. Cells the surface may cross use
+/// samples weighted by the material in them (`occupancy`). Every integrand
+/// at the same points, in one descent.
+pub fn sums(shape: &Arc<Tape>, gs: &[Option<&Tape>], moments: bool, ctx: &Ctx, lo: V3, hi: V3, h: f64) -> Sums {
     let (grid, root) = root_for(lo, hi, h, 1);
-    let n = gs.len();
-    // Each integral at points weighted `w`, then (with `whole`, each
-    // point's whole share) the surface's.
-    let at = |pts: &[V3], w: &[f64], whole: Option<f64>| -> Vec<f64> {
-        let mut out = vec![0.0; 2 * n];
-        for (k, g) in gs.iter().enumerate() {
+    let n = gs.len() + if moments && !gs.is_empty() { 9 } else { 0 };
+    // Each integral at points weighted `w`.
+    let at = |pts: &[V3], w: &[f64]| -> Vec<f64> {
+        let mut out = vec![0.0; n];
+        let mut k = 0;
+        for (i, g) in gs.iter().enumerate() {
             let mut v = Vec::new();
             match g {
                 Some(t) => eval_points(t, ctx, pts, &mut v),
                 None => v.resize(pts.len(), 1.0),
             }
-            out[k] = v.iter().zip(w).map(|(a, b)| a * b).sum();
-            if let Some(s) = whole {
-                out[n + k] = v.iter().map(|a| a.abs() * s).sum();
+            let terms: &[fn(V3) -> f64] = if i == 0 && moments { &MOMENTS } else { &MOMENTS[..1] };
+            for term in terms {
+                out[k] = v.iter().zip(pts).zip(w).map(|((a, p), b)| a * term(*p) * b).sum();
+                k += 1;
             }
         }
         out
@@ -2539,7 +2529,7 @@ pub fn sums(shape: &Arc<Tape>, gs: &[Option<&Tape>], ctx: &Ctx, lo: V3, hi: V3, 
         let (a, b) = grid.cell_bounds(c);
         let g = 0.5 / 3f64.sqrt();
         let pts: Vec<V3> = (0..8).map(|k| std::array::from_fn(|ax| 0.5 * (a[ax] + b[ax]) + if (k >> ax) & 1 == 1 { g } else { -g } * (b[ax] - a[ax]))).collect();
-        at(&pts, &[(grid.h * c.size as f64).powi(3) / 8.0; 8], None)
+        at(&pts, &[(grid.h * c.size as f64).powi(3) / 8.0; 8])
     };
     fn full(first: Option<&Tape>, ctx: &Ctx, grid: &Grid, c: Cell, gauss: &(dyn Fn(Cell) -> Vec<f64> + Sync)) -> ([usize; 2], Vec<f64>) {
         if let Some(r) = first
@@ -2566,15 +2556,17 @@ pub fn sums(shape: &Arc<Tape>, gs: &[Option<&Tape>], ctx: &Ctx, lo: V3, hi: V3, 
             let vol = cell_volume(&grid, c) / pts.len() as f64;
             let s = grid.cell_sides(c).map(|x| x / 2.0);
             let w: Vec<f64> = fg.iter().map(|f| occupancy(f, s) * vol).collect();
-            Some(([0, 1], at(&pts, &w, Some(vol))))
+            Some(([0, 1], at(&pts, &w)))
         },
         &|_: &Arc<Tape>, c| Some(full(first, ctx, &grid, c, &gauss)),
     );
-    let (cells, mut out) = add_sums(parts);
-    out.resize(2 * n, 0.0);
-    let widths = out.split_off(n);
-    (out, widths, cells)
+    let (cells, mut sums) = add_sums(parts);
+    sums.resize(n, 0.0);
+    Sums { sums, cells }
 }
+
+/// The terms of mass moments: [1, x, y, z, xx, yy, zz, xy, yz, zx].
+const MOMENTS: [fn(V3) -> f64; 10] = [|_| 1.0, |p| p[0], |p| p[1], |p| p[2], |p| p[0] * p[0], |p| p[1] * p[1], |p| p[2] * p[2], |p| p[0] * p[1], |p| p[1] * p[2], |p| p[2] * p[0]];
 
 /// `sums`' parts, summed in order.
 fn add_sums(parts: Vec<([usize; 2], Vec<f64>)>) -> ([usize; 2], Vec<f64>) {
@@ -2582,49 +2574,6 @@ fn add_sums(parts: Vec<([usize; 2], Vec<f64>)>) -> ([usize; 2], Vec<f64>) {
         let s = if s.is_empty() { x } else { s.iter().zip(&x).map(|(a, b)| a + b).collect() };
         ([n[0] + m[0], n[1] + m[1]], s)
     })
-}
-
-/// `sums` measured as `measured` measures a mass: at cells of a 100th of
-/// the box, halved until the first integrand's integral moves by at most
-/// ACCURACY of itself on a halving, at cells some of which are proven full
-/// (the rest at the same cells), within PASS_CELLS; at `res`, once, where
-/// given. The integrals, their surface cells' shares (`sums`), their
-/// cells' size, and whether they settled. Cached.
-pub fn measured_sums(shape: &Arc<Tape>, gs: &[Option<&Tape>], ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>) -> (Vec<f64>, Vec<f64>, f64, bool) {
-    let tapes: Vec<&Tape> = std::iter::once(&**shape).chain(gs.iter().flatten().copied()).collect();
-    crate::cache::memo_region(
-        "measured sums",
-        &tapes,
-        ctx,
-        (lo, hi),
-        |fp| {
-            fp.word(res.map_or(0, |r| 1 + r.to_bits())).word(gs.len() as u64);
-            gs.iter().for_each(|g| _ = fp.word(g.is_some() as u64));
-        },
-        |ctx| {
-            let mut h = res.unwrap_or(max_extent(lo, hi) / 100.0);
-            let (mut now, mut widths, mut cells) = sums(shape, gs, ctx, lo, hi, h);
-            let mut halved = false;
-            loop {
-                let first = now.first().copied().unwrap_or(0.0);
-                if res.is_some() || !first.is_finite() || (halved && (cells[0] + cells[1]).saturating_mul(4) > PASS_CELLS) {
-                    return (now, widths, h, res.is_some());
-                }
-                let (next, w, c) = sums(shape, gs, ctx, lo, hi, h / 2.0);
-                let change = (next.first().copied().unwrap_or(0.0) - first).abs();
-                (h, now, widths, cells, halved) = (h / 2.0, next, w, c, true);
-                let moved = if change == 0.0 { 0.0 } else { change / now[0].abs() };
-                if cells[0] > 0 && moved <= ACCURACY {
-                    return (now, widths, h, true);
-                }
-            }
-        },
-    )
-}
-
-/// Cells' moments and counts, summed in order.
-fn sum_moments(parts: &[([usize; 2], [f64; 11])]) -> ([usize; 2], [f64; 11]) {
-    parts.iter().fold(([0; 2], [0.0; 11]), |(n, s), (m, x)| ([n[0] + m[0], n[1] + m[1]], std::array::from_fn(|k| s[k] + x[k])))
 }
 
 /// Eigenvalues and eigenvectors (columns) of a symmetric 3x3 matrix (Jacobi).
@@ -2749,11 +2698,11 @@ mod tests {
         let rho = b.bin(BinOp::Add, base, layer);
         let rho = b.tape(rho);
         let (lo, hi, _) = bounds(&tape, &ctx, LO, HI).unwrap();
-        let m = measured(&tape, Some(&rho), &ctx, lo, hi, None);
-        assert!((m.moments.m[0] / 1.2 - 1.0).abs() <= ACCURACY, "{m:?}");
+        let m = measured(&tape, &[Some(&rho), None], true, &ctx, lo, hi, None);
+        assert!((m.sums[0] / 1.2 - 1.0).abs() <= ACCURACY, "{m:?}");
         // At a cell size asked for, the layer is resolved to it.
-        let m = measured(&tape, Some(&rho), &ctx, lo, hi, Some(0.025));
-        assert!((m.moments.m[0] / 1.2 - 1.0).abs() <= ACCURACY, "{m:?}");
+        let m = measured(&tape, &[Some(&rho), None], true, &ctx, lo, hi, Some(0.025));
+        assert!((m.sums[0] / 1.2 - 1.0).abs() <= ACCURACY, "{m:?}");
     }
 
     #[test]
@@ -2770,7 +2719,7 @@ mod tests {
         let sums = |at: usize| {
             let mut gs = vec![None; 65];
             gs[at] = Some(&two);
-            measured_sums(&shape, &gs, &ctx, [-1.0; 3], [1.0; 3], Some(0.5)).0
+            measured(&shape, &gs, false, &ctx, [-1.0; 3], [1.0; 3], Some(0.5)).sums
         };
         let (a, b) = (sums(0), sums(64));
         let near = |x: f64, y: f64| (x - y).abs() <= 1e-9 * y;
@@ -3057,7 +3006,7 @@ mod tests {
         let tape = Arc::new(b.tape(f));
         let (lo, hi) = ([-0.5, -0.5, -0.5], [7.5, 7.5, 1.5]);
         let region = std::array::from_fn(|k| I::new(lo[k], hi[k]));
-        let q = Empty { tol: 0.01, region, asked: region, loose: AtomicBool::new(false), t_band: None };
+        let q = Empty { tol: 0.01, region, asked: region, loose: Default::default(), t_band: None };
         let root = search::Node { b: lattice(lo, hi, 0.01).unwrap(), ctx: Arc::new(Ctx::new(0.0, vec![])), state: (Kept::of(&tape), Kept::of(&tape)) };
         let mut s = search::Search::new(&q, vec![root], search::Precision::holds(0.015));
         for _ in 0..20 {

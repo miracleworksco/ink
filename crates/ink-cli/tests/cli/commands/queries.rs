@@ -110,6 +110,15 @@ fn a_curved_bodys_volume_estimate_is_close() {
 }
 
 #[test]
+fn an_empty_instance_measured_once_gives_no_spread() {
+    // A spread is shown only by a halving: `--res` measures once.
+    let dir = Scratch::new("empty-instance");
+    let m = dir.model("empty.ink", "(import \"std\")\n(body gone (shape (max (sphere 1) (move (sphere 1) 5 0 0))))\n(assembly root (instance g gone))\n");
+    let d = ink(["mass", &m, "--res", ".1"]);
+    assert!(d["targets"].as_array().unwrap().iter().all(|t| t.get("spread").is_none()), "{}", pretty(&d));
+}
+
+#[test]
 fn a_mass_key_no_target_has_is_refused() {
     // Every record has its target, so a typo kept only that, silently.
     let sphere = sphere();

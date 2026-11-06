@@ -49,7 +49,7 @@ impl Rigid {
         (a, b)
     }
 
-    /// Moments [m, mx, my, mz, xx, yy, zz, xy, yz, zx] (see `query::moments`)
+    /// Moments [m, mx, my, mz, xx, yy, zz, xy, yz, zx] (see `query::sums`)
     /// of a body moved by this placement: exact in real numbers (the centre
     /// of mass moves, the second moments about it rotate). Estimates, rounded
     /// to nearest.

@@ -362,6 +362,21 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
     }
     // The answer's accuracy: null, unknown or an estimate.
     accuracy_fields(&mut r, c.status, c.asked);
+    // How a guaranteed emptiness held: outright, or only to the accuracy
+    // (with the deepest violating point its loose cells' centres showed).
+    match c.held.filter(|_| c.holds_guaranteed()) {
+        Some(crate::claims::Held::Outright) => r["held"] = json!("outright"),
+        Some(crate::claims::Held::ToAccuracy { near }) => {
+            r["held"] = json!("to the accuracy");
+            if let Some((depth, at)) = near {
+                r["near"] = json!({"depth": depth});
+                if let Some(p) = at {
+                    r["near"]["at"] = v3(p);
+                }
+            }
+        }
+        None => {}
+    }
     if let Some(m) = &c.motion {
         motion_fields(&mut r, m);
         left_fields(&mut r, m, all);

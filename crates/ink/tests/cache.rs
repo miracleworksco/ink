@@ -162,8 +162,8 @@ fn a_claim_is_cached_exactly_when_its_question_is_unchanged() {
     let (lo, hi, _) = v.bounds(bar).unwrap();
     let tape = v.clipped(bar);
     let misses = || ink::cache::MISSES.load(std::sync::atomic::Ordering::Relaxed);
-    let (before, first) = (misses(), ink::query::measured(&tape, None, &v.ctx, lo, hi, None));
-    let (after, again) = (misses(), ink::query::measured(&tape, None, &v.ctx, lo, hi, None));
+    let (before, first) = (misses(), ink::query::measured(&tape, &[None, None], true, &v.ctx, lo, hi, None));
+    let (after, again) = (misses(), ink::query::measured(&tape, &[None, None], true, &v.ctx, lo, hi, None));
     assert_eq!((after - before, misses() - after), (1, 0), "measured once, then read");
     assert_eq!(format!("{first:?}"), format!("{again:?}"));
 }

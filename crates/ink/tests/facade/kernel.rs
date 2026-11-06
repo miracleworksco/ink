@@ -172,6 +172,21 @@ fn a_box_over_a_motion_is_not_a_moments_found_before() {
     assert_eq!(v.bounds(f), Some(moment));
 }
 
+/// A mass is settled only where a halving showed it settling: a 0.3 mm
+/// layer of density in a 100 mm cube (29.2 g) is not settled at 42 g with
+/// the last halving having moved it 76%, nor a layer every first cell
+/// misses settled at zero without a halving.
+#[test]
+fn a_mass_is_settled_only_by_a_halving_that_shows_it() {
+    for (src, mass) in [("(+ .00001 (select (max (- (abs x) .15) (- (abs y) 40) (- (abs z) 40)) .01 0))", 29.2), ("(select (- (abs x) .15) .001 0)", 3.0)] {
+        let (mut v, f) = view_of(&format!("(def f (box 100 100 100)) (def rho {src})"));
+        let ink::lang::Value::Field(rho) = *v.doc.def("rho").unwrap() else { panic!("rho is a field") };
+        let m = v.moments(f, Some(rho), None).unwrap();
+        assert!(m.coarse.is_some() && (!m.settled || (m.sums[0] / mass - 1.0).abs() <= 0.05), "{src}: {m:?}");
+        assert!(m.settled || m.unsettled().is_some());
+    }
+}
+
 /// A view and its def `f` (a field), at t = 0.
 fn view_of(src: &str) -> (ink::view::ModelView, u32) {
     let d = doc(src);
@@ -201,7 +216,7 @@ fn a_views_answers_are_kept_by_the_scope_they_were_found_over() {
     assert!(point < 1.2 && ranged >= 11.0 && width(&mut v, f) == point, "{point} {ranged}");
     let (mut v, f) = view_of("(param p 2) (def f (box p 2 2))");
     v.set_param_spans(&[(0, (2.0, 22.0))]).unwrap();
-    let mass = |v: &mut ink::view::ModelView| v.moments(f, None, Some(0.5)).unwrap().moments.m[0];
+    let mass = |v: &mut ink::view::ModelView| v.moments(f, None, Some(0.5)).unwrap().sums[0];
     let short = mass(&mut v);
     let long = v.at_point(Ctx { params: vec![22.0], ..v.ctx.clone() }, |v| mass(v));
     assert!((short / 8.0 - 1.0).abs() < 0.05 && (long / 88.0 - 1.0).abs() < 0.05 && mass(&mut v) == short, "{short} {long}");
@@ -220,7 +235,7 @@ fn a_views_answers_are_kept_by_the_scope_they_were_found_over() {
         ink::lang::Value::Field(f) => *f,
         _ => panic!("rho is a field"),
     };
-    let weigh = |v: &mut ink::view::ModelView| v.moments(f, Some(rho), Some(0.5)).unwrap().moments.m[0];
+    let weigh = |v: &mut ink::view::ModelView| v.moments(f, Some(rho), Some(0.5)).unwrap().sums[0];
     let light = weigh(&mut v);
     let heavy = v.at_point(Ctx::new(0.0, vec![1.0]), |v| weigh(v));
     assert!((heavy / light - 10.0).abs() < 0.001 && weigh(&mut v) == light, "{light} {heavy}");
@@ -1028,7 +1043,7 @@ fn mass_integrates_graded_density() {
     let it = d.items("b").unwrap().remove(0);
     let ink::lang::Value::Field(g) = d.placed_attrs(&it)[0].1 else { panic!() };
     let gt = Tape::new(&d.g, g);
-    let r = query::moments(&tape, Some(&gt), &ctx, [-5.0; 3], [5.0; 3], 0.1).m[0];
+    let r = query::sums(&tape, &[Some(&gt)], true, &ctx, [-5.0; 3], [5.0; 3], 0.1).sums[0];
     assert!((r - 1000.0).abs() < 1.0, "{r}");
 }
 

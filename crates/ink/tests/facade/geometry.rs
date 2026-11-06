@@ -633,7 +633,7 @@ fn volume(src: &str, res: f64) -> f64 {
     let (c, r) = d.clip_reach(f, &CTX);
     let t = Arc::new(Tape::new(&d.g, c));
     let (blo, bhi, _) = ink::query::bounds(&t, &CTX, r.lo, r.hi).unwrap();
-    ink::query::moments(&t, None, &CTX, blo, bhi, res).volume
+    ink::query::sums(&t, &[None], false, &CTX, blo, bhi, res).sums[0]
 }
 
 #[test]
@@ -2497,6 +2497,32 @@ fn a_placement_past_the_floats_is_not_integrated_in_its_frame() {
 /// slightly larger region and disproven outside it, its mass bracketed;
 /// two densities (two bodies, or one body's density field, placed and
 /// turned) move the centre of mass off the centroid, to 7.5 of 20.
+/// Each part of an integral is measured from its own box: a 0.01 mm shim
+/// beside a 25 mm block holds its volume (0.01) under 0.0105, where cells
+/// sized by the block, sharing one cell budget, read it 0.0124.
+#[test]
+fn an_integral_over_parts_of_mixed_size_resolves_each() {
+    let src = "(import \"std\")\n\
+               (body block (shape (box 25 25 25)) (attr g 0))\n\
+               (body shim (shape (box 1 1 .01)) (attr g 1))\n\
+               (assembly root (instance b block) (instance s shim (at (move 300 0 0))))\n\
+               (assert shim-volume (integral root (attr g) < .0105))\n";
+    let got = assert_statuses(src, None);
+    assert_eq!(got[0].1.status, ink::claims::Status::Holds, "{:?}", got[0].1);
+}
+
+/// A claim stops only after a halving: a 0.3 mm layer of density (3 g)
+/// every sample at a 100th of the cube misses reads 0 g there, under 1 g
+/// with nothing to say otherwise.
+#[test]
+fn an_integral_claim_is_not_decided_before_a_halving() {
+    let src = "(import \"std\")\n\
+               (body b (shape (box 100 100 100)) (attr density (select (- (abs x) .15) .001 0)))\n\
+               (assert light (integral b (attr density) < 1))\n";
+    let got = assert_statuses(src, None);
+    assert_eq!(got[0].1.status, ink::claims::Status::Fails, "{:?}", got[0].1);
+}
+
 #[test]
 fn integral_and_mean_claims() {
     use ink::claims::{Evidence, Status::*};

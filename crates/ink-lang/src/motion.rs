@@ -1284,7 +1284,7 @@ mod tests {
         let (_, world) = moving_frame(v, &claim, span).expect("a moving frame");
         let k = v.t_param();
         let fr = Frame::new(v, &claim, world, k, span, None);
-        let proof = Proof { verdict: Verdict::Disproven { witness: y, t: 0.0, value: -0.1, params: vec![] }, res: 0.05, tol: 0.05, exact: false };
+        let proof = Proof { verdict: Verdict::Disproven { witness: y, t: 0.0, value: -0.1, params: vec![] }, res: 0.05, tol: 0.05, exact: false, loose: Vec::new() };
         let pair = Evidence::ClearanceSearch { verdict: Verdict::Disproven { witness: y, t: 0.0, value: 0.0, params: vec![] }, pair: Some((y, y)), res: 0.05 };
         (fr.confirmed(v, Evidence::Empty(proof)), fr.confirmed(v, pair))
     }

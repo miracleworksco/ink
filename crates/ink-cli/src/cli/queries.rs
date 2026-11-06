@@ -558,10 +558,14 @@ pub(crate) fn cmd_bounds(s: &mut Session, a: &Args) -> Result<J, InkError> {
     Ok(json!({"targets": out, "union": union}))
 }
 
-/// A measured answer's cells: `res`, where halved to them `coarse_res` and
-/// `relative_change`, and `unsettled` where it stopped short.
+/// A measured answer's cells: `res`, where halved to them the mass's
+/// `spread` relative to it, `coarse_res` and `relative_change`, and
+/// `unsettled` where it stopped short.
 fn measured_json(r: &mut J, m: &query::Measured) {
     r["res"] = n(m.res);
+    if let Some(s) = m.relative_spread() {
+        r["spread"] = n(s);
+    }
     if let Some((coarse, change)) = m.coarse {
         r["coarse_res"] = n(coarse);
         r["relative_change"] = n(change);
@@ -1763,9 +1767,10 @@ pub(crate) fn cmd_mass(s: &mut Session, a: &Args) -> Result<J, InkError> {
         let found = if let Some(l) = local {
             let rho = density_of(&it.attrs, &mut s.doc)?.map(|d| d.0);
             let body = s.moments(l.shape, rho, res);
-            let none = query::Measured { moments: query::Moments { m: [0.0; 10], volume: 0.0, full: 0, surface: 0 }, res: 0.0, coarse: None, settled: true };
+            let none = query::Measured { sums: vec![0.0; 11], spread: Vec::new(), res: 0.0, coarse: None, cells: [0; 2], settled: true };
             body.map_or(none, |mut b| {
-                b.moments.m = l.at.moments(&b.moments.m);
+                let m = l.at.moments(&b.moments());
+                b.sums[..10].copy_from_slice(&m);
                 b
             })
         } else {
@@ -1789,15 +1794,15 @@ pub(crate) fn cmd_mass(s: &mut Session, a: &Args) -> Result<J, InkError> {
         // none.
         let whole = s.item_whole(it);
         let volume = match whole {
-            true => json!({"estimate": n(found.moments.volume)}),
+            true => json!({"estimate": n(found.volume())}),
             false => json!({"estimate": null}),
         };
         let mut r = match density {
             Some(_) => {
-                for (t, x) in total.iter_mut().zip(found.moments.m) {
+                for (t, x) in total.iter_mut().zip(found.moments()) {
                     *t += x;
                 }
-                mass_json(Some(&found.moments.m), &shape)
+                mass_json(Some(&found.moments()), &shape)
             }
             None => {
                 // By the body it places (a shape that is no body: itself).

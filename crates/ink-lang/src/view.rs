@@ -1008,9 +1008,9 @@ impl ModelView {
         let found = self.per_body("mass", shape, rho.as_slice(), res, |v| {
             let (lo, hi, _) = v.bounds(shape)?;
             let rho = rho.map(|f| Tape::new(&v.doc.g, f));
-            Some(ink_kernel::query::measured(&v.clipped(shape), rho.as_ref(), &v.ctx, lo, hi, res))
+            Some(ink_kernel::query::measured(&v.clipped(shape), &[rho.as_ref(), None], true, &v.ctx, lo, hi, res))
         });
-        *found
+        (*found).clone()
     }
 
     /// What query `what` finds of field `shape` (with `with`, the other

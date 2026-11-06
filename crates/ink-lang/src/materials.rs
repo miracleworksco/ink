@@ -84,9 +84,9 @@ impl ParamProvider for PublishedMass {
                 return Err(format!("{}: a published mass needs bounded bodies", self.name));
             }
             let Some((lo, hi, _)) = query::bounds(shape, &ctx, reach.lo, reach.hi) else { return Ok(0.0) };
-            let v = query::measured(shape, rho.map(|r| &**r), &ctx, lo, hi, None);
+            let v = query::measured(shape, &[rho.map(|r| &**r), None], true, &ctx, lo, hi, None);
             unsettled = unsettled.take().or(v.unsettled());
-            Ok(v.moments.m[0])
+            Ok(v.sums[0])
         };
         let own = self.own.iter().map(|(s, rho, n)| Ok(n * measure(s, Some(rho))?)).sum::<Result<f64, String>>()?;
         let volume = self.shared.iter().map(|(s, n)| Ok(n * measure(s, None)?)).sum::<Result<f64, String>>()?;
