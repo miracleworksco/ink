@@ -1,0 +1,19 @@
+[package]
+name = "ink-lang"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "ink's language: models as text expanded to fields, documents, claims, the registry and reader packages plug into, and load-time programming"
+
+[dependencies]
+ink-core.workspace = true
+ink-kernel.workspace = true
+ink-io.workspace = true
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+[lints]
+workspace = true

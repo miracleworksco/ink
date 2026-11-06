@@ -1,0 +1,16 @@
+[package]
+name = "ink-core"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "The ink core: field graphs, tapes, intervals, evaluators, and sampled fields"
+
+[dependencies]
+libm = "0.2.16"
+rayon = "1"
+rustc-hash = "2"
+
+[lints]
+workspace = true

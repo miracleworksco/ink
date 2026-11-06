@@ -1,0 +1,19 @@
+[package]
+name = "ink-design"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "ink's design package: solve systems and optimize, with their numerics (bounded Nelder-Mead; the method of moving asymptotes is ink-mma's)"
+
+[dependencies]
+ink-core.workspace = true
+ink-kernel.workspace = true
+ink-mma.workspace = true
+libm = "0.2.16"
+ink-lang.workspace = true
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+[lints]
+workspace = true

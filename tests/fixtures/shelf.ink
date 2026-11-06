@@ -1,0 +1,31 @@
+; Four bodies, repeated in two subassemblies: export and contact inputs
+; (its study, of the sim package, is shelf-study.ink).
+(import "std")
+(def holes (symmetric-x (move (cylinder-z 2.75 10) 11.5 25 42.5)))
+(body bracket
+  (shape (subtract (min (move (box 34 5 45) 0 2.5 22.5)
+                       (move (box 34 40 5) 0 20 42.5))
+    (min holes (symmetric-x (move (cylinder-y 2.75 40) 11.5 0 20)))))
+  (attr color (vec (+ .15 (* .012 z)) .45 (- .85 (* .01 z))))
+  (attr density 1.27g/cm3))
+(fn screw (length)
+  (min (move (cylinder-z 4.2 3) 0 0 -1.5)
+       (tag shank (move (cylinder-z 2.4 length) 0 0 (* .5 length)))))
+(body screw-35 (shape (screw 35)) (attr color "#9A9A9A"))
+(body screw-16 (shape (screw 16)) (attr color "#9A9A9A"))
+(body board (shape (box 300 150 18)) (attr color "#B8875A"))
+(assembly bracket-set
+  (instance bracket bracket)
+  (instance wall-l screw-35 (at (rot-x 90) (move -11.5 5 20)))
+  (instance wall-r screw-35 (at (rot-x 90) (move 11.5 5 20)))
+  (instance shelf-l screw-16 (at (move -11.5 25 40)))
+  (instance shelf-r screw-16 (at (move 11.5 25 40))))
+(assembly root
+  (instance board board (at (move 0 75 54)))
+  (instance left bracket-set (at (move -100 0 0)))
+  (instance right bracket-set (at (move 100 0 0)))
+  (contact left/shelf-l board (shape-of screw-16 shank))
+  (contact left/shelf-r board (shape-of screw-16 shank))
+  (contact right/shelf-l board (shape-of screw-16 shank))
+  (contact right/shelf-r board (shape-of screw-16 shank)))
+(assert fits-envelope (within (shape-of bracket) (-17 0 0) (17 40 45)) (res .1))

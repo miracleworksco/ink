@@ -1,0 +1,5 @@
+{
+  "name": "ISO 4762 M3×8 socket head cap screw",
+  "family": "ISO4762",
+  "drive": {"kind": "hex-socket", "size": 2.5, "frame": "drive"}
+}

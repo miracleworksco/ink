@@ -1,0 +1,5 @@
+(import "std")
+(def standards (read-json "standards.json"))
+(def spec (read-json "record.json"))
+(def radius 2) (def length 4) (def shaft (cylinder-z radius length))
+(body part (shape shaft) (attr color "#aaaaaa") (attr spec spec) (frame seat (at)))

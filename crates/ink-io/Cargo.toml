@@ -1,0 +1,20 @@
+[package]
+name = "ink-io"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "ink file formats and pictures: meshes simplified for export and seeing, STL, 3MF and GLB export, PNG, software render, STL import"
+
+[dependencies]
+ink-core.workspace = true
+ink-kernel.workspace = true
+libm = "0.2.16"
+rayon = "1"
+miniz_oxide = "0.8"
+crc32fast = "1"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

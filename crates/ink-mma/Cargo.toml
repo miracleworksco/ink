@@ -1,0 +1,11 @@
+[package]
+name = "ink-mma"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "ink's method of moving asymptotes: the gradient optimizer of the design package (optimize), for any package to use"
+
+[lints]
+workspace = true

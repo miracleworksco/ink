@@ -1,0 +1,230 @@
+//! Refusals of bad arguments, and the plain queries: eval, bounds, mass's volume,
+//! slice (its DXF too) and components.
+
+use super::*;
+use serde_json::json;
+
+#[test]
+fn an_error_in_a_model_says_its_line() {
+    let s = Scratch::new("arity");
+    let bad = s.model("bad.ink", "(import \"std\")\n(body b (shape (sphere 1 2)))\n");
+    let d = ink_err(["check", &bad]);
+    assert!(d["error"]["at"]["line"] == 2, "{}", pretty(&d));
+}
+
+#[test]
+fn a_cell_size_or_moment_that_is_not_a_finite_positive_number_is_refused() {
+    let sphere = sphere();
+    for v in ["0", "-1", "inf", "nan"] {
+        let e = &ink_err(["assert", &sphere, "--res", v])["error"];
+        assert!(e["message"].as_str().unwrap().contains(&format!("--res expects a cell size above 0, got '{v}'")), "--res {v}: {}", pretty(e));
+    }
+    // A moment is a finite number of seconds: --t nan is refused, not a
+    // solve on t giving its load-time values, as if solved.
+    for v in ["nan", "inf"] {
+        let e = &ink_err(["check", &sphere, "--t", v])["error"];
+        assert!(e["message"].as_str().unwrap().contains(&format!("--t expects a moment, a finite number of seconds, got '{v}'")), "--t {v}: {}", pretty(e));
+    }
+}
+
+/// `ink ARGS` is refused, its message containing `says` and its hint `hint`.
+fn refused(args: &[&str], says: &str, hint: Option<&str>) {
+    let e = &ink_err(args)["error"];
+    assert!(
+        e["message"].as_str().unwrap().contains(says) && hint.is_none_or(|h| e["hint"].as_str().unwrap_or("").contains(h)),
+        "ink {}: wanted {says:?} (hint {hint:?}):\n{}",
+        args.join(" "),
+        pretty(e)
+    );
+}
+
+#[test]
+fn an_option_a_command_does_not_read_or_a_stray_argument_is_refused_with_a_hint() {
+    // A mistyped --t-span would leave a claim proven at t = 0 only.
+    let s = Scratch::new("options");
+    let moving = s.model("moving-value.ink", "(assert late (value t < 0.5))\n");
+    let sphere = sphere();
+    let d = ink(["assert", &moving, "--t-span", "0:1"]);
+    assert_eq!(verdict(&d["asserts"][0]), "fails", "--t-span is read: {}", pretty(&d));
+    let jpg = s.path("x.jpg");
+    let cases: &[(&[&str], &str, Option<&str>)] = &[
+        (&["assert", &moving, "--tspan", "0:1"], "unknown option --tspan for 'assert'", Some("did you mean '--t-span'?")),
+        (&["assert", &moving, "--params", "r=2"], "unknown option --params for 'assert'", Some("did you mean '--param'?")),
+        (&["std", "extra"], "unexpected argument 'extra'", None),
+        (&["spec", "model.ink"], "unexpected argument 'model.ink'", Some("ink spec --section NAME; use ink check FILE")),
+        (&["help", "--typo"], "unknown option --typo for 'help'", None),
+        (&["mesh", &sphere, "--format", "stl"], "unknown option --format for 'mesh'", Some("'mesh' takes --compact --param --t --nominal --target --out --res")),
+        (&["spec", "--section", "nosuch"], "no section of the reference is called 'nosuch'", Some("ink spec --contents")),
+        (&["check", &moving, "--res", "1"], "unknown option --res for 'check'", Some("--res is an option of")),
+        (&["assert", &moving, &sphere], &format!("unexpected argument '{sphere}'"), Some("usage: ink assert")),
+        (&["render", &sphere, "--out", &jpg], "render writes a PNG", None),
+        (&["mesh", &sphere, "--accuracy", "nan"], "--accuracy must be 0 (uniform) or positive", None),
+    ];
+    for (args, says, hint) in cases {
+        refused(args, says, *hint);
+    }
+}
+
+#[test]
+fn eval_reads_points_from_a_file_beyond_what_argv_could_hold() {
+    let s = Scratch::new("eval-file");
+    let pts: Vec<Value> = (0..50000).map(|i| json!([i as f64 * 0.01, 0, 0])).collect();
+    let path = s.model("points.json", &Value::Array(pts).to_string());
+    let d = ink(["eval", &sphere(), "--points", &format!("@{path}")]);
+    let n = d["targets"][0]["results"]["rows"].as_array().map_or(0, Vec::len);
+    assert_eq!(n, 50000, "results for 50000 points");
+}
+
+#[test]
+fn eval_keys_pick_nested_fields_and_compact_makes_a_table() {
+    // Batch output for agents: a table, columns once and a row per point;
+    // --keys picks keys (a dot steps into an object); --compact, a row a
+    // line. The values are the sphere's field and its derivative in r.
+    let sphere = sphere();
+    let base = ["eval", &sphere, "--points", "[[3,4,0],[0,0,0]]", "--param", "r=10", "--keys"];
+    let want = json!({"columns": ["value", "d_dparams.r"], "rows": [[-5.0, -1.0], [-10.0, -1.0]]});
+    let out = Ink::new([&base[..], &["value,d_dparams", "--compact"][..]].concat()).text();
+    let t: Value = serde_json::from_str(&out).unwrap();
+    let t = &t["targets"][0]["results"];
+    assert!(*t == want && out.matches('\n').count() == 4, "--keys picks keys, nested; --compact: a row per line: {out}");
+    let d = ink([&base[..], &["value,d_dparams.r"][..]].concat());
+    assert!(d["targets"][0]["results"] == want, "the same table without --compact: {}", pretty(&d["targets"][0]["results"]));
+    let e = &ink_err(["eval", &sphere, "--points", "[[0,0,0]]", "--keys", "value,d_dparams.q"])["error"];
+    assert!(e["message"].as_str().unwrap().contains("d_dparams.q") && e["hint"].as_str().unwrap_or("").contains("attrs"), "an unknown key lists the keys: {}", pretty(e));
+}
+
+#[test]
+fn bounds_of_a_target_enclose_its_shape() {
+    let d = ink(["bounds", &shelf(), "--target", "bracket"]);
+    let b = &d["targets"][0];
+    assert!(num(&b["min"][0]) <= -17.0 && num(&b["max"][2]) >= 45.0 && num(&b["max"][2]) < 46.0, "{}", pretty(b));
+}
+
+#[test]
+fn a_curved_bodys_volume_estimate_is_close() {
+    // `ink mass`'s volume: an estimate.
+    let d = ink(["mass", &sphere(), "--res", "0.2"]);
+    let v = &d["targets"][0]["volume"];
+    let exact = 4.0 / 3.0 * std::f64::consts::PI * 20f64.powi(3);
+    assert!((num(&v["estimate"]) - exact).abs() / exact < 1e-3, "{}", pretty(v));
+}
+
+#[test]
+fn a_mass_key_no_target_has_is_refused() {
+    // Every record has its target, so a typo kept only that, silently.
+    let sphere = sphere();
+    refused(&["mass", &sphere, "--res", "2", "--keys", "mass,absent"], "--keys: no record has 'absent'", Some("center_of_mass"));
+    let d = ink(["mass", &sphere, "--res", "2", "--keys", "volume"]);
+    let t = &d["targets"][0];
+    assert!(t["target"].is_string() && t["volume"].is_object() && t.get("mass").is_none(), "{}", pretty(&d));
+}
+
+const ARM: [&str; 8] = ["slice", "", "--target", "bracket", "--axis", "z", "--at", "42"];
+
+fn arm(extra: &[&str]) -> Value {
+    let shelf = shelf();
+    let mut args = ARM.to_vec();
+    args[1] = &shelf;
+    args.extend_from_slice(extra);
+    ink(args)
+}
+
+#[test]
+fn a_slice_gives_its_loops_areas_and_bounds_and_points_only_when_asked() {
+    let d = arm(&[]);
+    let want = 34.0 * 40.0 - 2.0 * std::f64::consts::PI * 2.75f64.powi(2);
+    assert!((num(&d["area"]) - want).abs() < 2.0, "arm slice area {} vs {want}", d["area"]);
+    let loops = records(&d["loops"]);
+    let kinds: Vec<&str> = loops.iter().map(|l| l["kind"].as_str().unwrap()).collect();
+    assert!(kinds.iter().filter(|k| **k == "outer").count() == 1 && kinds.iter().filter(|k| **k == "hole").count() == 2 && kinds.len() == 3, "outer and 2 holes: {kinds:?}");
+    // A loop's points only when --keys names them (70 loops of a keyboard
+    // plate are 22 KB).
+    assert!(loops.iter().all(|l| l.get("points").is_none() && l["min"].as_array().map(Vec::len) == Some(2)), "{}", pretty(&d["loops"]));
+    let t = arm(&["--keys", "kind,points", "--compact"]);
+    let t = &t["loops"];
+    assert!(
+        t["columns"] == json!(["kind", "points"])
+            && t["rows"].as_array().unwrap().iter().all(|r| r[1].as_array().is_some_and(|p| p.len() >= 4 && p[0].as_array().map(Vec::len) == Some(2))),
+        "{}",
+        pretty(t)
+    );
+}
+
+#[test]
+fn a_dxf_slice_is_one_closed_polyline_per_loop_at_the_models_accuracy() {
+    // --out FILE.dxf: the outline to cut, at the model's accuracy.
+    let s = Scratch::new("dxf");
+    let dxf = s.path("bracket.dxf");
+    let d = arm(&["--out", &dxf]);
+    assert!(d["res"] == 0.05 && d["accuracy"] == 0.025, "{}", pretty(&d));
+    let text = std::fs::read_to_string(&dxf).unwrap();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let pairs: Vec<(&str, &str)> = lines.as_chunks::<2>().0.iter().map(|&[a, b]| (a, b)).collect();
+    let (mut polys, mut verts) = (vec![], vec![]);
+    for (k, &p) in pairs.iter().enumerate() {
+        if p == ("0", "POLYLINE") {
+            polys.push(pairs[k + 1..k + 6].iter().copied().collect::<std::collections::HashMap<_, _>>());
+        }
+        if p == ("0", "VERTEX") {
+            verts.push((pairs[k + 2].1.trim().parse::<f64>().unwrap(), pairs[k + 3].1.trim().parse::<f64>().unwrap()));
+        }
+    }
+    let mm = pairs.windows(2).any(|w| w[0].1 == "$INSUNITS" && w[1].0 == "70");
+    assert!(
+        polys.len() == 3 && polys.iter().all(|p| p.get("8") == Some(&"bracket") && p.get("70") == Some(&"1")) && mm && pairs.last() == Some(&("0", "EOF")),
+        "polylines {polys:?}, $INSUNITS {mm}, last {:?}",
+        pairs.last()
+    );
+    let loops = records(&d["loops"]);
+    let (b0, b1) = (&loops[0]["min"], &loops[0]["max"]);
+    let inside = |x: f64, y: f64| num(&b0[0]) - 1e-9 <= x && x <= num(&b1[0]) + 1e-9 && num(&b0[1]) - 1e-9 <= y && y <= num(&b1[1]) + 1e-9;
+    assert!(!verts.is_empty() && verts.iter().all(|&(x, y)| inside(x, y)), "vertices outside the outline's bounds {b0} {b1}");
+}
+
+#[test]
+fn components_count_solids_even_of_a_sheet_thinner_than_its_sizes_res() {
+    let d = ink(["components", &shelf(), "--target", "bracket", "--res", "0.3"]);
+    assert!(d["targets"][0]["solids"] == 1, "the bracket is one solid: {}", pretty(&d));
+    // A sheet thinner than its size's res (1.48): meshed again finer, not 0 solids.
+    let s = Scratch::new("components-sheet");
+    let sheet = s.model("sheet.ink", "(import \"std\")\n(body sheet (shape (box 235 235 0.5)))\n");
+    let d = ink(["components", &sheet]);
+    let t = &d["targets"][0];
+    assert!(t["solids"] == 1 && num(&t["res"]) < 1.0, "{}", pretty(t));
+}
+
+#[test]
+fn ray_gives_the_fields_its_help_lists() {
+    // Help said `face`, which ray answered as `name` since the rename.
+    let help = Ink::new(["help"]).text();
+    let line = help.lines().find(|l| l.trim_start().starts_with("ray ")).expect("ray in help");
+    let fields: Vec<&str> = line.rsplit(':').next().unwrap().trim_end().trim_end_matches('.').split(',').map(str::trim).collect();
+    let d = ink(["ray", &sphere(), "--from", "[0,0,50]", "--dir", "[0,0,-1]"]);
+    assert!(fields.len() == 3 && fields.iter().all(|f| d["nearest"].get(*f).is_some()), "{line}: {}", pretty(&d["nearest"]));
+}
+
+#[test]
+fn a_ray_from_inside_says_so_at_its_origin() {
+    // It answered its origin as if a surface, with a zero normal.
+    let s = Scratch::new("ray-inside");
+    let m = s.model("box.ink", "(import \"std\")\n(body b (shape (box 4 6 8)))\n");
+    let d = ink(["ray", &m, "--from", "[0,0,0]", "--dir", "[1,0,0]"]);
+    let h = &d["nearest"];
+    assert!(h["starts_inside"] == true && num(&h["t"]) == 0.0 && h["normal"].is_null(), "{}", pretty(&d));
+    // From outside: where it enters, with its normal, not starting inside.
+    let d = ink(["ray", &m, "--from", "[-10,0,0]", "--dir", "[1,0,0]"]);
+    let h = &d["nearest"];
+    assert!((num(&h["t"]) - 8.0).abs() < 1e-6 && (num(&h["normal"][0]) + 1.0).abs() < 1e-6 && h.get("starts_inside").is_none(), "{}", pretty(&d));
+}
+
+#[test]
+fn an_error_follows_compact_as_an_answer_does() {
+    // An error is printed on one line under --compact, so over ink mcp
+    // (compact by default) too.
+    let s = Scratch::new("compact-error");
+    let bad = s.model("bad.ink", "(body b (shape (sphre 2)))\n");
+    for args in [vec!["check", bad.as_str(), "--compact"], vec!["check", "no-such-file.ink", "--compact"], vec!["check", bad.as_str(), "--bogus", "1", "--compact"]] {
+        let text = Ink::new(&args).run().stdout;
+        assert!(text.trim_end().lines().count() == 1 && text.starts_with("{\"ok\":false"), "{args:?}: {text}");
+    }
+}

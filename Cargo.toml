@@ -1,0 +1,82 @@
+# The workspace: the crate boundaries enforce the layers (docs/CORE.md).
+# crates/ink is the facade: the crates re-exported, and the standard
+# distribution (its packages, `registry()`). The command line is
+# crates/ink-cli (the `ink` binary). Packages beyond the kernel's build on
+# it in workspaces of their own, as a third party's would.
+[workspace]
+members = ["crates/ink-core", "crates/ink-kernel", "crates/ink-io", "crates/ink-lang", "crates/ink-design", "crates/ink-mma", "crates/ink", "crates/ink-cli"]
+resolver = "3"
+
+# What every crate states for publishing. rust-version is the oldest
+# toolchain the workspace builds and tests with (1.94 lacks the atomics'
+# try_update, which ink-io uses).
+[workspace.package]
+version = "0.1.0"
+rust-version = "1.95"
+repository = "https://github.com/miracleworksco/ink"
+
+# The crates as each other's dependencies: a path here, a version where
+# published (cargo package needs both). Keep the versions the workspace's.
+[workspace.dependencies]
+ink-core = { path = "crates/ink-core", version = "0.1.0" }
+ink-kernel = { path = "crates/ink-kernel", version = "0.1.0" }
+ink-io = { path = "crates/ink-io", version = "0.1.0" }
+ink-lang = { path = "crates/ink-lang", version = "0.1.0" }
+ink-design = { path = "crates/ink-design", version = "0.1.0" }
+ink-mma = { path = "crates/ink-mma", version = "0.1.0" }
+ink = { path = "crates/ink", version = "0.1.0" }
+ink-cli = { path = "crates/ink-cli", version = "0.1.0" }
+
+# Lints, for every crate here (each says `[lints] workspace = true`).
+# Clippy's default set stays at warn: `cargo clippy --workspace
+# --all-targets -- -D warnings` is the gate, run by CI on the
+# rust-version toolchain only (a newer clippy's new lints warn, not fail).
+# Those allowed below are wrong for this code, not merely noisy:
+[workspace.lints.clippy]
+# !(a < b) is the NaN guard here: true where either side is NaN, where the
+# lint's a >= b is false. Every site it flagged means that.
+neg_cmp_op_on_partial_ord = "allow"
+# Index loops over small matrices and vectors (a[r][k] -= f * a[c][k])
+# read as the formula; zipped iterators hide it.
+needless_range_loop = "allow"
+# A numeric routine takes its point, box, tolerance and context as they
+# are: a struct made to pass them would name nothing.
+too_many_arguments = "allow"
+# Tuples and closures of the numeric types, spelled where they are used:
+# an alias would name nothing either.
+type_complexity = "allow"
+# The size lints: the enums and errors they flag are answers and
+# continuations made once per question or load, never held in bulk.
+# Boxing to their thresholds (200 and 128 bytes) is an allocation for
+# nothing (motion::Search, at 3 KB, is boxed).
+large_enum_variant = "allow"
+result_large_err = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# `cargo test` (the kernel's suite) builds as the fast profile below does:
+# release speed, no link-time optimisation, in parallel and incrementally,
+# integer overflow panicking. Debug assertions are off, as in fast and
+# release, so the tests run the code that ships.
+[profile.test]
+opt-level = 3
+debug = "line-tables-only"
+codegen-units = 16
+incremental = true
+debug-assertions = false
+overflow-checks = true
+
+# The dev loop (`--profile fast`): release speed without link-time
+# optimisation, compiled in parallel and incrementally, so a small change
+# rebuilds in seconds. Release builds stay as they are. Integer overflow
+# panics here, as in a debug build: the tests that run on it would miss it
+# otherwise.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+overflow-checks = true

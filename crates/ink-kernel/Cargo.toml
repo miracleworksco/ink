@@ -1,0 +1,19 @@
+[package]
+name = "ink-kernel"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "ink kernel services over the core: the one search, octree, queries, motion, surface sampling and thickness, meshing, the result cache"
+
+[dependencies]
+ink-core.workspace = true
+libm = "0.2.16"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+miniz_oxide = "0.8"
+
+[lints]
+workspace = true

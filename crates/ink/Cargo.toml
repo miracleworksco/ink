@@ -1,0 +1,25 @@
+[package]
+name = "ink"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "Implicit Kernel: an implicit geometry kernel for AI agents"
+
+[dependencies]
+ink-core.workspace = true
+ink-kernel.workspace = true
+ink-io.workspace = true
+ink-lang.workspace = true
+# The kernel's packages (docs/CORE.md, Layers): registry() holds them.
+# Others are built on this crate by a distribution of their own.
+ink-design.workspace = true
+
+[dev-dependencies]
+rayon = "1"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+[lints]
+workspace = true

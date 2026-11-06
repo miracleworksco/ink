@@ -1,0 +1,66 @@
+# The kernel's checks on every push and pull request: formatting, clippy,
+# the release build and the tests. They run on Linux and macOS, on stable
+# and on the oldest Rust the workspace supports (its rust-version). Clippy
+# warnings fail only on the oldest. A second job, once on Linux, runs the
+# slow validation `cargo test` leaves out: benchmarks/run.sh.
+# No GPU, no network past crates.io.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: ${{ matrix.os }}, Rust ${{ matrix.rust }}
+    # Only in the public repository and its forks. Every branch push to the
+    # private one it is exported from would spend its minutes.
+    if: github.event.repository.name == 'ink'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 1.95 is the workspace's rust-version (Cargo.toml). Keep the two the same.
+        rust: ["1.95", stable]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --profile minimal --component rustfmt,clippy
+          rustup override set ${{ matrix.rust }}
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust }}
+      - run: cargo fmt --all --check
+      # Warnings fail on 1.95. On stable a new lint only warns.
+      - run: cargo clippy --workspace --all-targets ${{ matrix.rust == '1.95' && '-- -D warnings' || '' }}
+      - run: cargo build --release
+      - run: cargo test
+
+  validation:
+    name: validation (benchmarks/run.sh)
+    if: github.event.repository.name == 'ink'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install 1.95 --profile minimal
+          rustup override set 1.95
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: validation
+      - run: benchmarks/run.sh

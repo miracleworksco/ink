@@ -1,0 +1,34 @@
+[package]
+name = "ink-cli"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "The ink command line and MCP server: commands on a model answer in JSON"
+
+# The library is the command line, given a registry (`ink_cli::main`): a
+# distribution with more packages builds its own `ink` on it.
+[lib]
+path = "src/lib.rs"
+doc = false
+
+# The binary is `ink`, at target/<profile>/ink as before the split.
+[[bin]]
+name = "ink"
+path = "src/main.rs"
+# The facade's library is also `ink`: document the library, not the binary.
+doc = false
+
+[dependencies]
+ink.workspace = true
+rayon = "1"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+# `ink mcp` waits for SIGTERM/SIGINT to remove its files (src/mcp.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

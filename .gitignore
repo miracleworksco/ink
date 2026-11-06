@@ -1,0 +1,8 @@
+target/
+/out
+/benchmarks/out
+__pycache__/
+# Renders are previews regenerated from the .ink files; keep them local.
+renders/
+*.png
+!/docs/**/*.png

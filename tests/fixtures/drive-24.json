@@ -1,0 +1,4 @@
+{
+  "name": "a hand-written nut record, its size written 24.0",
+  "drive": {"kind": "hex", "size": 24.0, "frame": "drive"}
+}

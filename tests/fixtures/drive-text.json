@@ -1,0 +1,4 @@
+{
+  "name": "a hand-written screw record, its size written as text",
+  "drive": {"kind": "hex-socket", "size": "2.50", "frame": "drive"}
+}

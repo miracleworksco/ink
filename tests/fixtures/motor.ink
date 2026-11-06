@@ -1,0 +1,10 @@
+; Cylindrical rotor, bored stator and an exported shaft frame for joint queries.
+(import "std")
+(body rotor (shape (cylinder-z 2.5 46)) (frame shaft (at (move 0 0 23))))
+(body stator (shape (subtract (box 20 20 20) (cylinder-z 2.62 24))) (frame mount (at)))
+(body motor (shape (min (shape-of rotor) (shape-of stator)))
+  (frame mount (at)) (frame shaft (at (move 0 0 23)))
+  (for i (range 4) (frame tap-$i (at (move (* 5 (cos (* i (/ pi 2)))) (* 5 (sin (* i (/ pi 2)))) 0)))))
+(assembly (drive (angle 0))
+  (instance stator stator) (instance rotor rotor (at) (turn z angle))
+  (frame shaft (frame-of rotor shaft)))
