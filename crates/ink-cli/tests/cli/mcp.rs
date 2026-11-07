@@ -143,9 +143,12 @@ impl Server {
         m["jsonrpc"] = json!("2.0");
         self.write(&format!("{m}\n"));
     }
-    /// The next line it writes, as JSON (a minute at most).
+    /// The next line it writes, as JSON. Five minutes at most: a guard
+    /// against a server that never answers, not a limit on how long an
+    /// answer may take (a 10 s claim took over a minute on a loaded 4-core
+    /// CI runner).
     pub fn next(&self) -> Value {
-        let l = self.lines.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|e| panic!("ink mcp wrote nothing in 60 s ({e})"));
+        let l = self.lines.recv_timeout(Duration::from_secs(300)).unwrap_or_else(|e| panic!("ink mcp wrote nothing in 5 min ({e})"));
         serde_json::from_str(&l).unwrap_or_else(|e| panic!("ink mcp wrote non-JSON ({e}): {l}"))
     }
     /// A request and its reply (the next line).
