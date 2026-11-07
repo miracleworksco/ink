@@ -168,7 +168,7 @@ pub struct Check {
     pub held: Option<Held>,
 }
 
-/// How an emptiness claim (empty, disjoint, subset) held.
+/// How an emptiness claim (empty, disjoint, subset), or a void count, held.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Held {
     /// No cell needed the accuracy's allowance: nothing violates it.
@@ -179,15 +179,31 @@ pub enum Held {
     /// params' values it was found at (`At`: none ranged, its params
     /// empty).
     ToAccuracy { near: Option<(f64, Option<(V3, At)>)> },
+    /// A void count to the accuracy: `cells` of air no deeper than it
+    /// (each point within it of a point shown not air) set aside, as an
+    /// emptiness claim's solid is, one at `at`.
+    SetAside { cells: usize, at: Option<V3> },
 }
 
-/// Points measured along each side of a loose cell (Held::candidates).
+/// Points measured along each side of a loose cell (Held::scoped).
 const NEAR_SAMPLES: usize = 8;
 
-/// A proof's deepest points below 0 tried for confirmation (Held::candidates).
+/// A proof's deepest points below 0 tried for confirmation (Held::scoped).
 const CONFIRM_TRIES: usize = 16;
 
 impl Held {
+    /// How the claim held, asked of shapes up to `charge` off the world's
+    /// (a pivot's drift, a drive's slack, charged to its accuracy): nothing
+    /// violating those is not nothing violating the world's, which may
+    /// overlap them by up to the charge, so outright is to the accuracy
+    /// (its near point not measured).
+    pub fn charged(self, charge: f64) -> Held {
+        match self {
+            Held::Outright if charge > 0.0 => Held::ToAccuracy { near: None },
+            h => h,
+        }
+    }
+
     /// Where a proof's loose cells may hold a violating point: each
     /// cell's NEAR_SAMPLES^3 points below 0 on `tape` (the question's, in
     /// its frame, simplified over the cell and its piece of the scope), at
@@ -215,21 +231,11 @@ impl Held {
             let pushed = ink_kernel::scope::pushed(&[&sub], &over, centre).map(|x| x.0);
             for at in std::iter::once(mid).chain(pushed) {
                 eval_points(&sub, &at, &points, &mut values);
-                below.extend(values.iter().zip(&points).filter(|x| *x.0 < 0.0).map(|(f, c)| (*f, *c, At::of(&at))));
+                below.extend(values.iter().zip(&points).filter(|x| ink_core::sign::inside(*x.0)).map(|(f, c)| (*f, *c, At::of(&at))));
             }
         }
         below.sort_by(|a, b| a.0.total_cmp(&b.0));
         below.into_iter().take(CONFIRM_TRIES).map(|x| (x.1, x.2)).collect()
-    }
-
-    /// `scoped`'s points (interfere's pairs, which read no scope).
-    pub fn candidates(p: &Proof, tape: &Tape, ctx: &Ctx) -> Vec<V3> {
-        Held::scoped(p, tape, ctx).into_iter().map(|x| x.0).collect()
-    }
-
-    /// `confirmed_at`, each point at ctx's moment.
-    pub fn confirmed(exact: bool, points: impl IntoIterator<Item = V3>, world: &Tape, ctx: &Ctx) -> Held {
-        Held::confirmed_at(exact, points.into_iter().map(|c| (c, At { t: ctx.t, params: Vec::new() })), world, ctx)
     }
 
     /// How a claim whose proof was `exact` (or not) held, its near point
@@ -249,7 +255,7 @@ impl Held {
             }
             eval_interval(world, &x.point(), c.map(I::point), None).hi
         };
-        let deepest = points.into_iter().map(|(c, at)| (bound(c, &at), (c, at))).filter(|x| x.0 < 0.0).min_by(|a, b| a.0.total_cmp(&b.0));
+        let deepest = points.into_iter().map(|(c, at)| (bound(c, &at), (c, at))).filter(|x| ink_core::sign::inside(x.0)).min_by(|a, b| a.0.total_cmp(&b.0));
         let depth = deepest.as_ref().map_or(0.0, |d| -d.0);
         Held::ToAccuracy { near: Some(Held::near(depth, deepest.map(|d| d.1))) }
     }
@@ -579,7 +585,7 @@ pub fn asserted(
         }
     }
     // A run's accuracy is a length, for the claims about shapes.
-    let tol = tol.or(opts.accuracy.filter(|_| c.accuracy_is_length()));
+    let tol = tol.or(opts.accuracy.filter(|_| c.accuracy_is_length() || v.doc.shape_accuracy(&c)));
     let mut check = match unsolved {
         // Past the call's time limit, the rest are not begun.
         _ if ink_kernel::stop::reached() => {
@@ -659,8 +665,10 @@ fn ask_in(v: &mut ModelView, claim: Claim, bound: Option<u32>, opts: ClaimOption
     let inexact = v.doc.inexact(&roots, &v.certified());
     let motion = v.motion.filter(|&span| moves(v, &roots, span));
     let opts = ClaimOptions { accuracy: Some(tol), ..opts };
-    if let Some(why) = crate::validity::outside(v, &claim, &roots, tol, opts.res) {
-        let c = Check { accuracy: None, ..checked(Status::Unknown, Evidence::Outside(why)) };
+    // Judged before anything answers it (`validate`), over the scope it is
+    // asked over (`judged_scope`).
+    let (scope, span, _) = judged_scope(v, &roots, v.motion);
+    if let Some(c) = validate(v, &claim, &roots, tol, opts.res, scope, span) {
         return Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact)));
     }
     let c = match motion {
@@ -675,10 +683,50 @@ fn ask_in(v: &mut ModelView, claim: Claim, bound: Option<u32>, opts: ClaimOption
     c.then(v, move |v, c| Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact))))
 }
 
+/// The one judgement made of a claim before any path answers it: ink's
+/// range (validity::outside) and the directions it reads resting on a
+/// solve on t (Doc::check_conditions), over `scope` (`judged_scope`'s, or
+/// one moment measured: motion::validate_at), over `motion` where it spans
+/// one. Some: unknown, saying why, the claim's answer.
+pub(crate) fn validate(v: &mut ModelView, claim: &Claim, roots: &[u32], tol: f64, res: Option<f64>, scope: Ctx, motion: Option<(f64, f64)>) -> Option<Check> {
+    if let Err(e) = v.doc.check_conditions(&scope, motion, &v.unsolved_solves(), false, Some(roots)) {
+        return Some(Check { accuracy: None, ..checked(Status::Unknown, Evidence::Unsolved(e)) });
+    }
+    let why = crate::validity::outside(v, claim, roots, tol, res, scope)?;
+    Some(Check { accuracy: None, ..checked(Status::Unknown, Evidence::Outside(why)) })
+}
+
+/// The scope a claim reading `roots` is judged over before it is asked
+/// over `motion` (`validate`), the motion it spans, and whether it covers
+/// every moment. Over a motion, where it reads a solve on t, with what
+/// those set ranged (motion::scope_over); where one is not derived (only
+/// measured), the view's moment alone, not covering the span: each moment
+/// measured is judged then (motion::validate_at), and nothing answers the
+/// claim for the whole span at once (motion::riding). Else the view's
+/// (validity::scope).
+pub(crate) fn judged_scope(v: &mut ModelView, roots: &[u32], motion: Option<(f64, f64)>) -> (Ctx, Option<(f64, f64)>, bool) {
+    match motion.filter(|_| v.doc.solves_read(roots).iter().any(|&i| v.doc.solves[i].on_t)) {
+        Some(span) => match crate::motion::scope_over(v, roots, span) {
+            Ok((c, _)) => (Ctx { t_span: Some(span), ..c }, Some(span), true),
+            Err(_) => (Ctx { t_span: None, ..v.ctx.clone() }, None, false),
+        },
+        None => (crate::validity::scope(v), motion, true),
+    }
+}
+
 /// `ask_in`'s answer, as it is decided: `answer`, with the ranged params
 /// it reads, t among them where it was ranged over a motion
 /// (motion::ranged).
 fn finished(v: &ModelView, claim: &Claim, roots: &[u32], c: Check, tol: f64, inexact: crate::Inexact) -> Check {
+    // Decided with t ranged, what the solves on t it reads set was derived
+    // over t, certified roots (motion::solved_over_t).
+    let inexact = match c.motion.as_ref().is_some_and(|m| m.ranged) && !inexact.solved.is_empty() {
+        true => {
+            let on_t = v.doc.solves_read(roots).into_iter().filter(|&i| v.doc.solves[i].on_t).flat_map(|i| v.doc.solves[i].owns.iter().map(|&k| k as u32));
+            v.doc.inexact(roots, &v.certified().into_iter().chain(on_t).collect::<Vec<u32>>())
+        }
+        false => inexact,
+    };
     let mut ranged = ranged_reads(v, roots);
     for &r in &c.ranged {
         if !ranged.contains(&r) {
@@ -715,6 +763,7 @@ pub(crate) fn answer(c: Check, tol: f64, inexact: crate::Inexact, quantity: Opti
 pub(crate) fn claim_accuracy(v: &ModelView, claim: &Claim, given: Option<f64>) -> f64 {
     match claim.accuracy() {
         crate::Accuracy::Length => given.unwrap_or_else(|| v.accuracy()),
+        crate::Accuracy::Value if v.doc.shape_accuracy(claim) => given.unwrap_or_else(|| v.accuracy()),
         crate::Accuracy::Value => given.unwrap_or(0.0),
         crate::Accuracy::Exact => 0.0,
     }
@@ -747,9 +796,8 @@ pub(crate) fn decide(v: &mut ModelView, claim: Claim, opts: ClaimOptions) -> Res
             shallow(v, f, tol, res)
         }
         Claim::Subset(a, b) => {
-            let nb = v.doc.g.neg(b);
-            let f = v.doc.g.max(a, nb);
-            shallow(v, f, tol, res)
+            let f = subset_field(&mut v.doc.g, a, b);
+            shallow_except(v, f, Some((a, b)), tol, res)
         }
         Claim::Touches(a, b) => touches(v, a, b, tol, res),
         Claim::Point { f, at, inside } => point(v, f, at, inside),
@@ -781,7 +829,10 @@ pub(crate) fn decide(v: &mut ModelView, claim: Claim, opts: ClaimOptions) -> Res
                 // would be its walls.
                 Check { unbounded: true, ..checked(Status::Unknown, Evidence::Unexamined) }
             } else {
-                metric_claim(v, &metric, Comparison { cmp, bound, tol }, if metric.shape.is_some() { res } else { None }, &excluding)?
+                // A count of voids is to a length on its shape, exact on
+                // its value.
+                let (tol, accuracy) = if metric.shape.is_some() && v.doc.registry.shape_accuracy(metric.metric) { (0.0, Some(tol)) } else { (tol, None) };
+                metric_claim(v, &metric, Comparison { cmp, bound, tol }, if metric.shape.is_some() { res } else { None }, accuracy, &excluding)?
             }
         }
         Claim::Value(f, cmp, bound) if ranged_reads(v, &[f]).is_empty() => {
@@ -938,10 +989,31 @@ const POINT_CUBE: f64 = 0.005;
 /// field is 0, as where two pieces abut).
 const POINT_MARGIN: f64 = 1e-9;
 
+/// `(subset a b)`'s search field, max(a, -b): what its witnesses read, and
+/// its question with a and b themselves (`query::Except`: no point inside a
+/// and not inside b, which counts where b reads 0).
+pub(crate) fn subset_field(g: &mut ink_core::graph::Graph, a: u32, b: u32) -> u32 {
+    let nb = g.neg(b);
+    g.max(a, nb)
+}
+
+/// What a subset's search covers: a's reach, where its points lie (the
+/// search field reads 0, not below it, where b does, so that field's own
+/// reach may leave out a's material). Its proof and its range check read
+/// this one.
+pub(crate) fn subset_reach(a: u32, _b: u32) -> u32 {
+    a
+}
+
 /// The solid of field `f` holds no point deeper than `tol` (an emptiness
-/// claim, or an overlap's, a subset's, a clearance of 0's).
+/// claim, or an overlap's, a clearance of 0's); with `except` (a, b), f
+/// being max(a, -b), no point inside a and not inside b (a subset's).
 fn shallow(v: &mut ModelView, f: u32, tol: f64, res: Option<f64>) -> Check {
-    let (p, whole) = v.prove(f, res, tol);
+    shallow_except(v, f, None, tol, res)
+}
+
+fn shallow_except(v: &mut ModelView, f: u32, except: Option<(u32, u32)>, tol: f64, res: Option<f64>) -> Check {
+    let (p, whole) = v.prove_except(f, except, res, tol);
     let tape = v.clipped(f);
     let points = if p.exact { Vec::new() } else { Held::scoped(&p, &tape, &v.ctx) };
     let held = Some(Held::confirmed_at(p.exact, points, &tape, &v.ctx));
@@ -1175,15 +1247,35 @@ fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, done: imp
     }
 }
 
-/// Values of each ranged param an estimate over them is taken at, where
-/// it is the only one read (`estimate_scope`).
-const PARAM_SAMPLES: usize = 17;
+/// Values of a span an estimate is taken at, evenly spaced, its ends
+/// included: a motion's moments (motion::measured), a ranged param's
+/// values where it is the only one read (`estimate_scope`). One count for
+/// both: on the catalog's, tests' and examples' 247 motion models, 17
+/// moments and 34 gave every claim the same answer, 17 in 85% of the
+/// measured claims' time; 33 values of a band doubled a holding band
+/// estimate's (examples/desk-lamp.ink's swung claims, 1.7 s to 3.3 s).
+pub const SAMPLES: usize = 17;
+
+/// SAMPLES values of `span`, evenly spaced, its ends included (one, where
+/// it is a single value).
+pub fn samples(span: (f64, f64)) -> Vec<f64> {
+    spaced(span, SAMPLES)
+}
+
+/// n values of `span`, evenly spaced, its ends included (one, where it is
+/// a single value or n is 1).
+fn spaced((lo, hi): (f64, f64), n: usize) -> Vec<f64> {
+    if lo >= hi || n < 2 {
+        return vec![lo];
+    }
+    (0..n).map(|i| if i + 1 == n { hi } else { lo + (hi - lo) * i as f64 / (n - 1) as f64 }).collect()
+}
 
 /// `estimate_parts` over the claim's scope, with the claim's status on the
 /// sums (`status`): at the view's params where its fields read no ranged
 /// param; else at a grid of their values, each param's span at evenly
-/// spaced values, ends included (PARAM_SAMPLES of one; of n, about
-/// PARAM_SAMPLES in all, at least both ends of each). It fails at the
+/// spaced values, ends included (SAMPLES of one; of n, about SAMPLES in
+/// all, at least both ends of each). It fails at the
 /// first value where it fails (the sums there), holds where it holds at
 /// every one (the sums at the last), else is unknown: an estimate, which a
 /// violation between the values escapes. What the fields read is what is
@@ -1221,11 +1313,21 @@ fn estimate_scope(v: &mut ModelView, parts: &[Part], res: Option<f64>, status: i
     if read.is_empty() {
         return (summed(v), None);
     }
-    let per = ((PARAM_SAMPLES as f64).powf(1.0 / read.len() as f64).floor() as usize).max(2);
-    let values = per.pow(read.len() as u32);
+    let per = ((SAMPLES as f64).powf(1.0 / read.len() as f64).floor() as usize).max(2);
+    let each: Vec<Vec<f64>> = read.iter().map(|&(_, s)| spaced(s, per)).collect();
+    let values: usize = each.iter().map(Vec::len).product();
     let mut last = None;
     for k in 0..values {
-        let at: Vec<(u32, f64)> = read.iter().enumerate().map(|(i, &(p, (lo, hi)))| (p, lo + (hi - lo) * (k / per.pow(i as u32) % per) as f64 / (per - 1) as f64)).collect();
+        let mut rest = k;
+        let at: Vec<(u32, f64)> = read
+            .iter()
+            .zip(&each)
+            .map(|(&(p, _), xs)| {
+                let x = xs[rest % xs.len()];
+                rest /= xs.len();
+                (p, x)
+            })
+            .collect();
         let ctx = at.iter().fold(v.ctx.clone(), |c, &(p, x)| c.with_param(p, (x, x)));
         let s = v.at_point(ctx, |v| summed(v));
         let fails = s.status == Status::Fails;
@@ -1353,12 +1455,6 @@ pub fn claims_at_one_moment(v: &mut ModelView) -> Result<Vec<String>, InkError> 
 /// Time may enter through a provider's param as well as through the graph.
 pub fn reads_t(v: &ModelView, nodes: &[u32]) -> bool {
     nodes.iter().any(|&f| v.doc.g.depends_on(f, |x| x == Var::T)) || v.doc.solves_read(nodes).iter().any(|&i| v.doc.solves[i].on_t)
-}
-
-/// Whether how an `interfere` pair on `node` held goes unsaid: it reads
-/// ranged params, or t over a span.
-pub(crate) fn held_unsaid(v: &ModelView, node: u32) -> bool {
-    !v.ranged_reads(&[node]).is_empty() || (v.motion.is_some() || v.ctx.t_span.is_some()) && reads_t(v, &[node])
 }
 
 /// Whether fields `nodes` change with t over `span`: through a solve that
@@ -1548,8 +1644,8 @@ pub fn grid_error(x: f64, x2: f64, x4: Option<f64>) -> (f64, &'static str) {
 /// keep their own (res ...): the geometry's res is not theirs (cells a
 /// hundredth of a millimetre would not fit a study); `res` overrides (a
 /// shape's metric: the claim's).
-fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f64>, excluding: &[&str]) -> Result<Check, InkError> {
-    let mut measured = v.measure(m, RunOpts { res, tol: 1e-8 })?;
+fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f64>, accuracy: Option<f64>, excluding: &[&str]) -> Result<Check, InkError> {
+    let mut measured = v.measure(m, RunOpts { res, tol: 1e-8, accuracy })?;
     let head = v.doc.ext_form(Some(m.package), &m.form).map_or("form", |e| e.head);
     let mut status = match measured.value {
         Ok(x) => point_status(c, x),
@@ -1613,7 +1709,7 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
         && let (Ok(x), Some(h)) = (measured.value.clone(), measured.res)
     {
         let mut coarse = |k: f64| -> Result<f64, String> {
-            match v.measure(m, RunOpts { res: Some(k * h), tol: 1e-8 }) {
+            match v.measure(m, RunOpts { res: Some(k * h), tol: 1e-8, accuracy }) {
                 Ok(c) => match c.unseen {
                     Some(why) => Err(format!("unseen: {why}")),
                     None => c.value,
@@ -1654,6 +1750,7 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
     }
     let undecided = undecided.map(|(why, how)| (why.join("; "), how.join("; ")));
     let quantity = v.doc.registry.metric_quantity(m.metric);
-    let check = checked(status, Evidence::Metric { measured, head, form: m.form.clone(), quantity, undecided });
+    let held = measured.held.clone();
+    let check = Check { held, ..checked(status, Evidence::Metric { measured, head, form: m.form.clone(), quantity, undecided }) };
     Ok(if exact { check } else { check.estimate() })
 }

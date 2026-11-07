@@ -19,4 +19,4 @@
 (def gap (- (get (frame-of root/f/coupler pin) "origin") (get (frame-of root/f/rocker pin) "origin")))
 (solve loop (unknowns th3 th4) (== (nth gap 0) 0) (== (nth gap 1) 0))
 (assert open (value (sin th4) > 0.5))
-; expect-status: open holds estimate
+; expect-status: open holds

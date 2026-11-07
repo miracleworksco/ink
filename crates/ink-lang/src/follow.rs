@@ -17,17 +17,28 @@
 //! on t between, none of them bounded over a step.
 //!
 //! A step is twice the last one, or as long where that one was halved (the
-//! first 1/16 s, at most 1024 s), and is halved where it is not certified.
+//! first 1/16 s; as long as certifying allows, however slowly the
+//! equations change), and is halved where it is not certified.
 //! Where one under 2^-40 s is not, two roots meet or the root followed ends
 //! (a dead point), or the equations switch there and are not shown
 //! continuous (Roots::enclose and Roots::continuous say which): which root follows
 //! past there is not known, so every moment past it is refused, saying
-//! why. A solve with no regular root at t = 0 has none to follow: every
-//! other moment is refused. One reading what an earlier solve on t sets is
+//! why. So, in this call alone, is every moment past where following had
+//! got when the call's time limit passed (ink_kernel::stop). A solve with
+//! no regular root at t = 0 has none to follow: every other moment is
+//! refused. One reading what an earlier solve on t sets is
 //! certified over that one's enclosures over the step: a followed one's
 //! narrowed from its steps, one with one value at each moment (a solve's
 //! rates) bounded over the step as a root is, its equations linear in it;
 //! and along their path, moving at their rates (roots::Moving).
+//!
+//! A solve whose equations repeat in t (ink_core::period: t only inside
+//! sin and cos, its unknowns angles or not repeating) and read no solve on
+//! t is followed one period, where its root is shown to be the one at 0
+//! moved by whole turns (Follow::fold): a moment past it or before 0 is
+//! its moment in that period, moved (Follow::folded); where the period's
+//! enclosure leaves the count of periods to it uncertain, any of the
+//! first period's moments, certified at the moment itself.
 //!
 //! The steps depend only on where following starts, never on the moments
 //! asked for, and are kept (Paths) by the solve and the values of what its
@@ -42,16 +53,16 @@ use crate::eval::{Ctx, ParamSpans, span_mid};
 use crate::ext::ParamProvider;
 use crate::roots::{Moving, Roots};
 use crate::tape::Tape;
-use ink_core::graph::Fingerprint;
-use ink_core::interval::I;
+use ink_core::graph::{BinOp, Fingerprint, Var};
+use ink_core::interval::{self, I, add_o, mul_o, sub_o};
+use ink_core::period::{Shown, period};
 use ink_kernel::cache;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// The first step tried from t = 0, the longest, and the shortest: one not
-/// certified there is a dead point (s).
+/// The first step tried from t = 0, and the shortest: one not certified
+/// there is a dead point (s).
 const FIRST: f64 = 1.0 / 16.0;
-const LONGEST: f64 = 1024.0;
 const SHORTEST: f64 = 1.0 / (1u64 << 40) as f64;
 
 /// Steps kept on disk together: a way's steps n CHUNK to (n + 1) CHUNK
@@ -112,6 +123,10 @@ pub struct Path {
     anchor: Option<Result<(Vec<f64>, Vec<I>), String>>,
     /// Forward (t > 0) and backward (t < 0).
     ways: [Way; 2],
+    /// Its period p (enclosed), once looked for, and once p is passed,
+    /// whether it holds (Follow::fold): each unknown's shift over it.
+    period: Option<Option<I>>,
+    fold: Option<Option<Vec<I>>>,
 }
 
 struct Way {
@@ -125,6 +140,24 @@ struct Way {
     chunks: Vec<(f64, Option<Vec<Step>>)>,
     /// Why it is not followed past the last step's end, once found.
     end: Option<String>,
+}
+
+/// A span of t folded into a path's first period (Follow::folded): pieces
+/// of the period from 0 to p (enclosed), each with the whole numbers m of
+/// periods its moments may be moved back by (a range, where the period's
+/// enclosure leaves the count uncertain). The root followed to a moment of
+/// the span is the one followed to a moment of a piece, its unknowns moved
+/// by m `shift`s, for some m of that piece's.
+struct Folded {
+    pieces: Vec<(I, I)>,
+    shift: Vec<I>,
+}
+
+impl Folded {
+    /// Each unknown's move by a piece's m shifts, enclosed.
+    fn moved(&self, m: I) -> Vec<I> {
+        self.shift.iter().map(|d| mul_o(m, *d)).collect()
+    }
 }
 
 /// A step of t, from `a` (nearer 0) to `b`: the box holding one root at
@@ -204,6 +237,9 @@ impl Follow {
             return s.p.provide(params, t);
         }
         let not = |m: String| format!("{} is not followed along t from t = 0 to {t}: {m}", s.label);
+        if let Some(f) = self.folded(i, params, (t, t)) {
+            return self.provide_folded(i, params, t, &f).map_err(not);
+        }
         // Its provider's solve from the root followed, between the step's
         // ends: in the step's box, it is the one root there.
         let step = self.steps(i, params, (t, t)).map_err(not)?.swap_remove(0);
@@ -232,7 +268,7 @@ impl Follow {
         }
         let key = self.key(i, params);
         let ways = [false, true].map(|back| Way::kept(key.map(|k| Fingerprint::default().key(k).word(back as u64).value()), s.p.owns().len()));
-        self.paths.lock().unwrap().entry((s.ext, bits)).or_insert_with(|| Arc::new(Mutex::new(Path { anchor: None, ways }))).clone()
+        self.paths.lock().unwrap().entry((s.ext, bits)).or_insert_with(|| Arc::new(Mutex::new(Path { anchor: None, ways, period: None, fold: None }))).clone()
     }
 
     /// Solve `i`'s key on disk, for what its root rests on in `params`:
@@ -265,6 +301,21 @@ impl Follow {
     fn over(&self, i: usize, params: &[f64], span: (f64, f64)) -> Result<(Vec<f64>, Vec<I>), String> {
         if span == (0.0, 0.0) {
             return self.anchor(i, params, &mut self.path(i, params).lock().unwrap());
+        }
+        if let Some(f) = self.folded(i, params, span) {
+            // Each piece's roots moved by its whole periods; the root at the
+            // middle, as one of the first piece's.
+            let mut x: Option<Vec<I>> = None;
+            let mut r = Vec::new();
+            for &(near, m) in &f.pieces {
+                let (at, e) = self.over(i, params, (near.lo, near.hi))?;
+                let e: Vec<I> = e.iter().zip(f.moved(m)).map(|(e, d)| add_o(*e, d)).collect();
+                if r.is_empty() {
+                    r = at.iter().zip(f.moved(I::point(m.lo))).map(|(v, d)| v + d.mid()).collect();
+                }
+                x = Some(x.map_or(e.clone(), |x| hull(&x, &e)));
+            }
+            return Ok((r, x.expect("a folded span has pieces")));
         }
         let steps = self.steps(i, params, span)?;
         let mid = span_mid(span);
@@ -321,6 +372,164 @@ impl Follow {
         found
     }
 
+    /// Solve `i`'s period, looked for once a path: one with no solve on t
+    /// under it whose equations are unchanged by t -> t + p, p = 2 pi / a
+    /// for a base a ink_core::period shows (enclosed). None: none shown.
+    fn period(&self, i: usize, params: &[f64], path: &mut Path) -> Option<I> {
+        let s = &self.solves[i];
+        *path.period.get_or_insert_with(|| {
+            let equations: Vec<&Tape> = s.equations.as_ref()?.iter().collect();
+            let Shown::Base(b) = s.upstream.is_empty().then(|| period(&equations, Var::T, &self.at_rest(i, params)))?? else { return None };
+            Some(b.shift()).filter(|p| p.lo > 0.0 && p.hi.is_finite())
+        })
+    }
+
+    /// The context solve `i`'s equations are evaluated in over a step, for
+    /// ink_core::period: its params' values, its unknowns ranged (as
+    /// Krawczyk's test ranges them: Roots::enclose).
+    fn at_rest(&self, i: usize, params: &[f64]) -> Ctx {
+        let mut ctx = Ctx::new(0.0, params.to_vec());
+        ctx.p_spans = ParamSpans::new(self.solves[i].p.owns().iter().map(|&k| (k as u32, (params[k], params[k]))));
+        ctx
+    }
+
+    /// Whether solve `i`'s period p holds, looked for once a path: the
+    /// equations are unchanged by t moved by p (the unknowns held), and so
+    /// with each unknown moved by a whole number of its own period too
+    /// (an unknown ink_core::period shows none for is not moved). The path is followed to p; each unknown's number is its move
+    /// there, rounded. Where the root at 0 so moved (its enclosure, the
+    /// period and shifts enclosed) lies in the tube of every step that may
+    /// hold p, which holds one root at p, it is the root followed to p;
+    /// then the root followed to t + p is the one at t moved, at every t,
+    /// both ways (the moved path is a path of roots through it, and a
+    /// regular root is followed one way). The unknowns' shifts, enclosed;
+    /// None: it does not hold.
+    fn fold(&self, i: usize, params: &[f64], path: &mut Path, p: I) -> Option<Vec<I>> {
+        if let Some(f) = &path.fold {
+            return f.clone();
+        }
+        let s = &self.solves[i];
+        // Not kept where following stopped at the time limit or a chunk
+        // is gone from disk (Err): a later call may find it.
+        let found = (|| -> Result<Option<Vec<I>>, ()> {
+            let Some(equations) = s.equations.as_ref() else { return Ok(None) };
+            let equations: Vec<&Tape> = equations.iter().collect();
+            let Ok((r0, e0)) = self.anchor(i, params, path) else { return Ok(None) };
+            if self.reach(i, params, path, p.hi).is_err() {
+                return if ink_kernel::stop::reached() { Err(()) } else { Ok(None) };
+            }
+            let steps = path.ways[0].holding(1.0, p.lo, p.hi).ok_or(())?;
+            let Some(at) = steps.iter().find(|st| st.a <= p.mid() && p.mid() <= st.b) else { return Ok(None) };
+            let w = (p.mid() - at.a) / (at.b - at.a);
+            let mut shift = Vec::with_capacity(r0.len());
+            for (j, &k) in s.p.owns().iter().enumerate() {
+                let moved = at.ra[j] + w * (at.rb[j] - at.ra[j]) - r0[j];
+                // A whole number of its own period, where it has one; else
+                // none (the equations are unchanged by t's period alone).
+                shift.push(match period(&equations, Var::Param(k as u32), &self.at_rest(i, params)) {
+                    Some(Shown::Base(c)) => mul_o(I::point((moved / c.shift().mid()).round()), c.shift()),
+                    _ => I::point(0.0),
+                });
+            }
+            let lands = |tube: &[I]| e0.iter().zip(&shift).zip(tube).all(|((e, d), x)| x.lo <= add_o(*e, *d).lo && add_o(*e, *d).hi <= x.hi);
+            Ok(steps.iter().all(|st| lands(&st.tube)).then_some(shift))
+        })();
+        let found = found.ok()?;
+        path.fold = Some(found.clone());
+        found
+    }
+
+    /// `span` (not 0) folded into solve `i`'s first period, where it has
+    /// one that holds and the span lies farther than it from 0, either
+    /// way. None: not folded.
+    fn folded(&self, i: usize, params: &[f64], span: (f64, f64)) -> Option<Folded> {
+        if !self.solves[i].followed {
+            return None;
+        }
+        let path = self.path(i, params);
+        let mut path = path.lock().unwrap();
+        let p = self.period(i, params, &mut path)?;
+        // Folding is a shortcut: it follows the path to p, so only a span
+        // farther from 0 than that, which following straight there would
+        // pass p for, is folded (a moment near 0 never pays for a long
+        // period, t = -0.1 against a period of 1e17 s).
+        if span.0.abs().min(span.1.abs()) <= p.hi || (span.0 < 0.0) != (span.1 < 0.0) {
+            return None;
+        }
+        // The whole numbers m with t - m p in the first period for some t
+        // in the span and p in its enclosure: from floor(span / p).
+        let q = interval::bin(BinOp::Div, I::new(span.0, span.1), p).0;
+        let (m0, m1) = (q.lo.floor(), q.hi.floor());
+        if !(m0.is_finite() && m1.is_finite()) {
+            return None;
+        }
+        let first = I::new(0.0, p.hi);
+        let back = |m: I| interval::meet(sub_o(I::new(span.0, span.1), mul_o(m, p)), first);
+        // Two counts, a piece each; more, and one between them covers the
+        // whole period: one piece, every count.
+        let pieces = match m1 - m0 {
+            0.0 => vec![(back(I::point(m0)), I::point(m0))],
+            1.0 => vec![(back(I::point(m0)), I::point(m0)), (back(I::point(m1)), I::point(m1))],
+            _ => vec![(first, I::new(m0, m1))],
+        };
+        let pieces: Vec<(I, I)> = pieces.into_iter().filter(|(near, _)| near.lo <= near.hi).collect();
+        if pieces.is_empty() {
+            return None;
+        }
+        let shift = self.fold(i, params, &mut path, p)?;
+        Some(Folded { pieces, shift })
+    }
+
+    /// Solve `i`'s params at moment t, folded (Follow::folded): its
+    /// provider's solve from a piece's root moved, where it lands in every
+    /// tube that may hold the moment t is folded to, moved by its piece's
+    /// shifts (rounded in: whichever holds it holds one root there); else
+    /// the one root at t Krawczyk's test shows in a box holding them all,
+    /// moved (rounded out). A count of periods too uncertain to tell which
+    /// turn an unknown is on leaves that box more than one root: refused.
+    fn provide_folded(&self, i: usize, params: &mut [f64], t: f64, f: &Folded) -> Result<Option<String>, String> {
+        let s = &self.solves[i];
+        let mut held: Option<Vec<I>> = None;
+        let mut tubes: Vec<(Vec<I>, Vec<I>)> = Vec::new();
+        for &(near, m) in &f.pieces {
+            let moved = f.moved(m);
+            let steps = self.steps(i, params, (near.lo, near.hi))?;
+            if tubes.is_empty() {
+                let at = &steps[0];
+                let w = ((near.mid() - at.a) / (at.b - at.a)).clamp(0.0, 1.0);
+                for (j, &k) in s.p.owns().iter().enumerate() {
+                    params[k] = at.ra[j] + w * (at.rb[j] - at.ra[j]) + moved[j].mid();
+                }
+            }
+            for st in steps {
+                let e: Vec<I> = st.tube.iter().zip(&moved).map(|(x, d)| add_o(*x, *d)).collect();
+                held = Some(held.map_or(e.clone(), |h| hull(&h, &e)));
+                tubes.push((st.tube, moved.clone()));
+            }
+        }
+        let solved = s.p.provide(params, t);
+        let down = |a: f64, b: f64| -interval::add_up(-a, -b);
+        let within =
+            |tube: &[I], moved: &[I], p: &[f64]| s.p.owns().iter().zip(tube).zip(moved).all(|((&k, x), d)| interval::add_up(x.lo, d.hi) <= p[k] && p[k] <= down(x.hi, d.lo));
+        if solved.is_ok() && tubes.iter().all(|(tube, moved)| within(tube, moved, params)) {
+            return solved;
+        }
+        let held = held.expect("a folded moment has steps");
+        let (mut ctx, _) = self.context(i, params, (t, t), false)?;
+        for (&k, x) in s.p.owns().iter().zip(&held) {
+            ctx.params[k] = x.mid();
+        }
+        let counts = f.pieces.iter().fold(I::point(f.pieces[0].1.lo), |h, (_, m)| interval::hull(h, *m));
+        let (r, _) = Roots::enclose(s.p.owns(), s.equations.clone().expect("a followed solve has equations"), &ctx, Some(&held), &[]).map_err(|e| match counts.lo < counts.hi {
+            true => format!("its path repeats, but t is {} to {} periods on, and over those the root is not shown to be one ({e})", counts.lo, counts.hi),
+            false => e,
+        })?;
+        for (&k, v) in s.p.owns().iter().zip(r) {
+            params[k] = v;
+        }
+        Ok(None)
+    }
+
     /// Follow solve `i`'s path to moment t (not 0). Err: why it is not
     /// followed there.
     fn reach(&self, i: usize, params: &[f64], path: &mut Path, t: f64) -> Result<(), String> {
@@ -335,8 +544,12 @@ impl Follow {
             if let Some(end) = &w.end {
                 break Err(end.clone());
             }
+            if ink_kernel::stop::reached() {
+                let at = w.chunks.last().map_or(0.0, |c| c.0);
+                break Err(format!("following stopped at t = {at}, where the call's time limit passed"));
+            }
             let (a, ra, ea, mut h) = match w.last() {
-                Some(s) => (s.b, s.rb.clone(), s.eb.clone(), ((if s.halved { 1.0 } else { 2.0 }) * (s.b - s.a).abs()).min(LONGEST)),
+                Some(s) => (s.b, s.rb.clone(), s.eb.clone(), ((if s.halved { 1.0 } else { 2.0 }) * (s.b - s.a).abs())),
                 None => (0.0, r0.clone(), e0.clone(), FIRST),
             };
             let mut halved = false;
@@ -448,6 +661,33 @@ impl Follow {
             None => unbounded(&at),
         };
         Ok((r, e, moved))
+    }
+
+    /// What solve `i`, on t, sets over `span` of t, either side of 0
+    /// (Follow::sets, the two sides' hull where it holds 0): its value at
+    /// the span's middle and an enclosure over the span. Err: why not.
+    pub fn over_t(&self, i: usize, params: &[f64], span: (f64, f64)) -> Result<(Vec<f64>, Vec<I>), String> {
+        if !(span.0 < 0.0 && 0.0 < span.1) {
+            return self.sets(i, params, span, false).map(|(r, e, _)| (r, e));
+        }
+        let (_, a, _) = self.sets(i, params, (span.0, 0.0), false)?;
+        let (_, b, _) = self.sets(i, params, (0.0, span.1), false)?;
+        let (r, _, _) = self.sets(i, params, (span_mid(span), span_mid(span)), false)?;
+        Ok((r, hull(&a, &b)))
+    }
+
+    /// The params solve `i`'s path rests on that no solve on t sets.
+    pub fn rests_on(&self, i: usize) -> &[usize] {
+        &self.solves[i].fixed
+    }
+
+    /// Whether what solve `i` sets over a span of t (Follow::over_t) is
+    /// certified: it and every solve on t under it have equations, so each
+    /// enclosure is a root's or a rate's. A provider's own bounds (a
+    /// simulation's: its interpolant's) are measured.
+    pub fn certifies(&self, i: usize) -> bool {
+        let s = &self.solves[i];
+        s.equations.is_some() && s.upstream.iter().all(|&j| self.certifies(j))
     }
 
     /// A context for solve `i` over `span`: t over it (at it, a moment),
@@ -602,4 +842,92 @@ impl Step {
 /// The smallest box holding a and b.
 fn hull(a: &[I], b: &[I]) -> Vec<I> {
     a.iter().zip(b).map(|(a, b)| I { lo: a.lo.min(b.lo), hi: a.hi.max(b.hi) }).collect()
+}
+
+/// What a solve on t sets, derived over t ranged as param `k` (a claim
+/// over a motion: motion::ranged): over a span of k, its params' enclosure
+/// over it from the steps followed (Follow::over_t), and at k's value its
+/// root there. Made over the whole span `whole` (Err: why not), so every
+/// piece of it is followed already; one whose enclosure cannot be narrowed
+/// to a piece keeps the whole span's.
+pub struct OverT {
+    follow: Arc<Follow>,
+    i: usize,
+    k: [u32; 1],
+    owns: Vec<u32>,
+    params: Vec<f64>,
+    whole: (f64, f64),
+    all: Vec<I>,
+    cache: Mutex<HashMap<(u64, u64), (Vec<f64>, Vec<I>)>>,
+}
+
+impl OverT {
+    pub fn new(follow: Arc<Follow>, i: usize, k: u32, params: &[f64], whole: (f64, f64)) -> Result<OverT, String> {
+        let (_, all) = follow.over_t(i, params, whole)?;
+        let owns = follow.solves[i].p.owns().iter().map(|&u| u as u32).collect();
+        Ok(OverT { follow, i, k: [k], owns, params: params.to_vec(), whole, all, cache: Mutex::new(HashMap::new()) })
+    }
+
+    /// Its params' enclosures over the whole span.
+    pub fn bands(&self) -> Vec<(u32, (f64, f64))> {
+        self.owns.iter().zip(&self.all).map(|(&u, x)| (u, (x.lo, x.hi))).collect()
+    }
+
+    /// Its value at the middle of `span` and enclosure over it (inside the
+    /// whole span).
+    fn at(&self, span: (f64, f64)) -> (Vec<f64>, Vec<I>) {
+        let key = (span.0.to_bits(), span.1.to_bits());
+        if let Some(hit) = self.cache.lock().unwrap().get(&key) {
+            return hit.clone();
+        }
+        let inside = self.whole.0 <= span.0 && span.1 <= self.whole.1;
+        let r = match inside.then(|| self.follow.over_t(self.i, &self.params, span)) {
+            Some(Ok(r)) => r,
+            Some(Err(_)) if span.0 < span.1 => (self.at((span_mid(span), span_mid(span))).0, self.all.clone()),
+            Some(Err(_)) => (self.all.iter().map(|x| span_mid((x.lo, x.hi))).collect(), self.all.clone()),
+            None => (vec![f64::NAN; self.owns.len()], vec![I::ENTIRE; self.owns.len()]),
+        };
+        let mut cache = self.cache.lock().unwrap();
+        if cache.len() > 1 << 16 {
+            cache.clear();
+        }
+        cache.insert(key, r.clone());
+        r
+    }
+}
+
+impl ink_core::eval::Derive for OverT {
+    fn owns(&self) -> &[u32] {
+        &self.owns
+    }
+
+    fn reads(&self) -> &[u32] {
+        &self.k
+    }
+
+    fn derive(&self, ctx: &mut Ctx) {
+        let v = ctx.params[self.k[0] as usize];
+        let span = ctx.p_spans.get(self.k[0]).unwrap_or((v, v));
+        let (mut r, e) = self.at(span);
+        if v != span_mid(span) {
+            r = self.at((v, v)).0;
+        }
+        for ((&u, x), c) in self.owns.iter().zip(e).zip(r) {
+            ctx.p_spans.set_span(u, (x.lo, x.hi));
+            ctx.params[u as usize] = c.clamp(x.lo, x.hi);
+        }
+    }
+
+    /// Along t, by the roots a little either side (floats: for witness
+    /// searches only).
+    fn rates(&self, ctx: &Ctx) -> Vec<Vec<f64>> {
+        let v = ctx.params[self.k[0] as usize];
+        let h = 1e-6 * (self.whole.1 - self.whole.0).max(1e-9);
+        let (a, b) = ((v - h).max(self.whole.0), (v + h).min(self.whole.1));
+        if b <= a {
+            return vec![vec![0.0]; self.owns.len()];
+        }
+        let (ra, rb) = (self.at((a, a)).0, self.at((b, b)).0);
+        ra.iter().zip(&rb).map(|(x, y)| vec![(y - x) / (b - a)]).collect()
+    }
 }

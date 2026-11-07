@@ -354,7 +354,7 @@ pub fn widen(i: I, k: u32) -> I {
 fn ulps_un(op: UnOp) -> u32 {
     match op {
         // Sqrt and square are rounded by their errors (un_rounded).
-        UnOp::Neg | UnOp::Abs | UnOp::Floor | UnOp::Sqrt | UnOp::Square => 0,
+        UnOp::Neg | UnOp::Abs | UnOp::Floor | UnOp::Sqrt | UnOp::Square | UnOp::Rad | UnOp::Deg => 0,
         UnOp::Exp | UnOp::Ln | UnOp::Sin | UnOp::Cos | UnOp::Tan => 4,
     }
 }
@@ -434,8 +434,17 @@ fn un_rounded(op: UnOp, a: I) -> I {
         UnOp::Cos => sin(I::new(a.lo + FRAC_PI_2, a.hi + FRAC_PI_2)),
         UnOp::Tan => tan(a),
         UnOp::Floor => I::new(a.lo.floor(), a.hi.floor()),
+        UnOp::Rad => mul_o(a, RAD),
+        UnOp::Deg => mul_o(a, DEG),
     }
 }
+
+/// pi / 180 between adjacent floats: the nearest, below it, and the next
+/// (UnOp::Rad's factor, holding both the real one and the float's).
+pub const RAD: I = I { lo: 0.017453292519943295, hi: 0.0174532925199433 };
+/// 180 / pi likewise: the float before the nearest, and the nearest,
+/// above it (UnOp::Deg's factor).
+pub const DEG: I = I { lo: 57.295779513082316, hi: 57.29577951308232 };
 
 /// Returns the bound and, for min/max, which argument always wins.
 /// Every result is rounded outward only where it is inexact (see `down`):
@@ -663,6 +672,8 @@ pub fn g_un(op: UnOp, a: G) -> G {
             }
         }
         UnOp::Sin | UnOp::Cos => 1.0,
+        UnOp::Rad => RAD.hi,
+        UnOp::Deg => DEG.hi,
         UnOp::Tan => add_up(1.0, mul_up(mag(g.v), mag(g.v))),
         UnOp::Floor => {
             if a.v.lo.floor() == a.v.hi.floor() {
@@ -741,6 +752,8 @@ pub fn d_un<const N: usize>(op: UnOp, a: I, v: I, da: [I; N]) -> Option<[I; N]> 
                 return None;
             }
         }
+        UnOp::Rad => scale(RAD),
+        UnOp::Deg => scale(DEG),
     })
 }
 
@@ -1047,6 +1060,37 @@ pub fn sqrt_up(a: f64) -> f64 {
     if a == 0.0 { 0.0 } else { a.sqrt().next_up() }
 }
 
+/// A float s with s |v| <= 1, proven, |v| the Euclidean norm of a vector
+/// whose components are at most `v`'s in size: a reciprocal length rounded
+/// down, the scale that keeps a field along that direction (a line through
+/// its normal, a leaf whose slopes are bounded by v) at most 1-Lipschitz in
+/// real numbers, where a quotient or a norm rounded to nearest can leave it
+/// an ulp over. The norm is rounded up (scaled by the largest component, so
+/// squares neither underflow nor overflow), and s = 1 / norm is checked by
+/// an exact fma; so s is exactly 1 / |v| where that is a float (one nonzero
+/// component, or an exact norm). Infinite for the zero vector.
+pub fn inv_norm_down(v: &[f64]) -> f64 {
+    let nz: Vec<f64> = v.iter().map(|x| x.abs()).filter(|&x| x != 0.0).collect();
+    let l = match nz.as_slice() {
+        [] => return f64::INFINITY,
+        [one] => *one,
+        _ => {
+            let m = nz.iter().fold(0.0f64, |a, &x| a.max(x));
+            mul_up(
+                m,
+                sqrt_up(sum_up(nz.iter().map(|&x| {
+                    // x / m rounded up: its square at least the exact one.
+                    let q = if x == m { 1.0 } else { (x / m).next_up() };
+                    mul_up(q, q)
+                }))),
+            )
+        }
+    };
+    let s = 1.0 / l;
+    // s l - 1, exactly rounded: above 0 only where s l > 1.
+    if s.mul_add(l, -1.0) > 0.0 { s.next_down() } else { s }
+}
+
 /// Interval sum, product, quotient and dot product, rounded outward where
 /// inexact (as in bin).
 pub fn add_o(a: I, b: I) -> I {
@@ -1063,6 +1107,42 @@ fn div_o(a: I, b: I) -> I {
 }
 fn dot_o(x: &[I; 3], y: &[I; 3]) -> I {
     (0..3).fold(I::point(0.0), |acc, k| add_o(acc, mul_o(x[k], y[k])))
+}
+
+/// Whether every vector in box `x` points away from every vector in box
+/// `y` (no two of them, one from each, are parallel and alike): their dot
+/// product is below the product of their least lengths throughout. False
+/// where either box holds 0.
+pub fn apart(x: &[I; 3], y: &[I; 3]) -> bool {
+    // Each box scaled by a power of 2 (exact) to its largest bound near 1:
+    // directions are kept, and products neither underflow nor overflow.
+    let scaled = |v: &[I; 3]| -> [I; 3] {
+        let m = v.iter().map(|i| i.lo.abs().max(i.hi.abs())).fold(0.0, f64::max);
+        if !(m > 0.0 && m.is_finite()) {
+            return *v;
+        }
+        // In two steps: 2^e itself may not be a float (e up to 1074).
+        let e = -m.log2().round() as i32;
+        let (a, b) = (2f64.powi(e / 2), 2f64.powi(e - e / 2));
+        v.map(|i| I::new(i.lo * a * b, i.hi * a * b))
+    };
+    let (x, y) = (&scaled(x), &scaled(y));
+    let least = |v: &[I; 3]| {
+        v.iter()
+            .map(|i| {
+                if i.lo > 0.0 {
+                    i.lo
+                } else if i.hi < 0.0 {
+                    -i.hi
+                } else {
+                    0.0
+                }
+            })
+            .map(|m| m * m)
+            .sum::<f64>()
+    };
+    let (lx, ly, d) = (least(x), least(y), dot_o(x, y).hi);
+    lx > 0.0 && ly > 0.0 && (d < 0.0 || d * d < lx * ly * (1.0 - 1e-12))
 }
 
 /// A symmetric matrix from its entries on and above the diagonal.
@@ -1092,6 +1172,23 @@ pub fn norm(v: [f64; 3]) -> f64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn inv_norm_down_is_at_most_the_reciprocal_length() {
+        // s^2 (x^2 + y^2) <= 1 in integers, s = m 2^e: m^2 n <= 2^(-2e).
+        for (x, y) in (1..60u64).flat_map(|x| (0..60u64).map(move |y| (x, y))) {
+            let s = inv_norm_down(&[x as f64, y as f64]);
+            let (m, e) = {
+                let b = s.to_bits();
+                ((b & ((1 << 52) - 1)) | (1 << 52), ((b >> 52) & 0x7ff) as i32 - 1075)
+            };
+            let n = (x * x + y * y) as u128;
+            assert!((m as u128) * (m as u128) * n <= 1u128 << (-2 * e), "({x}, {y}): {s}");
+        }
+        assert_eq!(inv_norm_down(&[0.0, 4.0]), 0.25);
+        assert_eq!(inv_norm_down(&[0.0, 0.0]), f64::INFINITY);
+    }
+
     use super::*;
 
     #[test]

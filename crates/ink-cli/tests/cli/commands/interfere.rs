@@ -302,20 +302,24 @@ fn a_pair_in_a_frame_that_reads_back_inexactly_never_held_outright() {
 
 const FIT: &str = "(import \"std\")\n(body bush (shape (subtract (cylinder-z 10 12) (cylinder-z 5 20))))\n(body shaft (shape (cylinder-z r 12)))\n(assembly fit (instance b bush) (instance s shaft))\n";
 
-/// No `held` nor `near` in the first row of each answer, whether the
-/// proof needed the accuracy or not.
-fn held_unsaid(answers: &[(Value, &str)]) {
-    for (d, row) in answers {
-        let p = &d[*row][0];
-        assert!(verdict(p) == "holds" && p.get("held").is_none() && p.get("near").is_none(), "{}", pretty(d));
-    }
+/// The first pair held to the accuracy, its near point inside both shapes
+/// as placed (the bush's bore, radius 5, and the shaft's, at most 5.06,
+/// about axis `x`, `y`), deeper than 0; the answer counts it near.
+fn held_near(d: &Value, (x, y): (f64, f64)) {
+    let p = &pairs(d)[0];
+    let at = p["near"]["at"].as_array().map_or(0.0, |a| (a[0].as_f64().unwrap() - x).hypot(a[1].as_f64().unwrap() - y));
+    assert!(
+        verdict(p) == "holds" && p["held"] == "to the accuracy" && p["near"]["depth"].as_f64().unwrap_or(0.0) > 0.0 && 5.0 < at && at < 5.06 && d["near_pairs"] == 1,
+        "{}",
+        pretty(d)
+    );
 }
 
 #[test]
 fn how_a_claim_held_over_ranged_params_is_said_with_where_in_the_band() {
     // A shaft 5.04 to 5.06 in a bore 5: the claim held only to the
     // accuracy, its near point inside both shapes at the r it was found
-    // at. An interfere pair over the band says nothing yet.
+    // at; an interfere pair over the band too.
     let s = Scratch::new("held-over-ranged-params");
     let m = s.model("ranged.ink", &format!("(param r 5.05 (tol -0.01 0.01))\n{FIT}(assert fit (disjoint (shape-of bush) (shape-of shaft)) (accuracy 0.1))\n"));
     let d = ink(["assert", &m]);
@@ -332,15 +336,31 @@ fn how_a_claim_held_over_ranged_params_is_said_with_where_in_the_band() {
         "{}",
         pretty(&d)
     );
-    held_unsaid(&[(ink(["interfere", &m, "--target", "fit", "--accuracy", "0.1"]), "pairs")]);
+    let d = ink(["interfere", &m, "--target", "fit", "--accuracy", "0.1"]);
+    held_near(&d, (0.0, 0.0));
+    let r = pairs(&d)[0]["near"]["params"]["r"].as_f64().unwrap_or(0.0);
+    assert!((5.04..=5.06).contains(&r), "{}", pretty(&d));
 }
 
 #[test]
-fn how_a_pair_riding_a_moving_frame_held_is_not_said() {
-    // Asked once in the frame it rides, but over the motion.
+fn how_a_turning_pair_held_over_the_motion_is_said_with_its_moment() {
+    // The shaft turns in its bore: searched with t ranged beside the other
+    // pairs, its near point is at a moment of the span.
+    let s = Scratch::new("held-turning");
+    let m = s.model("turning.ink", &format!("(t-span 0 1)\n(param r 5.05)\n{FIT}(assembly root (instance b bush) (instance s shaft (at) (turn z (* 90 t))))\n"));
+    let d = ink(["interfere", &m, "--accuracy", "0.1"]);
+    held_near(&d, (0.0, 0.0));
+    let t = pairs(&d)[0]["near"]["params"]["t"].as_f64().unwrap_or(-1.0);
+    assert!(pairs(&d)[0]["motion"]["how"] == "t ranged" && (0.0..=1.0).contains(&t), "{}", pretty(&d));
+}
+
+#[test]
+fn how_a_pair_riding_a_moving_frame_held_is_said() {
+    // Asked once in the frame it rides, its near point at the view's
+    // moment (t = 0: the unit at x = 0).
     let s = Scratch::new("held-riding");
     let m = s.model("moving.ink", &format!("(t-span 0 1)\n(param r 5.05)\n{FIT}(assembly root (instance unit fit (at) (slide x (* 10 t))))\n"));
-    held_unsaid(&[(ink(["interfere", &m, "--accuracy", "0.1"]), "pairs")]);
+    held_near(&ink(["interfere", &m, "--accuracy", "0.1"]), (0.0, 0.0));
 }
 
 #[test]
@@ -375,11 +395,10 @@ fn every_near_point_of_a_pair_in_a_shared_frame_is_inside_both_shapes_as_placed(
 }
 
 #[test]
-fn how_a_pair_in_a_shared_frame_held_is_not_said_where_its_placement_reads_a_ranged_param() {
-    // The frame takes the move up, ranged by 1e-9: the pair as placed reads it.
+fn how_a_pair_in_a_shared_frame_held_is_said_where_its_placement_reads_a_ranged_param() {
+    // The frame takes the move up, ranged by 1e-9: its near point is moved
+    // to the world at dx's value and confirmed there.
     let s = Scratch::new("held-framed-ranged");
     let m = s.model("ranged.ink", &format!("(param dx 100 (tol -1e-09 1e-09))\n(param r 5.05)\n{FIT}(assembly root (instance unit fit (at (move dx 0 0))))\n"));
-    let d = ink(["interfere", &m]);
-    held_unsaid(&[(d.clone(), "pairs")]);
-    assert!(d["near_pairs"] == 0, "{}", pretty(&d));
+    held_near(&ink(["interfere", &m]), (100.0, 0.0));
 }

@@ -10,7 +10,7 @@ pub use ink_lang as lang;
 pub use ink_lang::{InkError, materials, sexp, units};
 
 // The crates, re-exported so `ink::graph::...` paths keep working.
-pub use ink_core::{V3, eval, graph, interval, tape, v3};
+pub use ink_core::{V3, eval, graph, interval, sign, tape, v3};
 pub use ink_io::{export, gltf, render, seen, simplify};
 pub use ink_kernel::{cache, centred, feature, mesh, octree, query, ranged, rigid, runners, scope, stop, voids};
 

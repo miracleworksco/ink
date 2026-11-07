@@ -136,10 +136,11 @@ fn numerical_claims_cover_only_the_scope_their_methods_evaluate() {
 /// values past its distance test) and wherever the skin falls between cell
 /// centres (`big`: the mesh read 0); the count is exact where it decides
 /// (two voids; none once the hole is left open; none past a 0.2 mm slit at
-/// (res 1)); and it is bounds where cells cannot part two airs: a hole
-/// flush with the void's ceiling (f = 0 across its mouth) and a bearing's
-/// balls seated in its races' grooves (surfaces that touch) are unknown,
-/// as a count over a ranged param and of a shape not proven bounded are.
+/// (res 1)); a bearing's balls seated in its races' grooves (surfaces that
+/// touch) leave no air deeper than the accuracy between them, so hold to
+/// it; and it is bounds where cells cannot part two airs: a hole flush
+/// with the void's ceiling (f = 0 across its mouth) is unknown, as a count
+/// over a ranged param and of a shape not proven bounded are.
 #[test]
 fn cavities_are_counted_by_proof() {
     use ink::claims::{ClaimOptions, Status, run_asserts};
@@ -172,12 +173,62 @@ fn cavities_are_counted_by_proof() {
     let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
     let s: Vec<(&str, Status)> = r.asserts.iter().map(|a| (a.name.as_str(), a.check.status)).collect();
     use Status::{Fails, Holds, Unknown};
-    let want = [Fails, Fails, Fails, Holds, Holds, Fails, Holds, Unknown, Unknown, Unknown, Unknown];
+    let want = [Fails, Fails, Fails, Holds, Holds, Fails, Holds, Unknown, Holds, Unknown, Unknown];
     assert_eq!(s.iter().map(|x| x.1).collect::<Vec<_>>(), want, "{s:?}");
     // A count proven is an exact answer, not an estimate.
     assert!(r.asserts[..7].iter().all(|a| a.check.accuracy.is_some()) && r.asserts[4].check.holds_guaranteed(), "{:?}", r.asserts[4].check);
     let ink::claims::Evidence::Metric { measured, .. } = &r.asserts[7].check.evidence else { panic!("{:?}", r.asserts[7]) };
     assert!(measured.value == Ok(0.0) && measured.excluded.iter().any(|e| e.key == "undecided-cells" && e.value >= 1.0), "{measured:?}");
+}
+
+/// A void count is to the claim's accuracy, a length, as an emptiness
+/// claim is: a void counts where its air is deeper than it. A sealed slit
+/// 0.02 thick is set aside at 0.05 (held to the accuracy, saying where);
+/// at 0.005 it is a void (an accuracy on the count itself would have let
+/// it hold). A void 0.2
+/// thick counts. Two pieces placed 100 nm apart round a hub, the slit
+/// between them open to the outside, count 0 to the accuracy, where every
+/// cell along the slit was halved to the budget.
+#[test]
+fn a_void_count_is_to_its_accuracy() {
+    use ink::claims::{ClaimOptions, Held, Status, run_asserts};
+    use ink::view::ModelView;
+    let d = doc("(def block (box 20 20 20))
+        (def slit (subtract block (box 2 2 0.02)))
+        (def void (subtract block (box 2 2 0.2)))
+        (def stack (min (extrude-z (circle-2d 4.5) 0 14) (extrude-z (ring-2d 3 10) 0 10) (extrude-z (ring-2d 3 12) 10.0000001 14)))
+        (assert slit-set-aside (cavities slit < 1))
+        (assert slit-fine (cavities slit < 1) (accuracy 0.005))
+        (assert void-counts (cavities void < 1))
+        (assert apart (cavities stack < 1))");
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let mut v = ModelView::new(d, ctx);
+    let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
+    let s: Vec<(&str, Status)> = r.asserts.iter().map(|a| (a.name.as_str(), a.check.status)).collect();
+    use Status::{Fails, Holds};
+    assert_eq!(s.iter().map(|x| x.1).collect::<Vec<_>>(), [Holds, Fails, Fails, Holds], "{s:?}");
+    let aside = |k: usize| match r.asserts[k].check.held {
+        Some(Held::SetAside { cells, at: Some(p) }) if cells > 0 => p,
+        ref h => panic!("{}: {h:?}", r.asserts[k].name),
+    };
+    let (p, q) = (aside(0), aside(3));
+    assert!(p[0].abs() <= 1.1 && p[1].abs() <= 1.1 && p[2].abs() <= 0.1, "{p:?}");
+    assert!((q[2] - 10.0).abs() <= 0.1 && q[0].hypot(q[1]) >= 4.4, "{q:?}");
+    assert!(r.asserts[..2].iter().all(|a| a.check.accuracy.is_some()) && r.asserts[0].check.holds_guaranteed(), "{:?}", r.asserts[0].check);
+}
+
+/// A void count its forecast puts past its budget stops there, early, and
+/// says the budget stopped it: a plate 1 mm thick drilled with 160 x 160
+/// holes 1 mm across (48 x 48 count in 200 k cells), some 2 M cells to
+/// count, stops within a tenth of the budget, not at it.
+#[test]
+fn a_void_count_forecast_past_its_budget_stops_early() {
+    let (mut v, f) = view_of(
+        "(def holes (repeat-linear (repeat-linear (extrude-z (circle-2d 0.5) -1 2) 160 2.5 0 0) 160 0 2.5 0))
+         (def f (subtract (move (box 400 400 1) 198.75 198.75 0.5) holes))",
+    );
+    let c = v.voids(f, None, 0.05).unwrap().unwrap();
+    assert!(c.count().is_none() && c.ended == Some(ink::query::Ended::Limit) && c.cells < ink::voids::MAX_CELLS / 10, "{c:?}");
 }
 
 /// A void count is the one search's (crate::search): what it answers is a
@@ -195,7 +246,7 @@ fn a_void_count_is_the_same_on_any_threads_and_says_its_budget_stopped_it() {
     let (lo, hi, _) = v.bounds(f).unwrap();
     let (tape, ctx) = (v.clipped(f), v.ctx.clone());
     let h = ink::query::max_extent(lo, hi) / ink::view::COMPONENT_CELLS;
-    let count = |threads: usize| rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| ink::voids::voids(&tape, &ctx, lo, hi, h));
+    let count = |threads: usize| rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| ink::voids::voids(&tape, &ctx, lo, hi, h, 0.0));
     let (one, all) = (count(1), count(8));
     assert_eq!(format!("{one:?}"), format!("{all:?}"));
     assert!(one.count().is_none() && one.ended == Some(ink::query::Ended::Limit) && one.undecided.is_some_and(|(a, b)| a >= one.finest && b > a), "{one:?}");
@@ -435,6 +486,201 @@ fn intervals_are_sound_and_simplification_is_exact() {
             }
         }
     }
+}
+
+#[test]
+fn a_promised_field_is_bounded_from_its_centre() {
+    // (z + 0.5) - z spans 0 over a box taller than 0.5, so the field's own
+    // bound, through its quotient, is unbounded however narrow the box is in
+    // x and y (as a drafted polygon's line through two moving points closer
+    // than a cell is tall). Its promise bounds it by its value at the box's
+    // centre and its slope times how far its frame's coordinates (turned
+    // here) reach from there: sound at points of the box, and at most a few
+    // times the box's size wide.
+    let m = "(- (+ z 0.5) z)";
+    let (_d, tape) = tape_of(&format!("(move (rotate-z (lipschitz 1 (* (- x 3) (/ {m} (sqrt (square {m}))))) 30) 1 2 0)"));
+    let ctx = Ctx::new(0.0, vec![]);
+    let mut rng = Lcg(11);
+    for _ in 0..300 {
+        let c = [rng.range(-20.0, 20.0), rng.range(-20.0, 20.0), rng.range(-20.0, 20.0)];
+        let s = rng.range(0.01, 8.0);
+        let b = c.map(|c| I::new(c - s, c + s));
+        let r = eval_interval(&tape, &ctx, b, None);
+        assert!(r.hi - r.lo <= 5.0 * s, "[{}, {}] over a box {s} across from {c:?}", r.lo, r.hi);
+        for _ in 0..16 {
+            let p = [rng.range(b[0].lo, b[0].hi), rng.range(b[1].lo, b[1].hi), rng.range(b[2].lo, b[2].hi)];
+            let f = eval_point(&tape, &ctx, p);
+            assert!(r.contains(f), "f({p:?}) = {f} outside [{}, {}]", r.lo, r.hi);
+        }
+    }
+}
+
+#[test]
+fn a_promise_whose_constants_are_not_real_bounds_nothing() {
+    // A promise holds for its constants as computed, in real numbers: one
+    // whose k, or whose field, reads an undefined case (p / p at p = 0, 0
+    // in floats) promises nothing for values as for slopes: f's bound over
+    // a box holds f at its points. (param p 0) (lipschitz (+ 0.001 (/ p p))
+    // (* 0.5 x)) read k as 0.001 and proved |f| <= 0.001 over x in [-1, 1].
+    use ink::graph::{BinOp, Graph, Var};
+    let fields = |g: &mut Graph| {
+        let (x, p) = (g.var(Var::X), g.var(Var::Param(0)));
+        let q = g.bin(BinOp::Div, p, p);
+        let small = g.constant(0.001);
+        let k = g.add(small, q);
+        let half = g.constant(0.5);
+        let f = g.mul(half, x);
+        let in_k = g.lipschitz(f, k);
+        let f = g.bin(BinOp::Div, x, k);
+        let one = g.constant(1.0);
+        let in_f = g.lipschitz(f, one);
+        [in_k, in_f]
+    };
+    let mut g = Graph::default();
+    let ctx = Ctx::new(0.0, vec![0.0]);
+    let b = [I::new(-1.0, 1.0), I::point(0.0), I::point(0.0)];
+    for f in fields(&mut g) {
+        let t = Tape::new(&g, f);
+        let (v, at) = (eval_interval(&t, &ctx, b, None), eval_point(&t, &ctx, [1.0, 0.0, 0.0]));
+        assert!(v.contains(at), "[{}, {}] excludes f(1, 0, 0) = {at}", v.lo, v.hi);
+    }
+}
+
+#[test]
+fn every_undefined_case_voids_a_promise() {
+    // The one table of operator domains (graph::undefined_un_over) is what
+    // a promise's validity reads: for each operation's undefined case (a
+    // match here must decide every operation's), a promise whose k comes of
+    // it promises nothing, so a box's bound holds the field at its points.
+    // sqrt of a negative has none: it is sqrt(max(a, 0)), continuous.
+    use ink::graph::{BinOp, Graph, UnOp, Var, undefined_bin, undefined_un};
+    assert!(UnOp::ALL.iter().enumerate().all(|(i, op)| op.index() == i));
+    assert!(BinOp::ALL.iter().enumerate().all(|(i, op)| op.index() == i));
+    let inf = f64::INFINITY;
+    let un = |op: UnOp| match op {
+        UnOp::Ln => Some(-1.0),
+        UnOp::Sin | UnOp::Cos | UnOp::Tan => Some(inf),
+        UnOp::Neg | UnOp::Abs | UnOp::Sqrt | UnOp::Square | UnOp::Exp | UnOp::Floor | UnOp::Rad | UnOp::Deg => None,
+    };
+    let bin = |op: BinOp| match op {
+        BinOp::Div => Some([1.0, 0.0]),
+        BinOp::Add => Some([inf, -inf]),
+        BinOp::Sub => Some([inf, inf]),
+        BinOp::Mul => Some([0.0, inf]),
+        BinOp::Pow => Some([-1.0, 0.5]),
+        BinOp::Min | BinOp::Max | BinOp::Atan2 | BinOp::Emax => None,
+    };
+    let cases = UnOp::ALL
+        .iter()
+        .filter_map(|&op| un(op).map(|a| (format!("{op:?}"), [a, 0.0], Some(op), None)))
+        .chain(BinOp::ALL.iter().filter_map(|&op| bin(op).map(|ab| (format!("{op:?}"), ab, None, Some(op)))));
+    for (name, [a, b], u, o) in cases {
+        assert!(u.is_some_and(|op| undefined_un(op, a).is_some()) || o.is_some_and(|op| undefined_bin(op, a, b).is_some()), "{name}");
+        let mut g = Graph::default();
+        let (x, p, q) = (g.var(Var::X), g.var(Var::Param(0)), g.var(Var::Param(1)));
+        let c = match (u, o) {
+            (Some(op), _) => g.un(op, p),
+            (_, Some(op)) => g.bin(op, p, q),
+            _ => unreachable!(),
+        };
+        let small = g.constant(0.001);
+        let k = g.add(small, c);
+        let half = g.constant(0.5);
+        let f = g.mul(half, x);
+        let f = g.lipschitz(f, k);
+        let t = Tape::new(&g, f);
+        let ctx = Ctx::new(0.0, vec![a, b]);
+        let v = eval_interval(&t, &ctx, [I::new(-1.0, 1.0), I::point(0.0), I::point(0.0)], None);
+        let at = eval_point(&t, &ctx, [1.0, 0.0, 0.0]);
+        assert!(v.contains(at), "{name}: [{}, {}] excludes f(1, 0, 0) = {at}", v.lo, v.hi);
+    }
+}
+
+#[test]
+fn a_promise_reads_the_branch_a_select_takes() {
+    // (param p 1) (lipschitz 1 (/ x (+ 0.001 (ln (select p x -1))))): the
+    // select takes -1 everywhere, so ln reads an undefined case and the
+    // promise holds nothing; whatever bounds a value (plain, over a ranged
+    // param, linear) reads the select's branch as its validity does.
+    use ink::graph::{BinOp, Graph, UnOp, Var};
+    let mut g = Graph::default();
+    let (x, p) = (g.var(Var::X), g.var(Var::Param(0)));
+    let minus = g.constant(-1.0);
+    let s = g.select(p, x, minus);
+    let q = g.un(UnOp::Ln, s);
+    let small = g.constant(0.001);
+    let d = g.add(small, q);
+    let f = g.bin(BinOp::Div, x, d);
+    let one = g.constant(1.0);
+    let f = g.lipschitz(f, one);
+    let t = Tape::new(&g, f);
+    let ctx = Ctx::new(0.0, vec![1.0]);
+    let b = [I::new(-1.0, 1.0), I::point(0.0), I::point(0.0)];
+    let at = eval_point(&t, &ctx, [1.0, 0.0, 0.0]);
+    let mut ranged = ctx.clone();
+    ranged.p_spans = ParamSpans::new([(0, (1.0, 2.0))]);
+    for (how, v) in
+        [("plain", eval_interval(&t, &ctx, b, None)), ("ranged", eval_interval_scope(&t, &ranged, b, None)), ("linear", eval_interval_linear(&t, &ctx, &Region::Box(b), None))]
+    {
+        assert!(v.contains(at), "{how}: [{}, {}] excludes f(1, 0, 0) = {at}", v.lo, v.hi);
+    }
+}
+
+#[test]
+fn a_frames_value_is_0_wherever_it_is_bounded() {
+    // A promise's frame is coordinates, valued 0: no bound of values (here a
+    // derivative's, whose slope rules tighten each value) reads anything
+    // else in its slot.
+    use ink::graph::{Graph, UnOp, Var};
+    let mut g = Graph::default();
+    let x = g.var(Var::X);
+    let quarter = g.constant(0.25);
+    let sx = g.un(UnOp::Sin, x);
+    let f = g.mul(quarter, sx);
+    let one = g.constant(1.0);
+    let f = g.lipschitz(f, one);
+    let d = g.derivative(f, Var::X);
+    let t = Tape::new(&g, d);
+    let ctx = Ctx::new(0.0, vec![]);
+    let b = [I::new(-1.0, 1.0), I::point(0.0), I::point(0.0)];
+    let fr = t.ssa.iter().position(|i| matches!(i.op, ink::tape::Op::Frame)).expect("a frame");
+    let every = eval_interval_scope_every(&t, &ctx, &Inputs::default(), b, false);
+    assert!(every.v[fr] == I::point(0.0), "the frame's slot holds [{}, {}]", every.v[fr].lo, every.v[fr].hi);
+}
+
+#[test]
+fn a_promised_bound_reads_each_context() {
+    // A promise's formula, found once per tape, is read at each query's
+    // params and moment, and over a ranged context's spans.
+    use ink::graph::{BinOp, Graph, UnOp, Var};
+    let mut g = Graph::default();
+    let (x, z, p, time) = (g.var(Var::X), g.var(Var::Z), g.var(Var::Param(0)), g.var(Var::T));
+    let half = g.constant(0.5);
+    let zh = g.add(z, half);
+    let gap = g.sub(zh, z);
+    let sq = g.un(UnOp::Square, gap);
+    let len = g.un(UnOp::Sqrt, sq);
+    let unit = g.bin(BinOp::Div, gap, len);
+    let off = g.add(p, time);
+    let delta = g.sub(x, off);
+    let f = g.mul(delta, unit);
+    let one = g.constant(1.0);
+    let f = g.lipschitz(f, one);
+    let t = Tape::new(&g, f);
+    let b = [I::new(-1.0, 1.0); 3];
+    for k in 0..20 {
+        let ctx = Ctx::new(k as f64, vec![2.0 * k as f64]);
+        let v = eval_interval(&t, &ctx, b, None);
+        for x in [-1.0, 0.0, 1.0] {
+            let at = eval_point(&t, &ctx, [x, 0.0, 0.0]);
+            assert!(v.contains(at), "at t = {k}: [{}, {}] excludes {at}", v.lo, v.hi);
+        }
+    }
+    let mut ctx = Ctx::new(0.0, vec![0.0]);
+    ctx.t_span = Some((-5.0, 7.0));
+    ctx.p_spans = ParamSpans::new([(0, (-9.0, 11.0))]);
+    let v = eval_interval(&t, &ctx, b, None);
+    assert!(v.contains(-19.0) && v.contains(15.0), "over the spans: [{}, {}]", v.lo, v.hi);
 }
 
 #[test]
@@ -980,17 +1226,151 @@ fn the_field_keeps_simplified_triangles_on_the_surface() {
 #[test]
 fn mesh_reports_features_thinner_than_res() {
     // A plate 0.4 thick: at res 1 most of it falls between samples, and the
-    // cells it passes through are counted, with one centre inside it.
+    // cells it passes through are counted, with one sample inside it.
     // (The grid's planes, z = -0.2 + k h, miss the plate's faces.)
     let mut d = doc("(body b (shape (move (box 20 20 0.4) 0 0 0.3)))");
     let (tape, ctx) = clipped(&mut d, "b");
     let (lo, hi) = ([-10.0, -10.0, -0.2], [10.0, 10.0, 0.6]);
-    let (m, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 1.0);
+    let (m, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 1.0, SEARCHED).unwrap();
     assert!(u.cells > 0, "{} triangles, no gap reported", m.tris.len());
     let at = u.at.unwrap();
     assert!(eval_point(&tape, &ctx, at) < 0.0, "{at:?} is not in the plate");
-    let (_, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 0.1);
+    let (_, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 0.1, SEARCHED).unwrap();
     assert_eq!(u.cells, 0);
+}
+
+/// No limit on the grid, and a search of up to ten million samples.
+const SEARCHED: mesh::Limit = mesh::Limit { bricks: usize::MAX, search: 1e7 };
+
+#[test]
+fn every_part_a_mesh_leaves_out_is_reported_however_thick_or_near_what_is_drawn() {
+    // A ball 1.4 across in a cell 1 wide, between its corners: wider than
+    // the cell, still missed.
+    let mesh_of = |model: &str, lo: [f64; 3], hi: [f64; 3]| {
+        let mut d = doc(model);
+        let (tape, ctx) = clipped(&mut d, "b");
+        mesh::mesh_checked(&tape, &ctx, lo, hi, 1.0, SEARCHED).unwrap()
+    };
+    let (m, u) = mesh_of("(body b (shape (move (sphere 0.7) 0.5 0.5 0.5)))", [0.0; 3], [1.0; 3]);
+    assert!(m.tris.is_empty() && u.cells > 0 && u.material > 0, "{u:?}");
+    // A ball 0.04 across 0.3 off a box's face, beside cells the box's
+    // surface crosses: a part of its own, counted besides the box's.
+    let (_, alone) = mesh_of("(body b (shape (box 2 2 2)))", [-2.0; 3], [2.0; 3]);
+    let (m, u) = mesh_of("(body b (shape (min (box 2 2 2) (move (sphere 0.02) 1.3 0.3 0.3))))", [-2.0; 3], [2.0; 3]);
+    assert!(m.verts.iter().all(|v| v[0] <= 1.001) && u.cells > alone.cells && u.beside > alone.beside, "{alone:?} alone, {u:?} with the ball");
+}
+
+/// A body's field, unclipped, and its context.
+fn body_field(src: &str) -> (Arc<Tape>, Ctx) {
+    let mut d = ink::load_str(&format!("(import \"std\")\n{src}"), "test", Path::new(".")).unwrap();
+    let it = d.items("b").unwrap().remove(0);
+    let f = d.placed_field(&it);
+    (Arc::new(Tape::new(&d.g, f)), d.ctx(&[], 0.0).unwrap())
+}
+
+#[test]
+fn a_spike_between_samples_is_reported_though_its_surface_is_one_sheet() {
+    // A plate with a spike to z = 3, 0.16 across at z = 2: its surface is
+    // one sheet over x, y (the field rises along z), but no patch is drawn
+    // in the cells it rises through. Searched or not, they are reported.
+    let (t, c) = body_field("(body b (shape (max (box 20 20 20) (- -8 z) (min z (+ (- z 3) (* 150 (+ (square (- x 0.5)) (square (- y 0.5)))))))))");
+    assert!(eval_point(&t, &c, [0.5, 0.5, 2.0]) < 0.0);
+    for search in [0.0, 1e7] {
+        let (m, u) = mesh::mesh_checked(&t, &c, [-10.0, -10.0, -8.0], [10.0, 10.0, 3.0], 1.0, mesh::Limit { bricks: 100000, search }).unwrap();
+        assert!(m.verts.iter().all(|p| p[2] <= 0.001), "the spike is drawn");
+        let r = u.regions.iter().find(|r| r.lo[2] <= 2.0 && r.hi[2] >= 2.0 && r.lo[0] <= 0.5 && r.hi[0] >= 0.5);
+        assert!(u.cells > 0 && r.is_some(), "search {search}: {u:?}");
+    }
+}
+
+#[test]
+fn unresolved_regions_keep_every_cell_and_a_point_in_each() {
+    // Two balls 0.04 across, far apart, beside nothing: two regions, each
+    // holding its ball, their cells summing to the mesh's.
+    let (t, c) = body_field("(body b (shape (min (move (sphere 0.02) 0.3 0.3 0.3) (move (sphere 0.02) 30.3 0.3 0.3) (move (box 1 1 1) 15 0 0))))");
+    let (_, u) = mesh::mesh_checked(&t, &c, [-1.0; 3], [31.0, 1.0, 1.0], 1.0, mesh::Limit { bricks: 100000, search: 0.0 }).unwrap();
+    assert_eq!(u.regions.iter().map(|r| r.cells).sum::<usize>(), u.cells, "{u:?}");
+    for ball in [[0.3, 0.3, 0.3], [30.3, 0.3, 0.3]] {
+        assert!(u.regions.iter().any(|r| (0..3).all(|a| r.lo[a] <= ball[a] && ball[a] <= r.hi[a])), "{ball:?} in no region: {:?}", u.regions);
+    }
+    assert!(u.regions.iter().all(|r| (0..3).all(|a| r.lo[a] <= r.at[a] && r.at[a] <= r.hi[a])), "{:?}", u.regions);
+}
+
+/// Whether the field over `b` may crease (Tape::may_crease).
+fn may_crease(src: &str, b: [I; 3]) -> bool {
+    let (t, c) = body_field(src);
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    eval_interval(&t, &c, b, Some(&mut ch));
+    t.may_crease(&ch, &eval_interval_grad_every(&t, &c, b))
+}
+
+#[test]
+fn creases_are_where_branches_part_at_any_scale_and_not_in_a_hypot() {
+    // emax of x, y above 0 is their hypot: smooth.
+    assert!(!may_crease("(body b (shape (- (emax x y) 1)))", [I::new(0.69, 0.72), I::new(0.69, 0.72), I::point(0.0)]));
+    // A right-angle max, as written and scaled by 1e-100 (its gradients'
+    // products underflow unscaled).
+    let b = [I::new(0.99, 1.01), I::new(0.99, 1.01), I::point(0.0)];
+    assert!(may_crease("(body b (shape (- (max x y) 1)))", b));
+    assert!(may_crease("(body b (shape (- (max (* 1e-100 x) (* 1e-100 y)) 1e-100)))", b));
+}
+
+/// Whether `src`'s field changes sign at most once along `d` over `b`.
+fn one_change(src: &str, b: [I; 3], d: [f64; 3]) -> bool {
+    let (t, c) = body_field(src);
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    eval_interval(&t, &c, b, Some(&mut ch));
+    t.monotone(&ch, &eval_interval_grad_every(&t, &c, b), d)
+}
+
+#[test]
+fn a_sign_kept_or_scaled_does_not_hide_a_single_sheet() {
+    // A face, x, and another face's field, -1.2 - x, below 0 here but not
+    // below x everywhere (the max undecided), falling along +x: the max
+    // changes sign once along +x, as x does, though its rates' hull holds
+    // 0. So does twice it.
+    let b = [I::new(-1.0, 1.0), I::new(-1.0, 1.0), I::new(-1.0, 1.0)];
+    assert!(one_change("(body b (shape (max x (- -1.2 x))))", b, [1.0, 0.0, 0.0]));
+    assert!(one_change("(body b (shape (* 2 (max x (- -1.2 x)))))", b, [1.0, 0.0, 0.0]));
+    // Two sheets, x and 0.5 - x, both crossing 0 here: not one.
+    assert!(!one_change("(body b (shape (max x (- -0.5 x))))", b, [1.0, 0.0, 0.0]));
+}
+
+#[test]
+fn a_select_switching_between_fields_is_a_seam() {
+    let b = [I::new(-1.0, 1.0); 3];
+    let seam = |src: &str| {
+        let (t, c) = body_field(src);
+        let mut ch = vec![ink::tape::BOTH; t.len()];
+        eval_interval(&t, &c, b, Some(&mut ch));
+        t.switches(&ch)
+    };
+    assert!(seam("(body b (shape (select x (- y 0.1) (- y 0.2))))"));
+    assert!(!seam("(body b (shape (select (- x 5) (- y 0.1) (- y 0.2))))"));
+}
+
+#[test]
+fn a_select_that_may_switch_is_not_monotone() {
+    // Along +x it jumps down at 0: roots at -0.25 and 0.25.
+    let (t, c) = body_field("(body b (shape (select x (+ x 0.25) (- x 0.25))))");
+    let b = [I::new(-1.0, 1.0); 3];
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    eval_interval(&t, &c, b, Some(&mut ch));
+    assert!(!t.monotone(&ch, &eval_interval_grad_every(&t, &c, b), [1.0, 0.0, 0.0]));
+}
+
+#[test]
+fn a_mesh_past_its_grid_limit_is_not_made() {
+    // A ball 0.2 across beside a field its bounds cannot prove positive
+    // (2x - (x + x) reads as an interval round 0): every brick of its box
+    // is sampled. Past its limit the descent stops; at twice the res
+    // within it, made.
+    let mut d = doc("(body b (shape (min (sphere 0.1) (max (box 1 1 1) (+ 0.000001 (- (* 2 x) (+ x x)))))))");
+    let (tape, ctx) = clipped(&mut d, "b");
+    let limit = mesh::Limit { bricks: 600, search: 0.0 };
+    assert!(mesh::mesh_checked(&tape, &ctx, [-0.5; 3], [0.5; 3], 0.01, limit).is_none());
+    let (m, u) = mesh::mesh_checked(&tape, &ctx, [-0.5; 3], [0.5; 3], 0.02, limit).unwrap();
+    assert!(!m.tris.is_empty() && u.cost <= 600.0 * mesh::BRICK_TRIANGLES, "{} triangles, {u:?}", m.tris.len());
 }
 
 #[test]
@@ -2493,6 +2873,130 @@ fn jumps_bound_as_choices_hold_the_field() {
     }
 }
 
+/// std's thread-iso is the field of its phase composed from turned
+/// directions, (cos kz, sin kz) and (x, y) / r with atan2 of their
+/// products, written as turns less their floor: the same value at every
+/// point, the axis included (no direction there: a crest's centre, which a
+/// pitch too coarse for its diameter reads), near it, on atan2's cut and
+/// at the wrap, for fine and coarse pitches.
+#[test]
+fn thread_iso_is_its_composed_phase_everywhere() {
+    let composed = "(fn composed (d p)
+          (let ((r (len2 x y)) (r-minor (- (* 0.5 d) (* 0.5412659 p))) (k (/ (* 2 pi) p))
+                (cx (/ x r)) (sx (/ y r)) (cz (cos (* k z))) (sz (sin (* k z)))
+                (w (/ (abs (atan2 (- (* cz sx) (* sz cx)) (neg (+ (* cz cx) (* sz sx))))) k)))
+            (min (- r r-minor) (max (- r (* 0.5 d)) (+ (* 0.5 (- r r-minor)) (* 0.8660254 (- w (* 0.375 p))))))))";
+    let mut rng = 97531u64;
+    let mut u = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for (d, p) in [(5.0, 0.8), (1.0, 1.0), (2.0, 0.4), (3.0, 2.0), (20.0, 3.0)] {
+        let doc = doc(&format!("{composed}\n(def a (thread-iso {d} {p}))\n(def b (composed {d} {p}))"));
+        let ctx = doc.ctx(&[], 0.0).unwrap();
+        let tape = |name: &str| {
+            let ink::lang::Value::Field(f, _) = doc.def(name).unwrap().clone() else { panic!() };
+            Tape::new(&doc.g, f)
+        };
+        let (a, b) = (tape("a"), tape("b"));
+        let pts = (0..400).map(|i| {
+            let (z, t, near) = (4.0 * p * u() - 2.0 * p, 2.0 * PI * u() - PI, [0.0, 1e-300, 1e-12, 1e-6 * u(), 1e-3 * u()]);
+            match i % 8 {
+                k @ 0..5 => [near[k] * t.cos(), near[k] * t.sin(), z],
+                // On atan2's cut, and there where the phase is a whole number of turns.
+                5 => [-0.6 * d * u(), 0.0, z],
+                6 => [-0.6 * d * u(), 0.0, p * (z / p).round()],
+                _ => [0.7 * d * u() * t.cos(), 0.7 * d * u() * t.sin(), z],
+            }
+        });
+        for q in pts {
+            let (va, vb) = (eval_point(&a, &ctx, q), eval_point(&b, &ctx, q));
+            assert!((va - vb).abs() <= 1e-12 * (1.0 + vb.abs()), "thread-iso {d} {p} at {q:?}: {va} against {vb}");
+        }
+    }
+}
+
+/// A gradient's bounds take a jump a box straddles once as a choice of its
+/// two sides, as value bounds do, joined where the field is continuous
+/// across it: where the sides are one function over the box (atan2's
+/// branches a whole turn apart, read by a sine or cosine, or in degrees as
+/// turns less their floor), or where they give one exact value where they
+/// meet (a floor's wrap read by its distance from the middle, 1/2 on both
+/// sides). So std's thread-iso, its phase in turns, on a flank on atan2's
+/// cut and across its wrap, rises toward its axis there. Where the sides
+/// differ (atan2 itself; half its angle's sine; a sawtooth; a wrap read off
+/// its middle), the partials across the seam stay unbounded, and those
+/// along an axis the seam does not move along are the sides'. Every
+/// sampled point's gradient lies in the bounds, and every pair of points
+/// within their Lipschitz bound.
+#[test]
+fn slope_bounds_take_a_jump_as_a_choice() {
+    use ink::interval::lipschitz;
+    let on_cut = [I::new(-2.32, -2.28), I::new(-0.02, 0.02), I::new(-3.02, -2.98)];
+    let grad = |src: &str, b: [I; 3]| {
+        let (d, tape) = tape_of(src);
+        eval_interval_grad(&tape, &d.ctx(&[], 0.0).unwrap(), b)
+    };
+    let thread = grad("(thread-iso 5 0.8)", on_cut);
+    assert!(thread.d[0].hi < -0.3 && lipschitz(&thread).is_finite(), "{thread:?}");
+    // The wrap: z where the phase is a whole number of turns.
+    let wrap = [I::new(-2.32, -2.28), I::new(0.1, 0.14), I::new(-2.02, -1.98)];
+    let wrapped = grad("(thread-iso 5 0.8)", wrap);
+    assert!(wrapped.d[0].hi < -0.3 && lipschitz(&wrapped).is_finite(), "{wrapped:?}");
+    let turned = grad("(cos (- (atan2 y x) z))", on_cut);
+    assert!(lipschitz(&turned).is_finite(), "{turned:?}");
+    for src in ["(atan2 y x)", "(sin (* 0.5 (atan2 y x)))"] {
+        let g = grad(src, on_cut);
+        assert!(!g.d[1].hi.is_finite() && g.d[2] == I::point(0.0) && lipschitz(&g).is_infinite(), "{src}: {g:?}");
+    }
+    let across = [I::new(0.32, 0.35), I::new(-0.01, 0.01), I::new(-0.01, 0.01)];
+    assert!(lipschitz(&grad("(abs (- (* 3 x) (floor (* 3 x)) 0.5))", across)).is_finite());
+    for src in ["(- (* 3 x) (floor (* 3 x)))", "(abs (- (* 3 x) (floor (* 3 x)) 0.4))"] {
+        let g = grad(src, across);
+        assert!(!g.d[0].hi.is_finite() && g.d[1] == I::point(0.0) && lipschitz(&g).is_infinite(), "{src}: {g:?}");
+    }
+    let mut rng = 2468u64;
+    let mut u = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let cases = [
+        "(thread-iso 5 0.8)",
+        "(cos (- (atan2 y x) z))",
+        "(atan2 y x)",
+        "(sin (* 0.5 (atan2 y x)))",
+        "(abs (atan2 y x))",
+        "(* x (floor (* 3 z)))",
+        "(abs (- (* 3 x) (floor (* 3 x)) 0.5))",
+        "(abs (- (* 3 x) (floor (* 3 x)) 0.4))",
+        "(let ((q (- (/ (rad->deg (atan2 y x)) 360) z))) (* y (abs (- q (floor q) 0.5))))",
+        "(repeat-polar (move (box 1 0.4 1) 2 0 0) 7)",
+    ];
+    for src in cases {
+        let (d, tape) = tape_of(src);
+        let ctx = d.ctx(&[], 0.0).unwrap();
+        for _ in 0..2000 {
+            let c = [-0.5 - 2.5 * u(), 0.2 * u() - 0.1, 6.0 * u() - 3.0];
+            let h = 0.005 + 0.3 * u();
+            let b = c.map(|v| I::new(v - h, v + h));
+            let g = eval_interval_grad(&tape, &ctx, b);
+            let (l, pts): (f64, Vec<[f64; 3]>) = (lipschitz(&g), (0..8).map(|_| c.map(|v| v - h + 2.0 * h * u())).collect());
+            let at = eval_grads(&tape, &ctx, &pts);
+            for (p, a) in pts.iter().zip(&at) {
+                assert!(g.v.contains(a[0]) && (0..3).all(|k| g.d[k].lo - 1e-9 <= a[k + 1] && a[k + 1] <= g.d[k].hi + 1e-9), "{src}: {a:?} outside {g:?} at {p:?}");
+            }
+            for (i, j) in [(0, 1), (2, 3), (4, 5), (6, 7)] {
+                let r = (0..3).map(|k| (pts[i][k] - pts[j][k]).powi(2)).sum::<f64>().sqrt();
+                assert!((at[i][0] - at[j][0]).abs() <= l * r * (1.0 + 1e-9) + 1e-12, "{src}: {} apart over {r} with slope {l} in {b:?}", (at[i][0] - at[j][0]).abs());
+            }
+        }
+    }
+}
+
 /// A jump a box and scope straddle once is a choice of its two sides in
 /// bounds first order in time and ranged params too (eval::scope_run), each
 /// side its branch continued over the whole region: an arm of a polar
@@ -2503,35 +3007,45 @@ fn jumps_bound_as_choices_hold_the_field() {
 /// (above 0) and the copies' insides (below 0). Where the params do not
 /// move the seam (an arm tilted about its own axis), each point takes one
 /// side for every value of them, so its rates are the sides' (+-0.09; not
-/// +-8.6, from the whole period's bounds). Every point of the box at every value of the scope lies in
-/// the bounds, its rates in theirs, and its change from the scope's centre
-/// within what bounded rates allow (the mean value bound motion's steps
-/// read): so a value that jumps where the params move the cut (half an
-/// angle's sine, -1 to 1) has unbounded rates. The centred bound (each
-/// value of the tape kept, every value of a window joined) holds too.
+/// +-8.6, from the whole period's bounds). Where they move it, the value
+/// may jump by the second side less the first at a point, bounded with
+/// the sides' rates (eval_interval_rates_jump): the arm turned across
+/// atan2's cut is one arm on both sides, a whole turn round, but std's
+/// repeat-polar folds it by 2 pi / 12 rounded, so its sides differ by
+/// rounding (the sides' rates +-0.18, a jump under 1e-13), while half an
+/// angle's sine really jumps (by about 2) and the linear repeat's
+/// neighbouring copies agree only on the seam. Every point of the box at
+/// every value of the scope lies in the bounds, its rates in theirs, and
+/// its change from the scope's centre within what bounded rates allow
+/// (the mean value bound motion's steps read), or the sides' rates and
+/// the jump; eval_interval_rates calls a value that may jump unbounded.
+/// The centred bound (each value of the tape kept, every value of a
+/// window joined) holds too.
 #[test]
 fn first_order_bounds_take_a_seam_as_a_choice() {
     let arms = "(repeat-polar (move (box 4 2 2) 10 0 0) 12)";
     let seam = [I::new(-10.05, -9.95), I::new(-0.05, 0.05), I::new(-0.05, 0.05)];
+    // The jump bounded: none, under 1e-13, or one that is really there.
+    let (none, rounding, real) = ((0.0, 0.0), (1e-300, 1e-13), (0.5, 3.0));
     let cases = [
-        // (field, box, p's span, t's span, the bound's ends lie in, rates bounded)
-        (format!("(rotate-z {arms} p)"), seam, Some((-1.0, 1.0)), None, I::new(-1.01, -0.7), false),
-        (format!("(rotate-z {arms} (* 2 t))"), seam, None, Some((0.0, 0.5)), I::new(-1.01, -0.7), false),
-        ("(move (repeat-x (sphere 2) 10) p 0 0)".into(), [I::new(4.95, 5.05), I::new(-0.05, 0.05), I::new(-0.05, 0.05)], Some((-0.5, 0.5)), None, I::new(2.4, 3.6), false),
+        // (field, box, p's span, t's span, the bound's ends lie in, the jump's bound lies in)
+        (format!("(rotate-z {arms} p)"), seam, Some((-1.0, 1.0)), None, I::new(-1.01, -0.7), rounding),
+        (format!("(rotate-z {arms} (* 2 t))"), seam, None, Some((0.0, 0.5)), I::new(-1.01, -0.7), rounding),
+        ("(move (repeat-x (sphere 2) 10) p 0 0)".into(), [I::new(4.95, 5.05), I::new(-0.05, 0.05), I::new(-0.05, 0.05)], Some((-0.5, 0.5)), None, I::new(2.4, 3.6), real),
         (
             "(repeat-polar (move (rotate-x (box 4 2 2) (* 40 p)) 10 0 0) 12)".into(),
             [I::new(-10.05, -9.95), I::new(-0.05, 0.05), I::new(0.35, 0.45)],
             Some((-0.25, 0.25)),
             None,
             I::new(-0.7, -0.5),
-            true,
+            none,
         ),
-        ("(+ (* 0.01 x) (sin (* 0.5 (atan2 (- y (* 0.1 p)) x))))".into(), seam, Some((-1.0, 1.0)), None, I::new(-1.11, 1.11), false),
-        ("(sin (mod (- x (* 3 p)) 10))".into(), seam, Some((-0.1, 0.1)), None, I::new(-0.85, 0.4), false),
-        ("(max (sin (* 0.5 (atan2 (* 0.1 p) -1))) (- (* 0.01 x) 2))".into(), seam, Some((-1.0, 1.0)), None, I::new(-1.01, 1.01), false),
+        ("(+ (* 0.01 x) (sin (* 0.5 (atan2 (- y (* 0.1 p)) x))))".into(), seam, Some((-1.0, 1.0)), None, I::new(-1.11, 1.11), real),
+        ("(sin (mod (- x (* 3 p)) 10))".into(), seam, Some((-0.1, 0.1)), None, I::new(-0.85, 0.4), real),
+        ("(max (sin (* 0.5 (atan2 (* 0.1 p) -1))) (- (* 0.01 x) 2))".into(), seam, Some((-1.0, 1.0)), None, I::new(-1.01, 1.01), real),
     ];
     let mut rng = Lcg(31);
-    for (src, b, sp, st, within, bounded) in cases {
+    for (src, b, sp, st, within, (jlo, jhi)) in cases {
         let d = doc(&format!("(param p 0) (def f {src})"));
         let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
         let tape = Tape::new(&d.g, f);
@@ -2541,12 +3055,15 @@ fn first_order_bounds_take_a_seam_as_a_choice() {
         let ctx = Ctx { t_span: st, p_spans: ParamSpans::new(sp.map(|s| (kp, s))), ..Ctx::new(st.map_or(0.0, span_mid), params) };
         let inputs = Inputs { t: st.is_some(), ..Inputs::of([&tape], &ctx) };
         let (r, rates) = eval_interval_rates(&tape, &ctx, b, &inputs);
+        let (_, sides, jump) = eval_interval_rates_jump(&tape, &ctx, b, &inputs);
         let lower = centred_lower(&tape, &ctx, b).unwrap_or(f64::NEG_INFINITY);
         assert!(within.contains(r.lo) && within.contains(r.hi), "{src}: {r:?}, not within {within:?}");
         // Unbounded is ENTIRE, never NaN (which every test below would pass).
         assert!(rates.iter().all(|x| !x.lo.is_nan() && !x.hi.is_nan()) && !lower.is_nan(), "{src}: rates {rates:?}, centred {lower}");
         let finite = rates.iter().all(|x| x.lo.is_finite() && x.hi.is_finite());
-        assert!(finite || !bounded, "{src}: rates {rates:?}");
+        let sided = sides.iter().all(|x| x.lo.is_finite() && x.hi.is_finite());
+        assert!(sided && jlo <= jump && jump <= jhi, "{src}: the sides' rates {sides:?}, jump {jump:e}, not in [{jlo:e}, {jhi:e}]");
+        assert!(finite == (jump == 0.0), "{src}: rates {rates:?} with a jump of {jump:e}");
         let centre = |pt: [f64; 3]| eval_point(&tape, &Ctx::new(st.map_or(0.0, span_mid), ctx.params.clone()), pt);
         for _ in 0..4000 {
             let pt = b.map(|x| rng.range(x.lo, x.hi));
@@ -2558,13 +3075,21 @@ fn first_order_bounds_take_a_seam_as_a_choice() {
             assert!(r.contains(v) && lower <= v, "{src}: f({pt:?}, {:?}, t {t}) = {v} outside {r:?} or below {lower}", at.params);
             let dual = eval_dual(&tape, &at, pt);
             let along: Vec<(usize, f64)> = st.map(|s| (4, t - span_mid(s))).into_iter().chain(sp.map(|s| (5 + kp as usize, at.params[kp as usize] - span_mid(s)))).collect();
-            let mut moved = 0.0;
+            let (mut moved, mut slid) = (0.0, 0.0);
             for (j, &(x, du)) in along.iter().enumerate() {
                 assert!(rates[j].contains(dual[x]) || rates[j] == I::ENTIRE, "{src}: rate {j} at {pt:?}, {:?}, t {t} = {} outside {:?}", at.params, dual[x], rates[j]);
+                assert!(sides[j].contains(dual[x]), "{src}: rate {j} at {pt:?}, {:?}, t {t} = {} outside the sides' {:?}", at.params, dual[x], sides[j]);
                 moved += ink::interval::mag(rates[j]) * du.abs();
+                slid += ink::interval::mag(sides[j]) * du.abs();
             }
             let change = (v - centre(pt)).abs();
             assert!(!finite || change <= moved * (1.0 + 1e-9) + 1e-12, "{src}: f({pt:?}, {:?}, t {t}) moved {change} from the centre, rates {rates:?} allow {moved}", at.params);
+            assert!(
+                change <= slid * (1.0 + 1e-9) + jump + 1e-12,
+                "{src}: f({pt:?}, {:?}, t {t}) moved {change} from the centre, the sides' rates {sides:?} and jump {jump:e} allow {}",
+                at.params,
+                slid + jump
+            );
         }
     }
 }
@@ -2645,4 +3170,161 @@ fn answers_outside_the_range_of_validity_are_unknown() {
     // At ordinary magnitudes a strip (u 0: |y| < 0.01) turns into the
     // post: it fails.
     assert_eq!(in_motion(&strip("1", "0", "1", "1")).status, Status::Fails);
+}
+
+/// Four angles wrapped at one moment (each a floor of t forked inside the
+/// others' windows, every pair of sides paired): read through cos, whole
+/// turns apart, they jump by rounding only (P3's crank: the mean of their
+/// cosines), with their sides' rates bounded; the cosine of three
+/// quarters of each really jumps (from 0 to 1), and its jump's bound holds
+/// that. Every moment's value
+/// lies within the sides' rates and the jump of the centre's.
+#[test]
+fn wraps_at_one_moment_jump_by_their_sides_difference() {
+    let wraps = "(def w1 (mod (* 10 t) (* 2 pi))) (def w2 (* 0.5 (mod (* 20 t) (* 4 pi)))) \
+                 (def w3 (* 2 (mod (* 5 t) pi))) (def w4 (* 0.25 (mod (* 40 t) (* 8 pi))))";
+    let span = (0.62, 0.64);
+    for (f, lo, hi) in [
+        ("(* 0.25 (+ (cos w1) (cos w2) (cos w3) (cos w4)))", 1e-300, 1e-12),
+        ("(* 0.25 (+ (sin w1) (sin w2) (sin w3) (sin w4)))", 1e-300, 1e-12),
+        ("(* 0.25 (+ (cos (* 0.75 w1)) (cos (* 0.75 w2)) (cos (* 0.75 w3)) (cos (* 0.75 w4))))", 1.0, 2.0),
+    ] {
+        let d = doc(&format!("{wraps} (def f {f})"));
+        let ink::lang::Value::Field(g, _) = d.def("f").unwrap().clone() else { panic!() };
+        let tape = Tape::new(&d.g, g);
+        let ctx = Ctx { t_span: Some(span), ..Ctx::new(span_mid(span), vec![0.0; d.params.len()]) };
+        let b = [I::point(0.0); 3];
+        let (r, sides, jump) = eval_interval_rates_jump(&tape, &ctx, b, &Inputs { t: true, params: Vec::new() });
+        let rate = ink::interval::mag(sides[0]);
+        assert!(rate.is_finite() && lo <= jump && jump <= hi, "{f}: the sides' rate {:?}, jump {jump:e}, not in [{lo:e}, {hi:e}]", sides[0]);
+        let at = |t: f64| eval_point(&tape, &Ctx::new(t, ctx.params.clone()), [0.0; 3]);
+        let c = at(span_mid(span));
+        for k in 0..=2000 {
+            let t = span.0 + (span.1 - span.0) * k as f64 / 2000.0;
+            let v = at(t);
+            assert!(r.contains(v), "{f}: at t {t}, {v} outside {r:?}");
+            let allow = rate * (t - span_mid(span)).abs() * (1.0 + 1e-9) + jump + 1e-12;
+            assert!((v - c).abs() <= allow, "{f}: at t {t} moved {} from the centre, the sides' rate {rate} and jump {jump:e} allow {allow}", (v - c).abs());
+        }
+    }
+}
+
+/// The speed of an angle wrapped by `mod` (Graph::derivative's mark, its
+/// formula 360 at every moment) where its wrap lies inside the fork's
+/// window: each side is continuous, but the drive jumps by 360 between
+/// them, so the speed's rate along t is unbounded over any span holding the
+/// wrap (motion's may_jump reads it), though its value does not jump.
+#[test]
+fn a_speed_keeps_its_drives_jump_across_a_fork() {
+    let d = doc("(def f (diff (mod (* 360 t) 360) t))");
+    let ink::lang::Value::Field(g, _) = d.def("f").unwrap().clone() else { panic!() };
+    let tape = Tape::new(&d.g, g);
+    for span in [(0.0, 1.5), (0.75, 1.5), (0.99, 1.01)] {
+        let ctx = Ctx { t_span: Some(span), ..Ctx::new(span_mid(span), vec![0.0; d.params.len()]) };
+        let (_, rates) = eval_interval_rates(&tape, &ctx, [I::ENTIRE; 3], &Inputs { t: true, params: Vec::new() });
+        assert_eq!(rates, [I::ENTIRE], "over t in {span:?}");
+    }
+}
+
+/// A turn's angle wrapped at a whole turn, read as a turn reads it (sine
+/// and cosine of its degrees in radians, pi exact: UnOp::Rad): the sides
+/// either side of the wrap are 360 degrees apart, exactly a whole turn, so
+/// the jump's bound is exactly 0 and the rates are bounded (a step across
+/// the wrap is continuous, proven, no tolerance). Read through a rounded
+/// pi / 180 they differ by rounding and may jump; wrapped at 180, the turn
+/// really jumps.
+#[test]
+fn a_turn_wrapped_at_a_whole_turn_does_not_jump() {
+    use ink::graph::{BinOp, Graph, UnOp, Var};
+    let span = (0.9, 1.1);
+    // (trig, period of the wrap, its degrees read with Rad or times a rounded pi / 180, continuous)
+    for (trig, period, rad, exact) in
+        [(UnOp::Sin, 360.0, true, true), (UnOp::Cos, 360.0, true, true), (UnOp::Sin, 720.0, true, true), (UnOp::Sin, 360.0, false, false), (UnOp::Cos, 180.0, true, false)]
+    {
+        let mut g = Graph::new();
+        let (t, k360, p) = (g.var(Var::T), g.constant(360.0), g.constant(period));
+        let deg = g.bin(BinOp::Mul, k360, t);
+        let q = g.bin(BinOp::Div, deg, p);
+        let n = g.un(UnOp::Floor, q);
+        let whole = g.bin(BinOp::Mul, p, n);
+        let wrapped = g.bin(BinOp::Sub, deg, whole);
+        let r = if rad {
+            g.un(UnOp::Rad, wrapped)
+        } else {
+            let k = g.constant(PI / 180.0);
+            g.bin(BinOp::Mul, wrapped, k)
+        };
+        let f = g.un(trig, r);
+        let tape = Tape::new(&g, f);
+        let what = format!("{trig:?} of {} wrapped at {period}", if rad { "rad" } else { "times pi / 180" });
+        let ctx = Ctx { t_span: Some(span), ..Ctx::new(span_mid(span), vec![]) };
+        let inputs = Inputs { t: true, params: Vec::new() };
+        let (_, rates, jump) = eval_interval_rates_jump(&tape, &ctx, [I::point(0.0); 3], &inputs);
+        assert!(rates[0].lo.is_finite() && rates[0].hi.is_finite(), "{what}: {rates:?}");
+        assert_eq!(jump == 0.0, exact, "{what}: jump {jump:e}");
+        let continuous = eval_interval_rates(&tape, &ctx, [I::point(0.0); 3], &inputs).1[0];
+        assert_eq!(continuous.hi.is_finite(), exact, "{what}: {continuous:?}");
+    }
+}
+
+/// Whole turns in a fork's side difference are counted exactly, never by
+/// a rounded quotient or sum: 1e20 degrees is 280 past a whole turn, so a
+/// turn by it at each step of floor(t) really jumps (sine by 0.98); a
+/// count of 2^53 + 1 turns less 2^53 is one, so cos of half of it jumps
+/// from 1 to -1 (floats round 2^53 + 1 to 2^53, and lost it); 360 degrees
+/// a step is a whole turn, and does not jump.
+#[test]
+fn whole_turns_are_counted_exactly() {
+    use ink::graph::{BinOp, Graph, UnOp, Var};
+    let span = (0.9, 1.1);
+    let ctx = Ctx { t_span: Some(span), ..Ctx::new(1.0, vec![]) };
+    let inputs = Inputs { t: true, params: Vec::new() };
+    let jump = |g: &Graph, f| eval_interval_rates_jump(&Tape::new(g, f), &ctx, [I::point(0.0); 3], &inputs).2;
+    // sin of deg->rad of k degrees a step.
+    for (step, jumps) in [(1e20, true), (360.0 * 9007199254740992.0, false), (360.0, false)] {
+        let mut g = Graph::new();
+        let (t, k) = (g.var(Var::T), g.constant(step));
+        let n = g.un(UnOp::Floor, t);
+        let deg = g.bin(BinOp::Mul, n, k);
+        let rad = g.un(UnOp::Rad, deg);
+        let f = g.un(UnOp::Sin, rad);
+        let j = jump(&g, f);
+        assert!(if jumps { j > 0.9 } else { j == 0.0 }, "{step} degrees a step: jump {j}");
+    }
+    // cos((a + b - a) / 2), a 2^53 turns a step, b one.
+    let mut g = Graph::new();
+    let t = g.var(Var::T);
+    let n = g.un(UnOp::Floor, t);
+    let (big, one) = (g.constant(360.0 * 9007199254740992.0), g.constant(360.0));
+    let (a, b) = (g.bin(BinOp::Mul, big, n), g.bin(BinOp::Mul, one, n));
+    let (a, b) = (g.un(UnOp::Rad, a), g.un(UnOp::Rad, b));
+    let sum = g.add(a, b);
+    let back = g.sub(sum, a);
+    let half = g.constant(0.5);
+    let half = g.mul(back, half);
+    let f = g.un(UnOp::Cos, half);
+    let j = jump(&g, f);
+    assert!(j >= 2.0, "half a turn a step: jump {j}");
+}
+
+/// deg->rad's derivative is the same exact scaling of its argument's,
+/// never a rounded pi / 180: its bound holds the real coefficient, and a
+/// claim that 1e21 degrees a second is at most the rounded product in
+/// radians is not guaranteed (the float says so; the real number is
+/// above it: an estimate).
+#[test]
+fn a_degree_conversions_derivative_keeps_pi_exact() {
+    use ink::graph::{Graph, UnOp, Var};
+    let mut g = Graph::new();
+    let t = g.var(Var::T);
+    let rad = g.un(UnOp::Rad, t);
+    let d = g.derivative(rad, Var::T);
+    let r = eval_interval(&Tape::new(&g, d), &Ctx::new(0.5, vec![]), [I::point(0.0); 3], None);
+    assert!(r.lo <= PI / 180.0 && r.hi > PI / 180.0, "{r:?}");
+    use ink::claims::{ClaimOptions, run_asserts};
+    let d = doc("(t-span 0 1) (def r (diff (deg->rad (* 1e21 t)) t)) (assert false-upper (value r <= 17453292519943294976))");
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let mut v = ink::view::ModelView::new(d, ctx);
+    let a = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap().asserts;
+    assert!(!a[0].check.holds_guaranteed(), "{:?}", a[0].check);
 }

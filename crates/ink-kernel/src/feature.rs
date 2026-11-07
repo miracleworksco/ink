@@ -7,6 +7,7 @@ use crate::octree::{Cell, Grid, Local, descend_padded, root_for};
 use crate::query::{Side, ray_to};
 use ink_core::V3;
 use ink_core::eval::{Ctx, decided_names, eval_grads, eval_interval, names_on_paths};
+use ink_core::sign::inside;
 use ink_core::tape::{BOTH, Tape};
 use ink_core::v3::{add, cross, direction, dot, norm, scale, sub, unit};
 use rayon::prelude::*;
@@ -90,7 +91,7 @@ pub fn surface(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec
                 // it: its tangent plane would add a row of area the
                 // neighbours already have.
                 let [cx, cy, cz] = ink_core::grid::ijk(ci, [B as usize; 3]);
-                let outside = (0..8).all(|k| fc[ink_core::grid::index([cx + (k & 1), cy + ((k >> 1) & 1), cz + ((k >> 2) & 1)], [n1; 3])] >= 0.0);
+                let outside = (0..8).all(|k| !inside(fc[ink_core::grid::index([cx + (k & 1), cy + ((k >> 1) & 1), cz + ((k >> 2) & 1)], [n1; 3])]));
                 let strictly_in = (0..3).all(|k| q[k] > a[k] + 1e-9 * h && q[k] < b[k] - 1e-9 * h);
                 if outside && !strictly_in {
                     continue;
@@ -229,7 +230,7 @@ fn interior(shape: &Tape, ctx: &Ctx, samples: &[(V3, V3, f64)], h: f64) -> bool 
     samples.chunks(1024).any(|c| {
         let inner: Vec<V3> = c.iter().map(|(p, n, _)| sub(*p, scale(*n, 1e-3 * h))).collect();
         ink_core::eval::eval_points(shape, ctx, &inner, &mut f);
-        f.iter().any(|&v| v < 0.0)
+        f.iter().any(|&v| inside(v))
     })
 }
 
@@ -306,7 +307,7 @@ struct Found {
 fn names_below(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, found: &Found) {
     let mut ch = vec![BOTH; tape.len()];
     let r = eval_interval(tape, ctx, grid.cell_box(cell), Some(&mut ch));
-    if r.lo > 0.0 || r.hi < 0.0 {
+    if r.none_inside() || r.all_inside() {
         return;
     }
     let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
@@ -345,6 +346,13 @@ fn seen_in(sub: &Tape, ctx: &Ctx, grid: &Grid, cell: Cell, names: &[u32], found:
         if (0..3).any(|k| p[k] < lo[k] - 0.5 * h || p[k] > hi[k] + 0.5 * h) {
             continue;
         }
+        // Surface only where the sign changes across it within the
+        // tolerance (a zero the field keeps one sign around, faces meeting
+        // flush, is none, a surface beside it notwithstanding): its names
+        // are read there.
+        let Some(p) = ink_core::sign::crossing(sub, ctx, p, n, e, tol) else {
+            continue;
+        };
         let mut here = decided_names(sub, ctx, p, tol);
         here.retain(|t| !found.names.lock().unwrap().1.contains(t));
         if here.is_empty() {

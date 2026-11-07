@@ -170,6 +170,88 @@ pub struct Tape {
     /// Where jumps join (Tape::rejoin), derived from `ssa` when a jump is
     /// first straddled.
     joins: std::sync::OnceLock<Joins>,
+    /// Each promise's operands (Tape::promise) by its instruction, each
+    /// found when first read.
+    promises: std::sync::OnceLock<Box<[(u32, std::sync::OnceLock<Promise>)]>>,
+}
+
+/// What interval evaluation reads again of a promise, Lipschitz instruction
+/// `i` of the SSA form (eval::promised, eval::promise_valid): the
+/// instructions its field, its constant and its frame read, in order,
+/// renumbered among themselves; which are a select's condition's (`cond`)
+/// and which the field's and the frame's coordinates' (`at`, bounded at its
+/// centre); and k's and the coordinates' alone (`over`, bounded over the
+/// box), renumbered among themselves.
+#[derive(Clone, Debug)]
+pub struct Promise {
+    /// Each instruction's index in the tape, and it with its arguments
+    /// renumbered.
+    pub ins: Vec<(u32, Ins)>,
+    pub cond: Vec<bool>,
+    pub at: Vec<bool>,
+    pub over: Vec<(u32, Ins)>,
+    /// The promise, its arguments renumbered; where the field, the
+    /// constant and the frame's coordinates are among them.
+    pub promise: Ins,
+    pub f: u32,
+    pub frame: [u32; 3],
+    /// Where k and the coordinates are in `over`.
+    pub over_k: u32,
+    pub over_frame: [u32; 3],
+}
+
+impl Promise {
+    fn of(ssa: &[Ins], i: usize) -> Promise {
+        let (l, fr) = (ssa[i], ssa[ssa[i].c as usize]);
+        let frame = [fr.a, fr.b, fr.c];
+        let cone = |roots: &[u32]| {
+            let mut seen = std::collections::HashSet::new();
+            let mut stack = roots.to_vec();
+            while let Some(j) = stack.pop() {
+                if seen.insert(j) {
+                    let (args, k) = ssa[j as usize].args();
+                    stack.extend_from_slice(&args[..k]);
+                }
+            }
+            seen
+        };
+        let all = cone(&[l.a, l.b, l.c]);
+        let mut order: Vec<u32> = all.iter().copied().collect();
+        order.sort_unstable();
+        let conditions: Vec<u32> = order.iter().filter(|&&j| matches!(ssa[j as usize].op, Op::Select)).map(|&j| ssa[j as usize].a).collect();
+        let (cond, over, at) = (cone(&conditions), cone(&[l.b, frame[0], frame[1], frame[2]]), cone(&[l.a, frame[0], frame[1], frame[2]]));
+        let renumber = |order: &[u32]| {
+            let pos: std::collections::HashMap<u32, u32> = order.iter().enumerate().map(|(k, &j)| (j, k as u32)).collect();
+            let ins = order
+                .iter()
+                .map(|&j| {
+                    let mut c = ssa[j as usize];
+                    let (_, n) = c.args();
+                    for a in [&mut c.a, &mut c.b, &mut c.c].into_iter().take(n) {
+                        *a = pos[&*a];
+                    }
+                    (j, c)
+                })
+                .collect::<Vec<_>>();
+            (ins, pos)
+        };
+        let (ins, pos) = renumber(&order);
+        let mut over_order: Vec<u32> = over.iter().copied().collect();
+        over_order.sort_unstable();
+        let (over_ins, over_pos) = renumber(&over_order);
+        let marks = |set: &std::collections::HashSet<u32>| order.iter().map(|j| set.contains(j)).collect();
+        Promise {
+            ins,
+            cond: marks(&cond),
+            at: marks(&at),
+            over: over_ins,
+            promise: Ins { a: pos[&l.a], b: pos[&l.b], c: pos[&l.c], ..l },
+            f: pos[&l.a],
+            frame: frame.map(|c| pos[&c]),
+            over_k: over_pos[&l.b],
+            over_frame: frame.map(|c| over_pos[&c]),
+        }
+    }
 }
 
 /// Where each of a tape's jumps joins (Tape::rejoin). An instruction is
@@ -369,7 +451,22 @@ impl Tape {
             slopes = Vec::new();
         }
         let jumps = (0..n as u32).filter(|&i| matches!(ssa[i as usize].op, Op::Un(UnOp::Floor) | Op::Bin(BinOp::Atan2))).collect();
-        Tape { ssa, code, nslots: nslots as usize, grids: Vec::new(), opaque: Vec::new(), fixed, pmask, pread, plist, slopes, forms: Vec::new(), jumps, joins: Default::default() }
+        Tape {
+            ssa,
+            code,
+            nslots: nslots as usize,
+            grids: Vec::new(),
+            opaque: Vec::new(),
+            fixed,
+            pmask,
+            pread,
+            plist,
+            slopes,
+            forms: Vec::new(),
+            jumps,
+            joins: Default::default(),
+            promises: Default::default(),
+        }
     }
 
     fn joins(&self) -> &Joins {
@@ -401,6 +498,14 @@ impl Tape {
         })
     }
 
+    /// Lipschitz instruction `i`'s operands as interval evaluation reads
+    /// them again (Promise), found once.
+    pub fn promise(&self, i: usize) -> &Promise {
+        let all = self.promises.get_or_init(|| (0..self.ssa.len() as u32).filter(|&j| matches!(self.ssa[j as usize].op, Op::Lipschitz)).map(|j| (j, Default::default())).collect());
+        let k = all.binary_search_by_key(&(i as u32), |p| p.0).expect("a promise");
+        all[k].1.get_or_init(|| Promise::of(&self.ssa, i))
+    }
+
     /// Where the bounds of a jump at instruction `j` (a floor or atan2;
     /// eval::forked) can be joined again: the first instruction from j on
     /// through which every later use of j's value passes, and from which the
@@ -418,9 +523,9 @@ impl Tape {
     /// answers (ink_kernel::cache).
     pub fn fingerprint(&self, fp: &mut Fingerprint, names: &Names) {
         // Every field, named: one added must be hashed too.
-        // `jumps` and `joins` are derived from `ssa`; `pmask`, `pread` and
+        // `jumps`, `joins` and `promises` are derived from `ssa`; `pmask`, `pread` and
         // `plist` enter as what they decide (below).
-        let Tape { ssa, code, nslots, grids, opaque, fixed, pmask: _, pread: _, plist: _, slopes, forms, jumps: _, joins: _ } = self;
+        let Tape { ssa, code, nslots, grids, opaque, fixed, pmask: _, pread: _, plist: _, slopes, forms, jumps: _, joins: _, promises: _ } = self;
         for list in [ssa, code] {
             fp.word(list.len() as u64);
             for &Ins { op, out, a, b, c } in list {
@@ -517,8 +622,15 @@ impl Tape {
     /// The tape computing instruction `i` (an ssa index) alone: its cone of
     /// instructions, in time proportional to that cone.
     pub fn cone(&self, i: usize) -> Tape {
-        let mut seen = std::collections::HashSet::from([i as u32]);
-        let mut stack = vec![i as u32];
+        self.cone_max(&[i])
+    }
+
+    /// The tape computing the max of instructions `roots` (ssa indices;
+    /// one: that instruction alone, `cone`): their cones, then the max of
+    /// their values, in time proportional to those cones.
+    pub fn cone_max(&self, roots: &[usize]) -> Tape {
+        let mut seen: std::collections::HashSet<u32> = roots.iter().map(|&r| r as u32).collect();
+        let mut stack: Vec<u32> = seen.iter().copied().collect();
         while let Some(j) = stack.pop() {
             let (args, k) = self.ssa[j as usize].args();
             for &a in &args[..k] {
@@ -530,7 +642,7 @@ impl Tape {
         let mut ids: Vec<u32> = seen.into_iter().collect();
         ids.sort_unstable();
         let remap: std::collections::HashMap<u32, u32> = ids.iter().enumerate().map(|(n, &j)| (j, n as u32)).collect();
-        let ssa = ids
+        let mut ssa: Vec<Ins> = ids
             .iter()
             .enumerate()
             .map(|(n, &j)| {
@@ -549,10 +661,20 @@ impl Tape {
                 ins
             })
             .collect();
+        // Each root after the first joined by a max, the last the output
+        // (one root: its own, ids' last, as it reads every other).
+        let mut out = remap[&(roots[0] as u32)];
+        for &r in &roots[1..] {
+            let n = ssa.len() as u32;
+            ssa.push(Ins { op: Op::Bin(BinOp::Max), out: n, a: out, b: remap[&(r as u32)], c: 0 });
+            out = n;
+        }
         let mut t = Tape::from_ssa(ssa);
-        // As this tape has them (a simplified tape's are not recomputable).
-        t.fixed = ids.iter().map(|&j| self.fixed[j as usize]).collect();
-        t.pmask = ids.iter().map(|&j| self.pmask[j as usize]).collect();
+        // As this tape has them (a simplified tape's are not recomputable);
+        // a joining max is not fixed (bounded as any value is: soundly).
+        let joined = roots.len() - 1;
+        t.fixed = ids.iter().map(|&j| self.fixed[j as usize]).chain(std::iter::repeat_n(false, joined)).collect();
+        t.pmask = ids.iter().map(|&j| self.pmask[j as usize]).chain(std::iter::repeat_n(0, joined)).collect();
         (t.pread, t.plist) = self.reread(ids.iter().enumerate().map(|(n, &j)| (n as u32, j as usize)));
         t.grids = self.grids.clone();
         t.opaque = self.opaque.clone();
@@ -580,6 +702,238 @@ impl Tape {
         t.opaque = self.opaque.clone();
         t.forms = self.forms.clone();
         t
+    }
+
+    /// Whether a select the output reads (through the branches `choices`
+    /// pick) may switch in the region they were found for, between branches
+    /// that are not one field: a seam, which bounds cannot show continuous
+    /// (a sweep's mitre between two segments' fields).
+    pub fn switches(&self, choices: &[u8]) -> bool {
+        let n = self.ssa.len();
+        let strip = |mut j: usize| {
+            while let Op::Tag(_) = self.ssa[j].op {
+                j = self.ssa[j].a as usize;
+            }
+            j
+        };
+        let mut live = vec![false; n];
+        live[n - 1] = true;
+        for i in (0..n).rev() {
+            if !live[i] {
+                continue;
+            }
+            let ins = &self.ssa[i];
+            let picked = match (ins.op, choices[i]) {
+                (Op::Select, BOTH) if strip(ins.b as usize) != strip(ins.c as usize) => return true,
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), FIRST) => Some(ins.a),
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), SECOND) => Some(ins.b),
+                (Op::Select, FIRST) => Some(ins.b),
+                (Op::Select, SECOND) => Some(ins.c),
+                _ => None,
+            };
+            match picked {
+                Some(a) => live[a as usize] = true,
+                None => {
+                    let (args, k) = ins.args();
+                    for &a in &args[..k] {
+                        live[a as usize] = true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether the output changes sign at most once along unit direction `d`
+    /// on every line through a region (from below 0 to not, or the
+    /// reverse, the same way on every line), from `choices` and `grads`
+    /// found over it (eval_interval's and eval_interval_grad_every's). Then
+    /// its zero set there is one sheet: no piece of it lies wholly inside.
+    /// Each value is so where its rate along d, carried by the chain rule (a
+    /// min's, max's or select's undecided the hull of its branches'),
+    /// excludes 0; where it keeps one sign throughout; and where its sign
+    /// is that of a value that is so: a min or max (or emax, whose sign is
+    /// its max's) of two that change sign the same way (where one is not
+    /// below 0 is a union of such, and an intersection), or of one and one
+    /// that keeps the sign that leaves the other's (a max with a value
+    /// below 0 throughout, a min with one not below 0), and a product with
+    /// a value above 0 throughout.
+    pub fn monotone(&self, choices: &[u8], grads: &[crate::interval::G], d: crate::V3) -> bool {
+        use crate::interval::{I, add_o, hull, mul_o, sub_o};
+        let n = self.ssa.len();
+        let mut r: Vec<I> = Vec::with_capacity(n);
+        // Each value's way of changing sign along d: 1 (below 0, then
+        // not), -1 (not, then below), 0 (unknown).
+        let mut way: Vec<i8> = Vec::with_capacity(n);
+        let v = |j: u32| grads[j as usize].v;
+        // Inside throughout, or nowhere (crate::sign).
+        let below = |j: u32| v(j).all_inside();
+        let not_below = |j: u32| v(j).none_inside();
+        for i in 0..n {
+            let ins = &self.ssa[i];
+            let at = |j: u32| r[j as usize];
+            let rate = match (ins.op, choices[i]) {
+                (Op::Var(Var::X), _) => I::point(d[0]),
+                (Op::Var(Var::Y), _) => I::point(d[1]),
+                (Op::Var(Var::Z), _) => I::point(d[2]),
+                (Op::Var(_) | Op::Const(_), _) => I::point(0.0),
+                (Op::Tag(_) | Op::Lipschitz | Op::Real, _) => at(ins.a),
+                (Op::Bin(BinOp::Add), _) => add_o(at(ins.a), at(ins.b)),
+                (Op::Bin(BinOp::Sub), _) => sub_o(at(ins.a), at(ins.b)),
+                (Op::Un(UnOp::Neg), _) => I::new(-at(ins.a).hi, -at(ins.a).lo),
+                (Op::Bin(BinOp::Mul), _) => add_o(mul_o(v(ins.a), at(ins.b)), mul_o(v(ins.b), at(ins.a))),
+                (Op::Un(UnOp::Square), _) => mul_o(mul_o(I::point(2.0), v(ins.a)), at(ins.a)),
+                (Op::Un(UnOp::Sqrt), _) if v(ins.a).lo > 0.0 => {
+                    let (lo, hi) = (v(ins.a).lo, v(ins.a).hi);
+                    let k = I::new(0.5 / hi.sqrt() * (1.0 - 1e-15), 0.5 / lo.sqrt() * (1.0 + 1e-15));
+                    mul_o(k, at(ins.a))
+                }
+                (Op::Un(UnOp::Abs), _) if v(ins.a).lo > 0.0 => at(ins.a),
+                (Op::Un(UnOp::Abs), _) if v(ins.a).hi < 0.0 => I::new(-at(ins.a).hi, -at(ins.a).lo),
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), FIRST) => at(ins.a),
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), SECOND) => at(ins.b),
+                (Op::Bin(BinOp::Min | BinOp::Max), BOTH) => hull(at(ins.a), at(ins.b)),
+                // max(a, b) where either is at most 0, else hypot(a, b),
+                // whose rate is its sides' weighted by a / hypot and
+                // b / hypot (squares summing to 1): their hull, up to
+                // sqrt 2 times.
+                (Op::Bin(BinOp::Emax), BOTH) => {
+                    let h = hull(at(ins.a), at(ins.b));
+                    let s = std::f64::consts::SQRT_2 * (1.0 + 1e-15);
+                    I::new(h.lo.min(s * h.lo), h.hi.max(s * h.hi))
+                }
+                (Op::Select, FIRST) => at(ins.b),
+                (Op::Select, SECOND) => at(ins.c),
+                // A select that may switch along d jumps where it does,
+                // unless its condition is constant along d (it does not
+                // switch on a line along d) or its branches are one field.
+                (Op::Select, BOTH) => {
+                    let strip = |mut j: usize| {
+                        while let Op::Tag(_) = self.ssa[j].op {
+                            j = self.ssa[j].a as usize;
+                        }
+                        j
+                    };
+                    let still = at(ins.a) == I::point(0.0);
+                    match still || strip(ins.b as usize) == strip(ins.c as usize) {
+                        true => hull(at(ins.b), at(ins.c)),
+                        false => I::new(f64::NEG_INFINITY, f64::INFINITY),
+                    }
+                }
+                // Anything else: its gradient's bounds, along d.
+                _ => {
+                    let g = grads[i].d;
+                    add_o(add_o(mul_o(g[0], I::point(d[0])), mul_o(g[1], I::point(d[1]))), mul_o(g[2], I::point(d[2])))
+                }
+            };
+            // Both its chain rule's bounds and its gradient's, along d, hold:
+            // where they meet.
+            let g = grads[i].d;
+            let by_grad = add_o(add_o(mul_o(g[0], I::point(d[0])), mul_o(g[1], I::point(d[1]))), mul_o(g[2], I::point(d[2])));
+            let rate = match (rate.lo.max(by_grad.lo), rate.hi.min(by_grad.hi)) {
+                (lo, hi) if lo <= hi => I::new(lo, hi),
+                _ => rate,
+            };
+            r.push(rate);
+            let w = |j: u32| way[j as usize];
+            let by_rate = if rate.lo > 0.0 {
+                1
+            } else if rate.hi < 0.0 {
+                -1
+            } else {
+                0
+            };
+            // 2: keeps one sign throughout (changes as either way does).
+            let alike = |a: i8, b: i8| match (a, b) {
+                (2, x) | (x, 2) => x,
+                (a, b) if a == b => a,
+                _ => 0,
+            };
+            let by_sign = match (ins.op, choices[i]) {
+                (Op::Tag(_) | Op::Lipschitz | Op::Real, _) => w(ins.a),
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), FIRST) => w(ins.a),
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), SECOND) => w(ins.b),
+                (Op::Select, FIRST) => w(ins.b),
+                (Op::Select, SECOND) => w(ins.c),
+                (Op::Bin(BinOp::Max | BinOp::Emax), BOTH) if below(ins.a) => w(ins.b),
+                (Op::Bin(BinOp::Max | BinOp::Emax), BOTH) if below(ins.b) => w(ins.a),
+                (Op::Bin(BinOp::Min), BOTH) if not_below(ins.a) => w(ins.b),
+                (Op::Bin(BinOp::Min), BOTH) if not_below(ins.b) => w(ins.a),
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), BOTH) => alike(w(ins.a), w(ins.b)),
+                (Op::Bin(BinOp::Mul), _) if v(ins.b).lo > 0.0 => w(ins.a),
+                (Op::Bin(BinOp::Mul), _) if v(ins.a).lo > 0.0 => w(ins.b),
+                _ => 0,
+            };
+            let kept = below(i as u32) || not_below(i as u32);
+            way.push(if kept {
+                2
+            } else if by_rate != 0 {
+                by_rate
+            } else {
+                by_sign
+            });
+        }
+        way[n - 1] != 0
+    }
+
+    /// Whether the output's gradient may turn abruptly in a region, from
+    /// `choices` and `grads` found over it (eval_interval's and
+    /// eval_interval_grad_every's): through the branches they pick, a min,
+    /// max, emax or select it reads is undecided between branches whose
+    /// gradients there point apart throughout (interval::apart; two that
+    /// may point alike, f and 2 f, meet in no crease), or an abs of a value
+    /// that may be 0 there (its sides' gradients opposite), or a floor that
+    /// may step there.
+    pub fn may_crease(&self, choices: &[u8], grads: &[crate::interval::G]) -> bool {
+        use crate::interval::apart;
+        let neg = |d: [crate::interval::I; 3]| d.map(|i| crate::interval::I::new(-i.hi, -i.lo));
+        let n = self.ssa.len();
+        let mut live = vec![false; n];
+        live[n - 1] = true;
+        for i in (0..n).rev() {
+            if !live[i] {
+                continue;
+            }
+            let ins = &self.ssa[i];
+            let g = |j: u32| grads[j as usize].d;
+            let creased = match (ins.op, choices[i]) {
+                (Op::Bin(BinOp::Min | BinOp::Max), BOTH) => apart(&g(ins.a), &g(ins.b)),
+                // An emax is hypot (smooth) where both sides are above 0,
+                // and turns into its max smoothly: it creases only where
+                // both may be at most 0, as a max.
+                (Op::Bin(BinOp::Emax), BOTH) => grads[ins.a as usize].v.lo <= 0.0 && grads[ins.b as usize].v.lo <= 0.0 && apart(&g(ins.a), &g(ins.b)),
+                (Op::Select, BOTH) => apart(&g(ins.b), &g(ins.c)),
+                (Op::Un(UnOp::Abs), _) => {
+                    let v = grads[ins.a as usize].v;
+                    v.lo <= 0.0 && v.hi >= 0.0 && apart(&g(ins.a), &neg(g(ins.a)))
+                }
+                (Op::Un(UnOp::Floor), _) => {
+                    let v = grads[ins.a as usize].v;
+                    v.lo.floor() != v.hi.floor()
+                }
+                _ => false,
+            };
+            if creased {
+                return true;
+            }
+            let picked = match (ins.op, choices[i]) {
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), FIRST) => Some(ins.a),
+                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), SECOND) => Some(ins.b),
+                (Op::Select, FIRST) => Some(ins.b),
+                (Op::Select, SECOND) => Some(ins.c),
+                _ => None,
+            };
+            match picked {
+                Some(a) => live[a as usize] = true,
+                None => {
+                    let (args, k) = ins.args();
+                    for &a in &args[..k] {
+                        live[a as usize] = true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Drop branches of min/max/select that interval evaluation proved can't win.

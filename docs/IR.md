@@ -16,7 +16,9 @@ A design is `.ink` text files. `ink COMMAND FILE` runs a command on one
 and prints JSON.
 
 **Shapes.** A shape is a field: one function f(x, y, z) of position in mm,
-negative inside, positive outside and zero on the surface. `(min a b)` is
+negative inside; its surface is where it changes sign (0 where faces meet
+flush, the same sign either side, is none; a region it reads as 0 is air).
+`(min a b)` is
 the union of a and b, `(max a b)` their intersection and `(neg a)` a's
 outside. Every expression is a solid, so no operation can fail.
 
@@ -176,7 +178,12 @@ z +x to +y. A turn by a constant multiple of 90 is exact.
 Radians are the exception:
 
 - `sin`, `cos` and `tan` take radians; `atan` and `atan2` return them.
-  std's `(deg->rad d)` converts.
+  `(deg->rad d)` converts, with pi exact where d reads x, y, z or t
+  (constants and params are their floats, as everywhere): an angle
+  wrapped at a whole turn (`(mod d 360)`) reads the same either side of
+  the wrap, so motion across it is proven continuous (`(* d (/ pi 180))`
+  rounds pi: not). A wrap counts as whole turns only where it is 360 k
+  degrees exactly (1e20 is not).
 - `path-arc`'s sweep, and the angles std's belt and chain tools return
   (`sync-belt-theta`, `roller-chain-theta`, `belt-route-entry-angle`,
   `belt-route-sweep`).
@@ -187,8 +194,8 @@ Radians are the exception:
 ## Fields
 
 A field is a real-valued expression over the inputs `x y z t` and any
-declared parameters. A **shape** is a field `< 0` inside, `> 0` outside and
-`0` on the surface. It need not be an exact distance, though distance-like fields
+declared parameters. A **shape** is where a field is `< 0` (Shapes). It
+need not be an exact distance, though distance-like fields
 (|gradient| near 1) mesh best, and offsets (`(- f d)`: f grown by d,
 shrunk for d < 0) are exact only for exact distance fields. The
 `clearance` claim is sound for any field (Claims).
@@ -201,6 +208,7 @@ library code:
 (- a b)  (- a)  (/ a b)  (atan2 y x)  (pow a b)
 (neg a) (abs a) (sqrt a) (square a) (exp a) (ln a)
 (sin a) (cos a) (tan a) (floor a)
+(deg->rad a) (rad->deg a)  degrees in radians and back, pi exact
 (select c a b)          a where c < 0, else b
 (emax a b ...)          Euclidean max: sqrt(a^2 + b^2) where both are > 0, else max
 (warp e fx fy fz [ft])  e with x:=fx, y:=fy, z:=fz (and t:=ft)
@@ -217,7 +225,8 @@ extrusion.
 
 `(lipschitz k f)` promises f's slope in x, y, z is at most k, for every t
 and param value. Proofs (clearance, distance) trust it instead of bounding
-the slope from the formula's parts (interval arithmetic). A false promise makes proofs unsound;
+the slope from the formula's parts (interval arithmetic), and so does f's
+bound over a box: within k times the box's reach of f at its centre. A false promise makes proofs unsound;
 std makes it only for its exact primitives. A k that is not positive
 promises nothing.
 
@@ -234,7 +243,8 @@ promises nothing.
 
 Every op is total and the same on every implementation: its IEEE-754
 double result, except that there is one zero, `x / 0` is 0, and anything
-else undefined is 0 (`inf - inf`, `ln` or `sqrt` of a negative).
+else undefined is 0 (`inf - inf`, `ln` of a negative). `sqrt` of a negative
+is 0 too, but defined: `sqrt(max(a, 0))`.
 Infinities are values: overflow gives ±inf, `ln 0` is -inf. JSON has
 none, so an answer gives an infinite number as `null`. The
 transcendentals are Rust's `libm` everywhere. conformance/README.md
@@ -242,7 +252,7 @@ states the rules exactly.
 
 `ink check` warns where its sampled survey of a body's field finds it
 passing through an undefined case, naming the construction (a 0 in a
-shape reads as surface). `ink eval` lists them per point under
+shape is not inside it). `ink eval` lists them per point under
 `undefined`; one in a number used while the file loads is reported at its
 line. Only a branch taken counts. Proofs cover every value an undefined
 case could take.
@@ -988,7 +998,8 @@ not read x, y, z or t, and only a value or mean claim's may read a ranged
 param.
 
 A comparison (`value`, `volume`, `integral`, `mean`, a metric) may state
-an accuracy in its own units: how far past its bound it may be. `(assert
+an accuracy in its own units: how far past its bound it may be (a void
+count's is a length on its shape: Manufacturing checks). `(assert
 reach (value angle < 90) (accuracy 0.01))` holds where `angle - 0.01 <
 90` everywhere. Generated value claims (`limits`, `speed-limits`, a
 relation's `claim`) take one too. An exact value claim that meets its bound (a joint at
@@ -1016,7 +1027,7 @@ Its other fields say what the answer rests on:
 | `value` | fails; a number claim | what the claim measured: a clearance's `gap`; a shape claim's field at the witness, negative (`-depth`); a value, volume, metric, integral or mean claim's number (a mass is an integral). Of several fields, each is under `integrals` or `means`, with its status |
 | `gap` | a clearance fails | the distance between `witness_pair`: the first pair found closer than the clearance, so the smallest gap may be smaller (`ink distance` measures it) |
 | `depth` | an emptiness claim fails (`empty`, `disjoint`, `subset`, `range`, a clearance of 0) | how deep `witness` lies in what violates the claim (inside both shapes for disjoint; inside a and outside b for subset), as the fields measure distance: the overlap is at least this deep |
-| `held`, `near` | an emptiness claim holds, guaranteed (over a motion, with t ranged; an `interfere` pair as placed, with its zones, reading no ranged param nor t over a span) | `held`: `outright` (nothing violates it) or `to the accuracy` (some cells held only by its allowance). Then `near`, where measured: `depth`, the deepest violating point found in those cells, by bounds of the field as placed there at one moment and value of the ranged params (to a µm: seated faces read 0), and where above 0 `at` and `params`, those values (t's over a motion) |
+| `held`, `near` | an emptiness claim holds, guaranteed (over a motion, with t ranged; an `interfere` pair as placed, with its zones) | `held`: `outright` (nothing violates it) or `to the accuracy` (some cells held only by its allowance). Then `near`, where measured: `depth`, the deepest violating point found in those cells, by bounds of the field as placed there at one moment and value of the ranged params (to a µm: seated faces read 0), and where above 0 `at` and `params`, those values (t's over a motion) |
 | `params`, `t` | fails over ranged params or a motion | the params' values and the moment there |
 | `hint` | unknown, where it can say; measured over a motion | what would decide it: a smaller `(accuracy x)`, a finer `(res r)`, a probe. Over a motion, why ranging t did not, and that search's hint (`motion.t_ranged`) |
 | `undecided_cells`, `undecided_volume`, `undecided_cell` | unknown, by a search that kept them | how many cells it left undecided, their total volume, and one of them (the cell that ended the proof, where one did): `centre` and `size` |
@@ -1084,7 +1095,10 @@ show there is none: the cells it did not reach may hold one.
   `(accuracy 0.0005)`.
 - A finer res decides a cell whose bounds narrow with its size. It does
   not decide a claim at its boundary (its value reaching the bound), nor a
-  slope over a cell where a min, max, abs or clamp switches.
+  slope over a cell where a min, max, abs or clamp switches, nor across a
+  `floor` or atan2's cut, unless the bounds see the field continuous
+  there: an angle read by its sine or cosine, turns (degrees / 360) less
+  their floor, a wrap read by its distance from 1/2 (std's thread-iso).
 - Elsewhere `--res` is the sample size, used as given: `ink mesh`,
   `render`, `slice` and `components` sample at it, `ink mass` measures
   at it.
@@ -1184,6 +1198,10 @@ gives each command's options.
   FILE.dxf` writes the loops as an outline to cut (DXF R12, mm, a layer
   per target), and the targets' marks (kind `mark`, Bodies) dashed on
   their own layers. A sharp corner is cut across by up to a cell.
+  `unresolved` (where there are any): samples reading exactly 0 that
+  nothing near them shows beside air (no surface crossing them, no air
+  read as 0 by bounds); drawn as air, a wall may be drawn there where
+  pieces meet flush.
 - `ink mass [--density NAME|NUMBER]`: each target's mass, volume and
   centre of mass; with `--keys` naming them, its `inertia` tensor about
   the centre of mass, `principal_moments` and `principal_axes`. `total`
@@ -1234,19 +1252,39 @@ report says how far to trust it.
 - **Sampling.** The field is sampled on a grid of cells `--res` wide and
   meshed by manifold dual contouring: watertight, sharp edges and corners
   kept, a thin wall's two sides apart. A feature thinner than res can go
-  missing. Each report counts the cells where it sees that (`unresolved`,
-  with one `at`) and warns, but one that misses every cell centre goes
-  uncounted. `--max-res R`: no coarser than R.
+  missing. Every cell is shown by bounds to hold nothing the mesh does not
+  (one sign throughout, or the surface one sheet across it), or searched
+  finer as far as a budget allows; each report counts every cell holding
+  material or a gap it leaves out (`material`; `thinnest` across, where it
+  is not shown drawn), every one undecided (`undecided`: nothing ruled out
+  down to samples `searched` apart), and of them those beside a cell the
+  surface crosses (`beside`), with one `at`, and `regions`: boxes covering
+  them (every cell in one; touching bricks of 8^3 cells one region, more
+  than 16 merged into larger covers), each with its counts, the coarsest
+  spacing searched, the thinnest found and a point in it; and warns. Where
+  the surface crosses a cell, one sheet over the cell grown by half a cell
+  (where its vertex may be placed) counts as drawn: the surface there lies
+  within that box's diagonal, 2 sqrt 3 res (`drawn_within`), of the
+  cell's vertex, and so does what else lies in that box; elsewhere only a
+  sign kept throughout does. Undecided cells where a select switches
+  between two fields, which bounds cannot show continuous (a sweep's
+  mitres), are counted apart (`seams`). A mesh whose grid
+  would take more bricks of cells than its budget pays for is made at
+  twice the res until it does not (`refused`: the res asked).
+  `--max-res R`: no coarser than R.
 - **A mesh for a file** (STL, 3MF): res is the target's size / 256, no
   finer than all the targets' / 2048 (mesh a small part beside a large one
   alone, or give `--res`). It is simplified to `--accuracy` (default
   res / 30; `0`: uniform), topology kept and every vertex of the uniform
   mesh within it. `components`: size / 160, made again finer where it
   leaves material out.
-- **A mesh for seeing** (GLB, render): each body's res fits the whole
-  model in a triangle budget, made again finer where a mesh leaves
-  material out (a render's, no finer than half a pixel); `--res` replaces
-  it. It is simplified to `--accuracy` (default res / 4).
+- **A mesh for seeing** (GLB, render): each body's res gives its surface
+  as many cells as a cube 128 across has, coarsened so the whole model
+  fits a triangle budget, and made again finer under the thinnest material
+  it leaves out, most material drawn per triangle first, while the budget
+  lasts (a render's, no finer than half a pixel); `--res` replaces it. It
+  is simplified to `--accuracy` (default res / 4); shading turns at the
+  shape's creases only.
 - **The report** (each object of `ink mesh`): `res`;
   `uniform_triangles` (before simplifying) and `triangles` (in the file);
   `watertight`; `unresolved`; and `deviation`:
@@ -1301,7 +1339,7 @@ answer may be.
 | gaps, slots, holes | `(min-thickness (air-around part m) > g)` | estimate, the same rays across the air |
 | undercuts from a set of directions | `(empty (hidden part stock (clear-air part stock lo) views))` | guaranteed for undercuts deeper than lo plus twice the accuracy |
 | overhangs, printed along +z | `(empty (overhangs part z0 a h))` | guaranteed, to a few degrees (below) |
-| enclosed voids | `(cavities part < 1)` | proven, or unknown (below) |
+| enclosed voids | `(cavities part < 1)` | proven to the accuracy, or unknown (below) |
 | a flat outline to cut | `ink slice --out FILE.dxf` | its loops (Geometric queries) |
 
 examples/machining-access.ink, mould-undercut.ink, print-checks.ink and
@@ -1343,17 +1381,24 @@ bridge a printer can span fails as an overhang where wider than 2 h tan a.
     8 directions.
   - A ceiling narrower than 2 h tan a counts as held.
 - **Enclosed voids.** `(cavities f < n)` counts f's enclosed voids, air
-  no path leads out of (trapped powder or resin). A shape metric of the
+  no path leads out of (trapped powder or resin), with air deeper than
+  the accuracy (a length, as for shapes: Claims). A shape metric of the
   design package, counted by interval bounds on cells halved where they
   do not decide, down to its box / 20000, or `(res r)`, within a budget of
   1 M cells and the call's time: a void sealed by a wall at least a cell
   thick is found, however steep its field. A proven count is exact.
+  - Air no deeper than the accuracy (a slit thinner than twice it, faces
+    placed 100 nm apart or meeting flush inside the material) is set
+    aside, as `empty` sets aside a shape so thin: the claim holds `to the
+    accuracy`, `set_aside` saying where. A smaller `(accuracy x)` counts
+    thinner voids.
   - Where they leave it undecided, the count is bounds: the claim is
     `unknown` where they straddle its bound (`undecided-cells`: where, the
     undecided cells' sizes, and what stopped it). At the finest cells: a
-    wall or gap thinner than them, surfaces that touch, a face flush with
-    another (f = 0 across a mouth). At the budget or the time limit, a
-    finer res does not help: count a smaller region.
+    wall or gap thinner than them. A flush mouth (0 across it, air either
+    side) is air: cells across it split at a face square to an axis, or
+    where both pieces read one face. At the budget (or forecast past it)
+    or the time limit, a finer res does not help: count a smaller region.
   - An escape hole's width is a gap.
 - **Draft** is a `range` on a slope (Claims: The other claims).
 
@@ -1405,13 +1450,16 @@ tolerance band is (Tolerances; `param_spans`: `t`): a hold the search
 decides covers every moment, a failure gives a moment that violates it.
 What it leaves undecided in the call's time, or cannot range, is
 estimated (`"accuracy": null`) at sampled moments (`steps`, `step`,
-`basis`: the span's ends and the middles of 32 steps, or a package's own
-steps; sampling stops at a failure or the time limit), and the `hint`
+`basis`: 17 moments evenly spaced, the span's ends included, as a band's
+17 values; or a package's own steps; sampling stops at a failure or the
+time limit), and the `hint`
 says why (`motion.not_ranged`, `motion.t_ranged`). A failure at a sampled
 moment is guaranteed only when its `accuracy` is a number; a moment where
 what the claim reads has no value (a solve that does not solve) makes it
-`unknown`. Not ranged: a claim
-reading a solve on t; a metric, integral or mean; a body travelling more
+`unknown`. What a solve on t sets is ranged with t, enclosed over each
+piece of the span by the steps it is followed by (Solving constraints).
+Not ranged: a claim reading a solve on t that is not followed there, or
+over ranged params; a metric, integral or mean; a body travelling more
 than 256 times its own size over the span (a chain's pin: shorten the
 span); in `interfere`, a shape whose own field reads t (a belt's teeth).
 
@@ -1420,13 +1468,29 @@ span); in `interfere`, a shape whose own field reads t (a belt's teeth).
   rests in, so gears or a carriage on its rail are one search and a pin
   turning in its hole does not move: a pin's `subset` of its hole, a
   link's `disjoint` of the sprocket. Two shapes riding one moving
-  instance are asked once. Witnesses are given in the world. A turn
-  rounded off in floats (a CAD converter's) may leave a pair measured.
+  instance are asked once. Witnesses are given in the world. A part
+  turning about a point the motion holds still, though placed through
+  another angle (a coupler on its rocker's pin, met by the loop's
+  closure), is searched turning about that pivot, its bounded drift
+  charged to the claim (a clearance d asked at d plus it; an emptiness at
+  its accuracy less it). A turn rounded off in floats (a CAD converter's)
+  may leave a pair measured.
 - **Speeds** (`speed-limits`, `diff` along t) are the formula's
   derivative, blind to a jump: where a drive may jump (a `select` or
-  `floor` on t, an angle wrapped by `mod`) the speed is `unknown`. Write
-  profiles with `min`, `max` and `clamp`, and angles unwrapped
-  (`(* 360 t)`).
+  `floor` on t) the speed is `unknown`. A turn's speed limit reads the
+  turn, so its angle wrapped by `mod` at a whole turn (`(mod (* 360 t)
+  360)`) is decided. Write profiles with `min`, `max` and `clamp`.
+- **Repeating motions** are searched over one period: a claim reading t
+  only through a drive (t, or one value all its reads of t pass through:
+  a spin-up's angle) and, through it, only through the sine and cosine
+  of turns at constant rates of it, over a span where the drive travels
+  past their common period, taken from their exact values (`(* 3600 t)`
+  and `(/ (* 2 drive) 3)` share a turn; floats such as 0.3 and 0.7 share
+  only a period of about 1e16 s). A shape turned about its own z that is
+  the same turned by 1/n of a turn (a gear's teeth) repeats whenever the
+  drive turns it so: a gear pair at mesh-turn by one pinion tooth, its
+  rounding (about 1e-13 mm) charged to the accuracy. Through a drive
+  other than t only a hold is an answer; else t is ranged.
 
 The answer's `motion` block gives `how` (`t ranged`, `asked once` or
 `measured`), the `undecided` t ranges, and for `measured` the moments
@@ -1562,17 +1626,23 @@ flagged `outside_band` by the others.
   - Where the followed root meets another or the equations switch (a dead
     point, a `select` on t), every later moment is refused, saying where,
     even where both sides agree. Start the motion where the linkage
-    closes, away from a dead point.
+    closes, away from a dead point. So, in that call, is every moment
+    past where following had got when the call's time limit passed.
+  - A solve whose equations repeat in t (t only inside sin and cos, its
+    unknowns angles or not repeating) is followed one period; any other
+    moment is that period's root, its angles moved by whole turns.
   - A solve with more equations than unknowns has no certified root, so
     is not followed: at each moment it is the solver's answer there, as
-    is every solve on t that reads what it sets.
+    is every solve on t that reads what it sets, and claims reading them
+    are measured.
 
 ### Over ranged params
 
 A solve whose equations read a ranged param is solved over the ranges:
 `ink assert` and `ink interfere` take each unknown to be the one root
 near the solution at the ranges' middles, certified for every value of
-the params, so claims on it are guaranteed.
+the params, so claims on it are guaranteed; and so are its rates, a
+`diff` through it.
 
 ```lisp
 (import "std")
@@ -1653,7 +1723,7 @@ std is written in ink (std/std.ink, std/materials.ink).
   (`hole`: subtract a `cylinder-z`; `union`: `min`; `offset`: `-`;
   `extrude`: `extrude-z`) and near spellings.
 
-Sections: scalar helpers (`clamp`, `mix`, `blend`, `deg->rad`, `atan`,
+Sections: scalar helpers (`clamp`, `mix`, `blend`, `atan`,
 `acos`, `asin`); combination (`subtract`, smooth blends, fillets,
 chamfers, shells); appearance (`paint`, `color-map`); warps (`move`,
 `rotate-z`, `scale`, `twist-z`, `extrude-z`, mirrors,
@@ -1672,14 +1742,16 @@ and chains; power transmission (gears, threads, pulleys).
   - `(vec u v b r)`: the corner rounded to radius r.
 
   Its numbers are read at load time (a param in them is baked, not
-  ranged). A corner or an arc's bulge within 1e-9 of its points'
-  bounding-box diagonal of the line that would replace it is dropped, and
-  that line used; drops in a row add up. Its value is 1-Lipschitz, never
-  over the distance. The profile must be simple: edges (lines and arcs as
-  drawn) that meet other than at a shared corner are refused, saying
-  where; beside a shared corner, a meeting whose sliver between the two
-  edges is within 100 times 1e-9 of the diagonal (a tangent joint's
-  rounded data) is allowed.
+  ranged). Its value is 1-Lipschitz, never over the distance. The profile
+  must be simple: edges that meet other than at a shared corner are
+  refused, saying where. Of straight edges only, it is exactly its
+  corners: a corner is dropped only exactly on the line between its
+  neighbours, and edges that touch are refused. With arcs or rounds, a
+  corner or an arc's bulge within 1e-9 of its points' bounding-box
+  diagonal of the line that would replace it is dropped, and that line
+  used (drops in a row add up); beside a shared corner, a meeting whose
+  sliver between the two edges is within 100 times 1e-9 of the diagonal
+  (a tangent joint's rounded data) is allowed.
 - `(polygon pts drafts z0 z1)`: a moulded or drafted wall. pts is the
   profile at z = 0; each edge's wall leans outward by its draft (degrees;
   one for all, or one per edge) as z rises; rounds keep their radius;

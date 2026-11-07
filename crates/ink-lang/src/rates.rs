@@ -7,7 +7,8 @@
 //! (Doc::derivative, x read as its rates), so linear in them with J for
 //! coefficients; and its own rates are a solve of the same kind. So every
 //! order is the chain rule taken exactly, solved at each moment with the
-//! values. Where the root is not shown regular (a linkage at a dead
+//! values, and over ranged params certified as a root is
+//! (Linear::over_scope). Where the root is not shown regular (a linkage at a dead
 //! point), the rates are not defined: their solve fails there, and what
 //! reads them is refused at that moment (ModelView::refusal), never given
 //! a number.
@@ -115,6 +116,16 @@ impl ParamProvider for Linear {
         }
         Ok(None)
     }
+
+    /// Over ranged params: the one solution of its equations (linear in
+    /// it, their coefficients over the root's certified band, which the
+    /// solve it is the rates of derives first) for every value of them, by
+    /// Krawczyk's test, as a root over ranges is (Roots::certify).
+    fn over_scope(&self, ctx: &Ctx) -> Result<crate::ext::OverScope, String> {
+        let roots = crate::roots::Roots::certify(&self.owns, self.tapes.clone(), self.uses_t, ctx, |p, t| self.provide(p, t).map(drop))?;
+        let bands = roots.band.iter().zip(&self.owns).map(|(b, &k)| (k as u32, (b.lo, b.hi))).collect();
+        Ok(crate::ext::OverScope { derive: Arc::new(roots), bands })
+    }
 }
 
 /// The least-squares solution of a y = b, a m x n with m >= n (Householder
@@ -154,10 +165,26 @@ impl Doc {
     /// along `var`, its partial along that param times the param's rate
     /// (`rate`): the chain rule through solves.
     pub fn derivative(&mut self, root: NodeId, var: Var) -> NodeId {
-        let mut d = self.g.derivative(root, var);
+        let d = self.g.derivative(root, var);
         if matches!(var, Var::X | Var::Y | Var::Z) {
             return d;
         }
+        self.through_solves(root, var, d)
+    }
+
+    /// A turn's speed, d deg / dt (`derivative` along t), marked as the
+    /// speed of the turn's sine and cosine (Graph::speed_read): an angle
+    /// wrapped at a whole turn moves the turn by none, so its speed is the
+    /// formula's, and only a jump the turn sees is unbounded speed.
+    pub fn turn_rate(&mut self, deg: NodeId) -> NodeId {
+        let read = crate::turn_sin_cos(&mut self.g, deg);
+        let d = self.g.speed_read(deg, &read);
+        self.through_solves(deg, Var::T, d)
+    }
+
+    /// `d` (root's partial along `var`, every param held) plus the chain
+    /// rule through each solved param root reads that varies along it.
+    fn through_solves(&mut self, root: NodeId, var: Var, mut d: NodeId) -> NodeId {
         for k in self.params_read(&[root]) {
             if let Some(r) = self.rate(k, var) {
                 let dk = self.g.derivative(root, Var::Param(k as u32));
@@ -172,8 +199,8 @@ impl Doc {
     /// solve their drives read (`rated`): what a value no solve sets as
     /// they were read, a solve read after them sets.
     pub(super) fn rate_joints(&mut self) {
-        for (i, drive, lo, hi) in std::mem::take(&mut self.rated) {
-            let rate = self.derivative(drive, Var::T);
+        for (i, drive, lo, hi, turn) in std::mem::take(&mut self.rated) {
+            let rate = if turn { self.turn_rate(drive) } else { self.derivative(drive, Var::T) };
             let (a, b) = (self.g.sub(rate, lo), self.g.sub(hi, rate));
             let claim = self.g.min(a, b);
             let x = &mut self.asserts[i];

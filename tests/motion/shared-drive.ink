@@ -1,9 +1,9 @@
 ; Two lines turned by one drive, as rollers on one belt are written: the
 ; pair of an arm on one line and a post reads both lines' turns (one node),
 ; and nothing but the sine and cosine of that one angle, so it repeats
-; every turn of the drive. A post out of reach is held at the moments
-; measured, an estimate over the ten turns. A post in
-; its reach at 90 degrees is hit at a moment it gets there.
+; every turn of the drive: a post out of reach is proven clear over one
+; turn, and so over the ten. A post in its reach at 90 degrees is hit at a
+; moment it gets there.
 (import "std")
 (t-span 0 1)
 (body arm (shape (box 30 2 2)))
@@ -17,4 +17,4 @@
 (assert clear (disjoint (shape-of root/a/arm) (shape-of root/p)))
 (assert hits (disjoint (shape-of root/a/arm) (shape-of root/q)))
 ; expect-status: hits fails
-; expect-status: clear holds estimate
+; expect-status: clear holds

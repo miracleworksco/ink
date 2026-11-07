@@ -13,7 +13,7 @@ use crate::InkError;
 use crate::eval::{eval_dual, eval_point};
 use crate::forms::{Objective, Optimize};
 use crate::graph::Var;
-use crate::lang::claims::{self, Check, ClaimOptions, Status};
+use crate::lang::claims::{self, Check, ClaimOptions, Held, Status};
 use crate::lang::command::{Args, ParamArgs, claim_scope, param_args};
 use crate::lang::view::ModelView;
 use crate::lang::{Claim, Cmp, FormMetric, Measured, RunOpts};
@@ -138,11 +138,13 @@ fn requirements(v: &mut ModelView, name: &str) -> Result<(Objective, Vec<(String
 /// Design's metrics of a shape (Package::shape_metrics): `min-thickness`,
 /// an estimate, the thinnest wall by rays from surface samples spaced
 /// `res` (ModelView::thickness: 128 along its box), where it is (`at`);
-/// `cavities`, the enclosed voids by proof (ModelView::voids): those it
-/// proved, and, where its cells leave more possible, the most there may be
-/// (`undecided-cells`, excluded). An empty shape has no wall and no void.
-pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<f64>) -> Result<Measured, InkError> {
-    let measured = |value, at, res| Measured { value, at, res, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false };
+/// `cavities`, the enclosed voids with air deeper than `accuracy`, by
+/// proof (ModelView::voids): those it proved, and, where its cells leave
+/// more possible, the most there may be (`undecided-cells`, excluded);
+/// decided, how it held (the thin air it set aside). An empty shape has no
+/// wall and no void.
+pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<f64>, accuracy: f64) -> Result<Measured, InkError> {
+    let measured = |value, at, res| Measured { value, at, res, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None };
     Ok(match metric {
         "min-thickness" => match v.thickness(f, res) {
             None => measured(Ok(f64::INFINITY), None, None),
@@ -152,10 +154,11 @@ pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<
                 measured(Ok(min.3), Some(min.0), Some(h))
             }
         },
-        _ => match v.voids(f, res)? {
-            None => Measured { proven: true, ..measured(Ok(0.0), None, None) },
+        _ => match v.voids(f, res, accuracy)? {
+            None => Measured { proven: true, held: Some(Held::Outright), ..measured(Ok(0.0), None, None) },
             Some(c) => {
-                let mut m = Measured { proven: true, ..measured(Ok(c.at_least as f64), c.count().is_none().then_some(c.at).flatten(), None) };
+                let held = c.count().map(|_| if c.thin == 0 { Held::Outright } else { Held::SetAside { cells: c.thin, at: c.thin_at } });
+                let mut m = Measured { proven: true, held, ..measured(Ok(c.at_least as f64), c.count().is_none().then_some(c.at).flatten(), None) };
                 if let Some((what, decide)) = c.why_undecided() {
                     m.excluded.push(crate::lang::Excluded { key: "undecided-cells", value: c.at_most.map_or(f64::INFINITY, |n| n as f64), at: c.at, what, decide });
                 }
@@ -186,7 +189,7 @@ fn unbounded(v: &mut ModelView, f: u32, what: &str) -> Result<(), InkError> {
 /// grid that cannot see the part (`Measured::unseen`: another part's
 /// value).
 fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String, Claim)>) -> Result<Measures, InkError> {
-    let opts = RunOpts { res: None, tol: TOL };
+    let opts = RunOpts { res: None, tol: TOL, accuracy: None };
     // A proven metric that leaves values undecided (a void count's
     // bounds apart) is not known at this design: the search steers clear
     // of it, as of one with no value.
@@ -382,7 +385,7 @@ pub fn design_gradient(v: &mut ModelView, name: &str, vary: &[usize]) -> Result<
         if m.shape.is_some() {
             return Ok(none());
         }
-        let out = v.outcome(Some(m.package), &m.form, RunOpts { res: None, tol: TOL })?;
+        let out = v.outcome(Some(m.package), &m.form, RunOpts { res: None, tol: TOL, accuracy: None })?;
         let Some(a) = out.adjoint(m.metric) else { return Ok(none()) };
         let g = boundary(v, a.shape, &*a.weight);
         let uncovered = |k: usize| a.uncovered.iter().any(|&f| v.doc.g.depends_on(f, |x| x == Var::Param(k as u32)));

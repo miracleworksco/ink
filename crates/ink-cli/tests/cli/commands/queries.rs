@@ -255,32 +255,34 @@ fn a_curved_marks_dashes_run_on_across_its_vertices() {
 const GRID_X: &str = "-0.019531249999989342";
 
 #[test]
-fn a_field_touching_zero_on_grid_corners_draws_no_curve_and_one_crossing_there_draws_one() {
-    // -(x - C)^2 is 0 on the corners at x = C and negative beside them:
-    // it touches 0 there, never crossing, so no mark; a corner at exactly
-    // 0 read as outside made two crossings, two coincident lines. x - C
-    // crosses there: one line through the corners.
+fn a_field_touching_zero_on_grid_corners_is_reported_and_one_crossing_there_draws_one() {
+    // -(x - C)^2 is 0 on the corners at x = C and negative beside them: it
+    // touches 0 there, never crossing. Nothing shows its 0 has no width,
+    // so the corners read as air: lines drawn there are reported. x - C
+    // crosses there: one line through the corners, nothing unresolved.
     let s = Scratch::new("dxf-mark-corner");
     for (g, lines) in [(format!("(neg (square (- x {GRID_X})))"), 0), (format!("(- x {GRID_X})"), 1)] {
         let m = marked_box(&s, "corner.ink", &format!("(mark m (vec {g} -1))"));
         let out = s.path("corner.dxf");
-        ink(["slice", &m, "--target", "flat", "--at", "0", "--res", "0.125", "--out", &out]);
+        let d = ink(["slice", &m, "--target", "flat", "--at", "0", "--res", "0.125", "--out", &out]);
         let on: Vec<(String, String)> = dxf_entities(&out).into_iter().filter(|(t, _)| t == "POLYLINE" || t == "LINE").map(|(t, e)| (t, e["8"].clone())).collect();
         let marks = on.iter().filter(|(_, l)| l == "m").count();
-        assert!(marks == lines && on.iter().all(|(t, l)| l == "m" && t == "LINE" || l == "flat" && t == "POLYLINE"), "{g}: {on:?}");
+        let reported = !d["unresolved"].is_null();
+        assert!(on.iter().all(|(t, l)| l == "m" && t == "LINE" || l == "flat" && t == "POLYLINE"), "{g}: {on:?}");
+        assert!(if lines == 0 { marks == 0 || reported } else { marks == lines && !reported }, "{g}: {on:?} {}", pretty(&d));
     }
 }
 
 #[test]
-fn an_outline_touching_zero_on_grid_corners_stays_one_loop() {
+fn an_outline_touching_zero_on_grid_corners_is_one_loop_or_reported() {
     // The plate's field is 0 on the corners at x = C, negative beside
-    // them: material on both sides, so one outline, not two halves cut
-    // apart along a slit of zero width.
+    // them. Nothing shows that 0 has no width: if the outline is cut there
+    // into two halves, the slice says so.
     let s = Scratch::new("slice-corner");
     let m = s.model("slit.ink", &format!("(import \"std\")\n(body flat (shape (max (box 40 20 2) (neg (square (- x {GRID_X}))))))\n"));
     let d = ink(["slice", &m, "--target", "flat", "--at", "0", "--res", "0.125"]);
     let kinds: Vec<Value> = records(&d["loops"]).iter().map(|l| l["kind"].clone()).collect();
-    assert!(kinds == [json!("outer")] && (num(&d["area"]) - 800.0).abs() < 1.0, "{}", pretty(&d));
+    assert!(kinds == [json!("outer")] && (num(&d["area"]) - 800.0).abs() < 1.0 || !d["unresolved"].is_null(), "{}", pretty(&d));
 }
 
 #[test]
@@ -351,6 +353,47 @@ fn components_count_solids_even_of_a_sheet_thinner_than_its_sizes_res() {
 }
 
 #[test]
+fn faces_meeting_flush_are_no_surface_to_a_void_count() {
+    // A shape is where its field is negative; its surface is where the sign
+    // changes. A pocket cut ending flush with the top face reads 0 across
+    // its mouth, air either side: no surface, so it seals no void (it ran
+    // the count to its cell budget, unknown). Pieces meeting on a face (a
+    // turned hub under a flange with a toothed ring below it) read 0
+    // across it inside the metal: air no wider than 0, which no bound
+    // shows airless; counted to the accuracy, it is set aside: no void.
+    let s = Scratch::new("flush-voids");
+    let m = s.model(
+        "flush.ink",
+        "(import \"std\")\n\
+         (body pocket (shape (subtract (move (box 40 40 10) 20 20 5) (move (box 20 20 5) 20 20 7.5))))\n\
+         (body turned (shape (min (revolve-z (polygon (vec (vec 0 0) (vec 4.5 0) (vec 4.5 18) (vec 0 18)))) \
+           (revolve-z (polygon (vec (vec 4.5 16.5) (vec 7.5 16.5) (vec 7.5 17.5) (vec 4.5 17.5)))) (extrude-z (circle-2d 6) 9.5 16.5))))\n",
+    );
+    let d = ink(["components", &m, "--target", "pocket"]);
+    assert!(d["targets"][0]["cavities"] == 0, "{}", pretty(&d["targets"][0]["proven"]));
+    let d = ink(["components", &m, "--target", "turned"]);
+    let c = &d["targets"][0]["proven"]["cavities"];
+    assert!(d["targets"][0]["cavities"] == 0 && c["set_aside"]["cells"].as_u64().is_some_and(|n| n > 0), "{}", pretty(c));
+}
+
+#[test]
+fn a_name_whose_only_zero_is_inside_the_metal_is_not_seen() {
+    // A rod filling its sleeve's bore exactly, both ends capped: its field
+    // and the sleeve's are 0 together across the bore, a zero the field
+    // keeps negative around, so no surface. It read as the rod's face.
+    let s = Scratch::new("buried-rod");
+    let m = s.model(
+        "rod.ink",
+        "(import \"std\")\n\
+         (body part (shape (min (tag sleeve (subtract (cylinder-z 5 20) (cylinder-z 2 30))) (tag rod (cylinder-z 2 20)) \
+           (tag cap (move (cylinder-z 5 2) 0 0 10)) (tag cap (move (cylinder-z 5 2) 0 0 -10)))))\n",
+    );
+    let d = ink(["check", &m]);
+    let w = d["warnings"].to_string();
+    assert!(w.contains("'rod' was not seen"), "{}", pretty(&d["warnings"]));
+}
+
+#[test]
 fn ray_gives_the_fields_its_help_lists() {
     // Help said `face`, which ray answered as `name` since the rename.
     let help = Ink::new(["help"]).text();
@@ -384,4 +427,14 @@ fn an_error_follows_compact_as_an_answer_does() {
         let text = Ink::new(&args).run().stdout;
         assert!(text.trim_end().lines().count() == 1 && text.starts_with("{\"ok\":false"), "{args:?}: {text}");
     }
+}
+
+#[test]
+fn a_mark_s_undecided_samples_reach_the_slice_s_report() {
+    // The mark's field touches 0 from below on x = y, a line no face the
+    // field writes: samples on it are undecided.
+    let s = Scratch::new("mark-unresolved");
+    let m = s.model("marks.ink", "(import \"std\")\n(body p (shape (box 12 12 12)) (mark line (vec (neg (abs (- x y))) -1)))\n");
+    let d = ink(["slice", &m, "--axis", "z", "--at", "0.3", "--res", "1"]);
+    assert!(d["unresolved"]["samples"].as_u64().is_some_and(|n| n > 0), "{}", pretty(&d));
 }

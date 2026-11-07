@@ -659,25 +659,29 @@ fn render_without_a_target_or_root_draws_the_first_assembly_no_other_places() {
 #[test]
 fn render_meshes_a_thin_long_part_finer_until_it_leaves_nothing_out() {
     // A 0.6 mm wall round a 200 x 150 mm loop (a belt's back): its size's res
-    // (1.26) is coarser than the wall, which it drew dotted.
+    // (1.26) is coarser than the wall, which it drew dotted. Made finer, no
+    // material is found left out; the cells holding both its faces (within
+    // a cell of each other) are reported undecided, not shown drawn.
     let s = Scratch::new("render-band");
     let band = s.model("band.ink", "(import \"std\")\n(body band (shape (subtract (box 200 150 6) (box 198.8 148.8 8))))\n");
     let d = s.ink(["render", &band, "--out", &s.path("band.png")]).ok();
     let b = &d["legend"][0];
-    assert!(b["unresolved"]["cells"] == 0 && b["res"].as_f64().unwrap() < 1.0, "{}", pretty(b));
+    assert!(b["unresolved"]["material"] == 0 && b["res"].as_f64().unwrap() < 1.0, "{}", pretty(b));
 }
 
 #[test]
 fn render_meshes_a_thin_walled_tube_at_the_res_under_its_walls() {
     // A 2 x 1 in tube, 1/16 in walls (1678's drive rail, from STEP): at its
     // walls' corners the field's gradient runs along the other wall, which
-    // read 4.72 mm across (it rendered blank). Its walls are 1.59 mm.
+    // read 4.72 mm across (it rendered blank). Its walls are 1.59 mm; no
+    // material is found left out (cells holding both faces of a wall are
+    // reported undecided).
     let s = Scratch::new("render-tube");
     let tube = s.model("tube.ink", "(import \"std\")\n(body tube (shape (subtract (box 50.8 25.4 635) (box 47.625 22.225 640))))\n");
     let d = s.ink(["render", &tube, "--out", &s.path("tube.png")]).ok();
     let b = &d["legend"][0];
     let res = b["res"].as_f64().unwrap();
-    assert!(b["triangles"].as_u64().unwrap() > 0 && b["unresolved"]["cells"] == 0 && 0.79 < res && res < 1.59, "{}", pretty(b));
+    assert!(b["triangles"].as_u64().unwrap() > 0 && b["unresolved"]["material"] == 0 && 0.79 < res && res < 1.59, "{}", pretty(b));
 }
 
 #[test]
@@ -831,11 +835,11 @@ fn render_coincident_surfaces_show_the_target_listed_first() {
     // A gyroid lattice filling a block, both whole: where the lattice meets
     // the block's faces its mesh crosses them by its own error, and the
     // block, listed first, shows all over (listed second, the lattice shows
-    // in 20,614 pixels). Seen face on, at its default res (a 16 mm block:
+    // in 20,614 pixels). Seen face on, both at res 0.125 (a 16 mm block:
     // 30 mm takes 4.4 s alone, 21 s beside the other tests): along the edges
     // between faces the lattice's mesh can stand a pixel past the block's,
-    // and coarser (res 0.5, 1) its own error pokes past the block's
-    // silhouette in a few dozen pixels.
+    // and coarser (0.149, the lattice's own res) its own error pokes past
+    // the block's top in a few dozen pixels.
     let s = Scratch::new("render-shared");
     let shared = s.model(
         "shared.ink",
@@ -843,7 +847,7 @@ fn render_coincident_surfaces_show_the_target_listed_first() {
         (body lattice (shape (lattice-fill (box 16 16 16) (gyroid 8) 1)) (attr color \"#0000FF\"))\n",
     );
     let image = s.path("shared.png");
-    s.ink(["render", &shared, "--out", &image, "--size", "256", "--view", "top"]).ok();
+    s.ink(["render", &shared, "--out", &image, "--size", "256", "--view", "top", "--res", "0.125"]).ok();
     let (blue, red) = (count(&image, 2), count(&image, 0));
     assert!(blue == 0 && red > 1000, "blue {blue}, red {red}");
 }

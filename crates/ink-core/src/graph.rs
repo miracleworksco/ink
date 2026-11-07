@@ -30,6 +30,14 @@ pub enum UnOp {
     Cos,
     Tan,
     Floor,
+    /// Degrees in radians: a pi / 180, pi exact. A turn's angle is read so
+    /// (its sine and cosine), and a whole turn of degrees is then exactly
+    /// 2 pi: the turns either side of a wrap at 360 agree exactly
+    /// (eval::scope_run's jumps).
+    Rad,
+    /// Radians in degrees: a 180 / pi, pi exact (atan2's branches, a whole
+    /// turn apart, are exactly 360 apart).
+    Deg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,6 +56,47 @@ pub enum BinOp {
     /// its branches never add up, so it stays 1-Lipschitz where the sum
     /// formula min(max(a, b), 0) + len(max(a, 0), max(b, 0)) looks 2.
     Emax,
+}
+
+impl UnOp {
+    /// Every operation, each at its `index` (a new one must be listed).
+    pub const ALL: [UnOp; 12] = [UnOp::Neg, UnOp::Abs, UnOp::Sqrt, UnOp::Square, UnOp::Exp, UnOp::Ln, UnOp::Sin, UnOp::Cos, UnOp::Tan, UnOp::Floor, UnOp::Rad, UnOp::Deg];
+
+    pub fn index(self) -> usize {
+        match self {
+            UnOp::Neg => 0,
+            UnOp::Abs => 1,
+            UnOp::Sqrt => 2,
+            UnOp::Square => 3,
+            UnOp::Exp => 4,
+            UnOp::Ln => 5,
+            UnOp::Sin => 6,
+            UnOp::Cos => 7,
+            UnOp::Tan => 8,
+            UnOp::Floor => 9,
+            UnOp::Rad => 10,
+            UnOp::Deg => 11,
+        }
+    }
+}
+
+impl BinOp {
+    /// Every operation, each at its `index` (a new one must be listed).
+    pub const ALL: [BinOp; 9] = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Min, BinOp::Max, BinOp::Atan2, BinOp::Pow, BinOp::Emax];
+
+    pub fn index(self) -> usize {
+        match self {
+            BinOp::Add => 0,
+            BinOp::Sub => 1,
+            BinOp::Mul => 2,
+            BinOp::Div => 3,
+            BinOp::Min => 4,
+            BinOp::Max => 5,
+            BinOp::Atan2 => 6,
+            BinOp::Pow => 7,
+            BinOp::Emax => 8,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -894,6 +943,14 @@ impl Graph {
                                 self.mul(f, da)
                             }
                             UnOp::Floor => zero,
+                            // Linear: the same exact scaling of the
+                            // derivative, read as a real number where it is
+                            // constants and params (never folded into a
+                            // rounded coefficient).
+                            UnOp::Rad | UnOp::Deg => {
+                                let r = self.real(da);
+                                self.un(op, r)
+                            }
                         }
                     }
                 }
@@ -1056,6 +1113,18 @@ impl Graph {
         self.intern(Node::Deriv(a, root, axis))
     }
 
+    /// `derivative` of `root` along t, marked as the speed of each of
+    /// `read` instead of root's: what reads root (a turn's sine and cosine
+    /// of its angle), each continuous where root jumps by what none of them
+    /// sees (a whole turn), so its speed is the formula's there.
+    pub fn speed_read(&mut self, root: NodeId, read: &[NodeId]) -> NodeId {
+        let a = self.diff(root, Var::T);
+        if !self.depends_on(root, |v| v == Var::T) {
+            return a;
+        }
+        read.iter().fold(a, |m, &f| self.intern(Node::Deriv(m, f, 3)))
+    }
+
     /// Content hash of the expressions at `roots`, with parameters replaced by
     /// their values: equal hashes mean equal functions of x, y, z, t (up to
     /// hash collisions), wherever and however they were built. Stable across
@@ -1175,28 +1244,45 @@ impl Graph {
 // that is not a whole number is 0; ln 0 is -inf. conformance/ tests every
 // evaluator against an independent reference.
 
-/// The undefined case (docs/IR.md, Fields, Value rules: its value is 0, and it is
-/// reported) an op meets at these arguments, if any. Shared by the
-/// evaluators' report and constant folding.
-pub fn undefined_un(op: UnOp, a: f64) -> Option<&'static str> {
+/// Where each operation is undefined (docs/IR.md, Fields, Value rules: its
+/// value is 0, and it is reported): the one table of operator domains, read
+/// over operands' ranges [lo, hi] (a point for a value). The case an op
+/// may meet there, if any. Every check reads it: the evaluators' report and
+/// constant folding (at points: `undefined_un`, `undefined_bin`), and
+/// whether a promise's constants are real numbers (eval::promise_valid).
+/// sqrt of a negative is no such case: it is sqrt(max(a, 0)), continuous.
+pub fn undefined_un_over(op: UnOp, [lo, hi]: [f64; 2]) -> Option<&'static str> {
     match op {
-        UnOp::Ln if a < 0.0 => Some("ln of a negative"),
-        UnOp::Sin | UnOp::Cos | UnOp::Tan if a.is_infinite() => Some("sin, cos or tan of infinity"),
-        _ => None,
+        UnOp::Ln if lo < 0.0 => Some("ln of a negative"),
+        UnOp::Sin | UnOp::Cos | UnOp::Tan if lo.is_infinite() || hi.is_infinite() => Some("sin, cos or tan of infinity"),
+        UnOp::Neg | UnOp::Abs | UnOp::Square | UnOp::Exp | UnOp::Ln | UnOp::Sqrt | UnOp::Sin | UnOp::Cos | UnOp::Tan | UnOp::Floor | UnOp::Rad | UnOp::Deg => None,
     }
+}
+
+/// See `undefined_un_over`. A NaN bound may be anything.
+pub fn undefined_bin_over(op: BinOp, a: [f64; 2], b: [f64; 2]) -> Option<&'static str> {
+    let nan = a.iter().chain(&b).any(|x| x.is_nan());
+    let (zero, infinite) = (|r: [f64; 2]| r[0] <= 0.0 && r[1] >= 0.0, |r: [f64; 2]| r[0] == f64::NEG_INFINITY || r[1] == f64::INFINITY);
+    match op {
+        BinOp::Div if zero(b) => Some("division by zero"),
+        BinOp::Div if nan || (infinite(a) && infinite(b)) => Some("infinity divided by infinity"),
+        BinOp::Add if nan || (a[1] == f64::INFINITY && b[0] == f64::NEG_INFINITY) || (a[0] == f64::NEG_INFINITY && b[1] == f64::INFINITY) => Some("infinity minus infinity"),
+        BinOp::Sub if nan || (a[1] == f64::INFINITY && b[1] == f64::INFINITY) || (a[0] == f64::NEG_INFINITY && b[0] == f64::NEG_INFINITY) => Some("infinity minus infinity"),
+        BinOp::Mul if nan || (zero(a) && infinite(b)) || (zero(b) && infinite(a)) => Some("zero times infinity"),
+        BinOp::Pow if a[0] < 0.0 && !(b[0] == b[1] && b[0].fract() == 0.0) => Some("a negative base to a power that is not a whole number"),
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow | BinOp::Min | BinOp::Max | BinOp::Atan2 | BinOp::Emax => None,
+    }
+}
+
+/// The undefined case an op meets at these arguments (`undefined_un_over`
+/// at a point).
+pub fn undefined_un(op: UnOp, a: f64) -> Option<&'static str> {
+    undefined_un_over(op, [a, a])
 }
 
 /// See `undefined_un`.
 pub fn undefined_bin(op: BinOp, a: f64, b: f64) -> Option<&'static str> {
-    match op {
-        BinOp::Div if b == 0.0 => Some("division by zero"),
-        BinOp::Div if (a / b).is_nan() => Some("infinity divided by infinity"),
-        BinOp::Add if (a + b).is_nan() => Some("infinity minus infinity"),
-        BinOp::Sub if (a - b).is_nan() => Some("infinity minus infinity"),
-        BinOp::Mul if (a * b).is_nan() => Some("zero times infinity"),
-        BinOp::Pow if a < 0.0 && b.fract() != 0.0 => Some("a negative base to a power that is not a whole number"),
-        _ => None,
-    }
+    undefined_bin_over(op, [a, a], [b, b])
 }
 
 /// The core's value for an IEEE result: NaN (undefined) is 0. Library
@@ -1251,6 +1337,8 @@ pub fn un_f64(op: UnOp, a: f64) -> f64 {
         UnOp::Cos => defined(libm::cos(a)),
         UnOp::Tan => defined(libm::tan(a)),
         UnOp::Floor => a.floor(),
+        UnOp::Rad => a * (std::f64::consts::PI / 180.0),
+        UnOp::Deg => a * (180.0 / std::f64::consts::PI),
     }
 }
 
@@ -1294,6 +1382,7 @@ pub fn exact_un(op: UnOp, a: f64) -> Option<f64> {
         UnOp::Exp | UnOp::Cos => a == 0.0,
         UnOp::Sin | UnOp::Tan => a == 0.0,
         UnOp::Ln => a == 1.0,
+        UnOp::Rad | UnOp::Deg => a == 0.0,
     };
     exact.then_some(v)
 }
@@ -1362,6 +1451,14 @@ pub fn dun(op: UnOp, a: f64) -> (f64, f64) {
             (t, 1.0 + t * t)
         }
         UnOp::Floor => (a.floor(), 0.0),
+        UnOp::Rad => {
+            let k = std::f64::consts::PI / 180.0;
+            (a * k, k)
+        }
+        UnOp::Deg => {
+            let k = 180.0 / std::f64::consts::PI;
+            (a * k, k)
+        }
     }
 }
 

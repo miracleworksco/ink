@@ -47,6 +47,7 @@
 //! proposes again only next to a change.
 
 use ink_core::V3;
+use ink_core::sign::inside;
 use ink_core::v3::{direction, dot, norm, normal, sub};
 use ink_kernel::mesh::Mesh;
 use rayon::prelude::*;
@@ -188,7 +189,7 @@ fn passes(field: Field, probes: &[Vec<[V3; 2]>]) -> Vec<bool> {
     probes
         .iter()
         .map(|p| {
-            let ok = (0..p.len()).all(|k| f[at + 2 * k] < 0.0 && f[at + 2 * k + 1] >= 0.0);
+            let ok = (0..p.len()).all(|k| inside(f[at + 2 * k]) && !inside(f[at + 2 * k + 1]));
             at += 2 * p.len();
             ok
         })
@@ -954,12 +955,6 @@ pub fn deviation(field: Field, grads: &(dyn Fn(&[V3]) -> Vec<[f64; 4]> + Sync), 
         }
     }
     d
-}
-
-/// A field value inside the shape (negative).
-#[inline]
-fn inside(v: f64) -> bool {
-    v < 0.0
 }
 
 /// `deviation` over samples (point, unit normal).

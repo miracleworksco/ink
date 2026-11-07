@@ -59,7 +59,7 @@ impl Package for Design {
     fn metrics(&self) -> &'static [(&'static str, &'static str)] {
         &[
             ("min-thickness", "the thinnest wall of a shape (mm), by rays from surface samples: (min-thickness part > t); of (air-around part m), the narrowest gap"),
-            ("cavities", "how many enclosed voids a shape has (air no path leads out of), by proof: (cavities part < 1)"),
+            ("cavities", "how many enclosed voids a shape has (air no path leads out of) with air deeper than the accuracy, by proof: (cavities part < 1)"),
         ]
     }
 
@@ -75,8 +75,12 @@ impl Package for Design {
         &[("undecided-cells", "voids a count's finest cells could not rule out")]
     }
 
-    fn shape_metric(&self, v: &mut crate::lang::view::ModelView, metric: &str, f: NodeId, res: Option<f64>) -> R<Measured> {
-        crate::driver::shape_metric(v, metric, f, res)
+    fn shape_accuracy(&self, metric: &str) -> bool {
+        metric == "cavities"
+    }
+
+    fn shape_metric(&self, v: &mut crate::lang::view::ModelView, metric: &str, f: NodeId, res: Option<f64>, accuracy: f64) -> R<Measured> {
+        crate::driver::shape_metric(v, metric, f, res, accuracy)
     }
 
     fn read(&self, r: &mut Reader, form: &Sexp, head: &str, args: &[Sexp]) -> R<std::sync::Arc<dyn Form>> {

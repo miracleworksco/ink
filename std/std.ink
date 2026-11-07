@@ -66,8 +66,6 @@
 (fn slip (r)
   (let ((fz (nth r 2)))
     (select (neg fz) (/ (len2 (nth r 0) (nth r 1)) fz) inf)))
-(fn deg->rad (d) (* d (/ pi 180)))
-(fn rad->deg (a) (* a (/ 180 pi)))
 ; Inverse tangent, cosine and sine, in radians; acos and asin take |v| <= 1.
 (fn atan (v) (atan2 v 1))
 (fn acos (v) (atan2 (sqrt (- 1 (square v))) v))
@@ -2302,18 +2300,16 @@
 ; lead angle is ignored). So offsets give clearances, provably: a tapped
 ; (internal) thread is the void (- (thread-iso d p) clearance).
 (fn thread-iso (d p)
-  ; Rotating (cos, sin) pairs puts atan2's one jump at the thread roots.
+  ; The helix's phase in turns. Across atan2's cut it moves by exactly
+  ; one (360 degrees), which q - floor(q) takes off, and its wrap there is
+  ; 1/2 on both sides: the field has no jump, and its slopes are bounded
+  ; across both. On the axis, which has no direction, a crest's centre.
   (let ((r (len2 x y))
-        (depth (* 0.5412659 p))
         (r-major (* 0.5 d))
         (r-minor (- (* 0.5 d) (* 0.5412659 p)))
-        (k (/ (* 2 pi) p))
-        (cx (/ x r))
-        (sx (/ y r))
-        (cz (cos (* k z)))
-        (sz (sin (* k z)))
+        (q (- (/ (rad->deg (atan2 y x)) 360) (/ z p)))
         ; Distance along z from the nearest crest centre, 0 .. p/2.
-        (w (/ (abs (atan2 (- (* cz sx) (* sz cx)) (neg (+ (* cz cx) (* sz sx))))) k))
+        (w (select (neg r) (* p (abs (- q (floor q) 0.5))) 0))
         ; The field's Lipschitz bound (its greatest slope). A pitch too
         ; coarse for the diameter (r-flank <= 0) makes the field jump at the
         ; axis, so it has none (0 promises nothing).

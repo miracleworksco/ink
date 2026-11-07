@@ -1220,7 +1220,7 @@ fn packages_bring_their_own_metrics() {
             None
         }
         fn metric(&self, m: &str) -> Option<Measured> {
-            (m == "reading").then(|| Measured { value: Ok(self.0), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false })
+            (m == "reading").then(|| Measured { value: Ok(self.0), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None })
         }
         fn failure(&self) -> Option<String> {
             (self.0 < 0.0).then(|| "the gauge reads below its range".into())
@@ -2489,10 +2489,11 @@ fn distance_upper_bounds_hold_at_any_field_scale() {
         let t = Tape::new(&v.doc.g, f);
         assert!(ink::eval::eval_interval(&t, &CTX, x.map(ink::interval::I::point), None).hi < 0.0, "{x:?}");
     }
-    // b's field touches 0 on the plane x = 5 and is positive elsewhere.
+    // b's field touches 0 on the plane x = 5 and is positive elsewhere: no
+    // point of it is inside, and the distance to it is no number.
     let (mut v, fa, fb) = view("(max (abs (- x 5)) (move (box 2 2 2) 5 0 0))");
-    let d = ink::claims::distance(&mut v, fa, fb, ink::claims::ClaimOptions::default()).unwrap();
-    assert!(d.upper.is_none(), "{:?}", d.upper);
+    let Err(e) = ink::claims::distance(&mut v, fa, fb, ink::claims::ClaimOptions::default()) else { panic!("a distance to no material") };
+    assert!(e.message.contains("empty"), "{e:?}");
 }
 
 /// A distance between two bodies has an answer whatever their fields read
@@ -4339,8 +4340,9 @@ fn a_direction_without_a_length_is_refused() {
 }
 
 /// Fail fast: best first, a box undecided at the finest cells ends the
-/// search. Two plates touching over a 20 x 20 face, asked exactly, stay
-/// undecided there at any res: the search ends at its first box on the
+/// search. Two plates touching over a 20 x 20 face (at z = 1/3, off the
+/// cells' faces; on one, z = 0, every cell's bounds show no point below 0,
+/// and it is proven), asked exactly, stay undecided there at any res: the search ends at its first box on the
 /// face at the finest cells (Ended::Finest), the rest of the face not
 /// refined (all of it is four million boxes at 0.01), and it holds to
 /// about that box's size (accuracy attained; their intersection is empty).
@@ -4355,20 +4357,24 @@ fn a_direction_without_a_length_is_refused() {
 fn a_search_ends_where_a_box_stays_undecided_at_its_finest_cells() {
     use ink::query::{Ended, Verdict, prove_empty};
     use std::sync::Arc;
-    let shape = |bump: f64| {
-        let src = format!("(def f (max (move (box 20 20 4) 0 0 -2) (min (move (box 20 20 4) 0 0 2) (move (box 2 2 {}) 8 8 0))))", 2.0 * bump);
+    let at = |zc: f64, bump: f64| {
+        let src = format!("(def f (max (move (box 20 20 4) 0 0 (- {zc} 2)) (min (move (box 20 20 4) 0 0 (+ {zc} 2)) (move (box 2 2 {}) 8 8 {zc}))))", 2.0 * bump);
         Arc::new(field(&src, "f").1)
     };
-    let (touch, region) = (shape(0.0), ([-11.0; 3], [11.0; 3]));
+    let zc = 1.0 / 3.0;
+    let shape = |bump: f64| at(zc, bump);
+    let region = ([-11.0; 3], [11.0; 3]);
+    assert!(matches!(prove_empty(&at(0.0, 0.0), &CTX, region.0, region.1, None, 0.01, 0.0).verdict, Verdict::Proven));
+    let touch = shape(0.0);
     let s = prove_empty(&touch, &CTX, region.0, region.1, None, 0.01, 0.0);
     let Verdict::Unknown { cells, ended: Ended::Finest, cell: Some([lo, hi]), attained: Some(a), .. } = s.verdict else { panic!("{:?}", s.verdict) };
     assert!(cells < 100_000 && a <= 1.0, "{cells} boxes left, holds to {a}");
-    assert!(lo[2] <= 0.0 && 0.0 <= hi[2] && hi[0] - lo[0] <= 0.0100001, "{lo:?} {hi:?}");
+    assert!(lo[2] <= zc && zc <= hi[2] && hi[0] - lo[0] <= 0.0100001, "{lo:?} {hi:?}");
     assert!(matches!(prove_empty(&touch, &CTX, region.0, region.1, None, 0.025, 0.05).verdict, Verdict::Proven));
     for bump in [0.3, 0.104] {
         let v = prove_empty(&shape(bump), &CTX, region.0, region.1, None, 0.025, 0.05).verdict;
         let Verdict::Disproven { witness, .. } = v else { panic!("a bump {bump} deep: {v:?}") };
-        assert!(witness[0] > 7.0 && witness[1] > 7.0 && witness[2] < 0.0, "{witness:?}");
+        assert!(witness[0] > 7.0 && witness[1] > 7.0 && witness[2] < zc, "{witness:?}");
     }
     let (_, both) = field("(def f (max (box 10 10 10) (move (box 10 10 10) 9.99 0 0)))", "f");
     let both = Arc::new(both);

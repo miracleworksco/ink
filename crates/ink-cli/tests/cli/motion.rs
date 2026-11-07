@@ -288,7 +288,7 @@ fn a_boss_on_a_still_stator_fails_where_a_turning_rotors_lobes_reach_it() {
 #[test]
 fn a_field_reading_t_only_times_a_param_at_zero_is_checked_once() {
     // It does not change over the span, so it is the claim at any moment,
-    // checked once, not measured at 32 steps as an estimate; with the
+    // checked once, not measured at 17 moments as an estimate; with the
     // param at 1 it is checked over the span, an estimate (a contact at
     // every moment is no range claim).
     let s = Scratch::new("motion-still-belt");
@@ -316,7 +316,7 @@ fn a_field_reading_t_only_times_a_param_at_zero_is_checked_once() {
 fn a_belts_wrap_turning_with_its_pulley_holds_measured_and_a_slipping_one_fails() {
     // A belt of 12 teeth round a pulley its drive turns, built as std's
     // belt-along builds one: its field reads t (its teeth run round), so the
-    // pair is measured at 32 moments: an estimate. A groove filled inside
+    // pair is measured at 17 moments: an estimate. A groove filled inside
     // the wrap fails; a pulley turning twice as fast as the belt meets its
     // teeth.
     let s = Scratch::new("motion-wrap");
@@ -371,33 +371,178 @@ HEAD(body block (shape (box 10 10 10)))
     assert!(d["overlapping_pairs"] == 1 && d["pairs_apart_by_bounding_boxes"] == 0, "{}", pretty(&d));
 }
 
+/// Two blocks moved by a solve on t, as `ink assert` and `ink interfere`
+/// ask them (searched in the first's frame): a at `a`, b at `b`, q = c t.
+fn solved_pair(s: &Scratch, name: &str, c: f64, a: &str, b: &str) -> String {
+    s.model(
+        name,
+        &format!(
+            "(import \"std\")\n(t-span 0 1)\n(solve drive (unknowns (q 0)) (== q (* {c} t)))\n(body block (shape (box 2 2 2)))\n\
+             (assembly root (instance a block (at (move {a}))) (instance b block (at (move {b}))))\n\
+             (assert apart (disjoint (shape-of root/a) (shape-of root/b)))\n"
+        ),
+    )
+}
+
+/// A frame is built with a solved drive ranged, never as its number at the
+/// view's moment: blocks at 10 t and 10 t + q + 10, q = -20 t, coincide at
+/// t = 0.5, which a frame simplified with q constant called apart outright.
 #[test]
-fn pairs_moved_by_a_solve_are_measured_and_reported_as_decided() {
+fn a_frame_reads_a_solved_drive_as_ranged() {
+    let s = Scratch::new("motion-solved-frame");
+    let m = solved_pair(&s, "mixed.ink", -20.0, "(* 10 t) 0 0", "(+ (* 10 t) q 10) 0 0");
+    for command in ["assert", "interfere"] {
+        let a = row(s.ink([command, &m]));
+        let t = num(&a["t"]);
+        assert!(verdict(&a) == "fails" && (10.0 * t - (10.0 - 10.0 * t)).abs() < 2.0, "{command}: {}", pretty(&a));
+    }
+}
+
+/// Every witness and near point found in a frame is moved into the world
+/// and confirmed there with a solved drive derived at its own moment: both
+/// blocks at 10 t + q, q = 100 t, the second 0.1 t up y (a witness) or
+/// 1.98 - 0.02 t (an overlap under the accuracy: a near point), were
+/// reported at t = 0.5 at x near 5, where both lie about x = 55.
+#[test]
+fn a_frames_points_are_in_the_world_at_their_moments_with_solved_drives() {
+    let s = Scratch::new("motion-solved-points");
+    let witness = solved_pair(&s, "witness.ink", 100.0, "(+ (* 10 t) q) 0 0", "(+ (* 10 t) q) (* 0.1 t) 0");
+    let near = solved_pair(&s, "near.ink", 100.0, "(+ (* 10 t) q) 0 0", "(+ (* 10 t) q) (- 1.98 (* 0.02 t)) 0");
+    // Inside a block at x 110 t and this y: below 0.
+    let inside = |p: &[f64], t: f64, y: f64| (p[0] - 110.0 * t).abs().max((p[1] - y).abs()).max(p[2].abs()) - 1.0;
+    for command in ["assert", "interfere"] {
+        let a = row(s.ink([command, &witness]));
+        let (w, t) = (nums(&a["witness"]), num(&a["t"]));
+        let depth = if w.len() == 3 { inside(&w, t, 0.0).max(inside(&w, t, 0.1 * t)) } else { f64::NAN };
+        assert!(verdict(&a) == "fails" && depth < -num(&a["accuracy"]), "{command}: {depth} at the witness: {}", pretty(&a));
+        let a = row(s.ink([command, &near]));
+        let (p, t) = (nums(&a["near"]["at"]), num(&a["near"]["params"]["t"]));
+        let depth = if p.len() == 3 { inside(&p, t, 0.0).max(inside(&p, t, 1.98 - 0.02 * t)) } else { f64::NAN };
+        assert!(verdict(&a) == "holds" && a["held"] == "to the accuracy" && depth < 0.0, "{command}: {depth} at the near point: {}", pretty(&a));
+    }
+}
+
+/// A claim over a motion is judged in ink's range, and by its directions,
+/// with what solves on t set ranged over the span, before it is searched:
+/// a probe a solve carries to 2e9 mm (followed, or with more equations than
+/// unknowns, measured moment by moment) is unknown, not held at the view's
+/// moment's 0; and a turn whose axis a solve takes through zero at t = 0.5
+/// is unknown, saying where. Where the solve is only measured, each moment
+/// measured is judged so before it is asked, and a pair it carries is not
+/// asked once for the span (riding) on the view's moment's judgement: an
+/// axis zero at the sampled t = 0.5, two cubes riding to 2e9 mm, unknown in
+/// assert and interfere. So is a claim only whose bound reads it (judged
+/// before the bound is its number at the moment): a clearance, a volume of
+/// shapes moving to 2e9 mm.
+/// What a solve on t sets is derived from t over the claim's whole span,
+/// not read through t: a turn repeating every second beside a slide
+/// solved along t is not searched over one second of t standing for the
+/// ten (the slide would be read only where it is in that second).
+#[test]
+fn a_solve_on_t_keeps_its_claim_over_the_whole_span() {
+    let s = Scratch::new("motion-solve-no-drive");
+    let m = s.model("slide.ink", "(t-span 0 10)\n(solve slide (unknowns (q 0)) (== q (* 10 t)))\n(assert below (value (+ (sin (deg->rad (* 360 t))) q) <= 101.5))\n");
+    let a = row(s.ink(["assert", &m]));
+    assert!(verdict(&a) == "holds" && !a["accuracy"].is_null() && a["param_spans"]["t"] == json!([0.0, 10.0]), "{}", pretty(&a));
+}
+
+#[test]
+fn a_claim_through_a_solve_on_t_is_judged_over_the_motion_before_it_is_searched() {
+    let s = Scratch::new("motion-solved-range");
+    let probe = |name: &str, solve: &str| s.model(name, &format!("(import \"std\")\n(t-span 0 1)\n{solve}\n(assert inside (subset (probe q 0 0) (move (box 2 2 2) q 0 0)))\n"));
+    let followed = probe("followed.ink", "(solve A (unknowns (q 0)) (== q (* 2e9 t)))");
+    let measured = probe("measured.ink", "(solve A (unknowns (q 0)) (== q (* 2e9 t)) (== (* 2 q) (* 4e9 t)))");
+    for m in [&followed, &measured] {
+        let a = row(s.ink(["assert", m]));
+        assert!(verdict(&a) == "unknown" && a["unavailable"].as_str().is_some_and(|u| u.contains("outside ink's range")), "{}", pretty(&a));
+    }
+    let axis = s.model(
+        "axis.ink",
+        "(import \"std\")\n(t-span 0 1)\n(solve A (unknowns (q -0.5)) (== q (- t 0.5)))\n(body block (shape (box 2 2 2)))\n\
+         (body post (shape (move (box 2 2 2) 20 0 0)))\n(assembly root (instance a block (at (move 5 0 0) (rot q 0 0 90))) (instance p post))\n\
+         (assert apart (disjoint (shape-of root/a) (shape-of root/p)))\n",
+    );
+    let a = row(s.ink(["assert", &axis]));
+    assert!(verdict(&a) == "unknown" && a["unavailable"].as_str().is_some_and(|u| u.contains("zero length at t = 0.5")), "{}", pretty(&a));
+    let squares = "(solve A (unknowns (q 1)) (== q (+ 1 t)) (== (* 2 q) (* 2 (+ 1 t))))";
+    let measured_axis = s.model(
+        "measured-axis.ink",
+        &format!(
+            "(import \"std\")\n(t-span 0 1)\n{squares}\n(body block (shape (box 2 2 2)))\n(body post (shape (move (box 2 2 2) 20 0 0)))\n\
+             (assembly root (instance a block (at (move 5 0 0) (rot (* q (- t 0.5)) 0 0 60))) (instance p post))\n\
+             (assert apart (disjoint (shape-of root/a) (shape-of root/p)))\n"
+        ),
+    );
+    let riding = s.model(
+        "riding.ink",
+        "(import \"std\")\n(t-span 0 1)\n(solve A (unknowns (q 0)) (== q (* 2e9 t)) (== (* 2 q) (* 4e9 t)))\n(body cube (shape (box 2 2 2)))\n\
+         (assembly pair (instance a cube) (instance b cube (at (move 5 0 0))))\n(assembly root (instance p pair (at (move q 0 0))))\n\
+         (assert apart (disjoint (shape-of root/p/a) (shape-of root/p/b)))\n",
+    );
+    for (m, why) in [(&measured_axis, "zero length"), (&riding, "outside ink's range")] {
+        for command in ["assert", "interfere"] {
+            let a = row(s.ink([command, m]));
+            assert!(verdict(&a) == "unknown" && a["unavailable"].as_str().is_some_and(|u| u.contains(why)), "{command}: {}", pretty(&a));
+        }
+    }
+    for claim in ["(clearance a b q)", "(volume a > (* q 0.0001))"] {
+        let bound = s.model(
+            "bound.ink",
+            &format!(
+                "(import \"std\")\n(t-span 0 1)\n{squares}\n(def a (move (box 2 2 2) (* 2e9 t) 0 0))\n(def b (move (box 2 2 2) (+ 5 (* 2e9 t)) 0 0))\n\
+                 (assert c {claim})\n"
+            ),
+        );
+        let a = row(s.ink(["assert", &bound, "--res", "0.5"]));
+        assert!(verdict(&a) == "unknown" && a["unavailable"].as_str().is_some_and(|u| u.contains("outside ink's range")), "{claim}: {}", pretty(&a));
+    }
+}
+
+#[test]
+fn pairs_moved_by_a_solve_are_ranged_or_measured_and_reported_as_decided() {
     let s = Scratch::new("motion-solved");
-    // Solved placements over a span are measured: a pair moved by a solve
-    // is never culled by a swept box.
+    // A pair moved by a solve is never culled by a swept box; over a band
+    // too it is not followed, so not ranged with t: unknown.
     let d = s.ink(["interfere", &root("tests/motion/ranged-solve.ink")]).ok();
     assert!(verdicts(&d) == ["unknown"] && d["pairs_apart_by_bounding_boxes"] == 0, "{}", pretty(&d));
-    // A stepped measured overlap is counted, and each pair is reported as
-    // decided with its row of the answer (a call stopped at its limit gives
-    // them).
+    // A followed solve's overlap is found with t ranged, guaranteed, and
+    // each pair is reported as decided, the last of its rows the answer's
+    // (a call stopped at its limit gives them): first sampled, then t
+    // ranged.
     let log = s.path("slide.progress");
     let slide = root("tests/motion/solved-slide.ink");
     let d = s.ink(["interfere", &slide]).env("INK_PROGRESS", &log).ok();
-    assert!(d["overlapping_pairs"] == 1 && d["overlapping_pairs_estimated"] == 1, "{}", pretty(&d));
+    assert!(d["overlapping_pairs"] == 1 && d.get("overlapping_pairs_estimated").is_none_or(|n| n == 0), "{}", pretty(&d));
     let reported: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter_map(|l| l.get("row").cloned()).collect();
-    assert!(&reported == rows(&d) && verdict(&reported[0]) == "fails estimate", "{reported:?}\n{}", pretty(&d));
-    // A measured claim failing early reports its configured step.
-    let a = row(s.ink(["assert", &slide, "--name", "through-wall"]));
+    let last = |p: &Value| reported.iter().rev().find(|r| r["pair"] == p["pair"]).cloned();
+    assert!(rows(&d).iter().all(|p| last(p).as_ref() == Some(p)) && verdict(&rows(&d)[0]) == "fails", "{reported:?}\n{}", pretty(&d));
+    // One with more equations than unknowns is not followed: measured at
+    // 17 moments evenly spaced, ends included (as a band's 17 values),
+    // failing early, reporting its configured step.
+    let squares = s.model(
+        "squares.ink",
+        "(import \"std\")\n(t-span 0 1)\n(solve position (unknowns (q 0)) (== q (* 100 t)) (== (* 2 q) (* 200 t)))\n(body block (shape (box 2 2 2)))\n\
+         (body wall (shape (move (box 2 2 2) 50 0 0)))\n(assembly root (instance block block (at (move q 0 0))) (instance wall wall))\n\
+         (assert through-wall (disjoint (shape-of root/block) (shape-of root/wall)))\n",
+    );
+    let a = row(s.ink(["assert", &squares]));
     let m = &a["motion"];
-    assert!(m["how"] == "measured" && num(&m["step"]) == 1.0 / 32.0 && m["steps"].as_u64().unwrap() < 32, "{}", pretty(&a));
+    assert!(
+        verdict(&a) == "fails estimate"
+            && m["how"] == "measured"
+            && num(&m["step"]) == 1.0 / 16.0
+            && m["steps"].as_u64().unwrap() < 17
+            && num(&a["t"]) * 16.0 == (num(&a["t"]) * 16.0).round(),
+        "{}",
+        pretty(&a)
+    );
 }
 
 #[test]
 fn claims_over_a_motion_are_proven_t_ranged_and_those_no_range_decides_are_estimates() {
     let s = Scratch::new("motion-measured");
     // Surfaces that nearly coincide over a span, 0.01 apart: with t ranged
-    // the search proves it, not measured at 32 steps as an estimate.
+    // the search proves it, not measured at 17 moments as an estimate.
     let sub = s.model(
         "subset-span.ink",
         r#"(import "std")
@@ -454,7 +599,9 @@ fn value_claims_speed_limits_and_relation_claims_hold_to_their_accuracy_and_are_
     // A value meeting its bound (10 sin(2 pi t) < 10 at t = 0.25; p (2 - p)
     // <= 1 at p = 1; a turn at 10 sin(2 pi t) deg/s against speed limits of
     // 10) is unknown asked exactly over ranged params, measured over a
-    // motion (the range search undecided: an estimate), and holds to
+    // motion where the range search is undecided (the wave's moments
+    // include t = 0.25, where it meets its bound: unknown; the speed's and
+    // the relation's, holding at each, an estimate), and holds to
     // (accuracy x); a violation deeper than x fails. A number in accuracy
     // only where it holds or fails, guaranteed; an unknown says the
     // accuracy it was undecided at apart.
@@ -491,7 +638,7 @@ fn value_claims_speed_limits_and_relation_claims_hold_to_their_accuracy_and_are_
         ("speed-limits:tolerant/w", "holds 0.01 -"),
         ("relate:related/a~b/swing", "holds - -"),
         ("relate:related/a~b/swing-to", "holds 0.01 -"),
-        ("exact", "holds - -"),
+        ("exact", "unknown - -"),
         ("to-0.01", "holds 0.01 -"),
         ("past-0.01", "fails 0.01 -"),
         ("ranged-exact", "unknown - 0"),
@@ -502,7 +649,7 @@ fn value_claims_speed_limits_and_relation_claims_hold_to_their_accuracy_and_are_
     assert_eq!(got, want, "{}", pretty(&d));
     let past = rows(&d).iter().find(|a| a["name"] == "past-0.01").unwrap();
     assert!(num(&past["value"]) >= 9.96 && num(&past["t"]) > 0.2 && num(&past["t"]) < 0.3, "{}", pretty(past));
-    assert!(d["all_hold"] == false && d["all_hold_guaranteed"] == false && d["counts"] == json!({"holds": 7, "fails": 1, "unknown": 1}), "{}", pretty(&d["counts"]));
+    assert!(d["all_hold"] == false && d["all_hold_guaranteed"] == false && d["counts"] == json!({"holds": 6, "fails": 1, "unknown": 2}), "{}", pretty(&d["counts"]));
 }
 
 #[test]
@@ -1813,7 +1960,7 @@ const COUNTER_IN_PARENT: &[(&str, &str)] = &[(
 /// A pair whose question reads t (hunt-3; the target-path reviews): the
 /// files it is written in (the last is run), its target, how many pairs
 /// fail, each at a moment past 0 of the model's spans' hull (0, 1), and
-/// whether guaranteed (else measured: a solve).
+/// whether guaranteed (else measured: a shape whose own field moves).
 pub struct Repro {
     pub name: &'static str,
     pub files: &'static [(&'static str, &'static str)],
@@ -1941,7 +2088,7 @@ pub const REPROS: &[Repro] = &[
     repro("a moving contact zone by name", CONTACT, Some("m.parent"), 1, true),
     repro("a moving contact zone by path", CONTACT, Some("root/c"), 1, true),
     repro("a moving contact zone below its parent", CONTACT, Some("root/c/carried"), 1, true),
-    repro("a joint driven by a solve on t", SOLVED, None, 1, false),
+    repro("a joint driven by a solve on t", SOLVED, None, 1, true),
     repro("a body moved by a solve on t", SOLVED_BODY, None, 1, false),
     repro("a solve on t, boxes meeting at t = 0", SOLVED_OVERLAP, None, 1, false),
     repro("a mover's span, in a file of another", FALLBACK, None, 1, true),
@@ -2044,4 +2191,55 @@ fn interfere_asks_a_pair_reading_t_over_every_span_the_model_states() {
     );
     // Nor where a span covers them.
     assert!(rows(&s.ink(["interfere", &REPROS[0].write(&s)]).ok()).len() == 1 && note(&s.ink(["interfere", &REPROS[0].write(&s)]).ok()).is_empty());
+}
+
+/// Following a solve along t stops at the call's time limit: the moment
+/// past where it got is refused, saying so, and the call answers in time.
+/// tests/motion/solve-branch.ink's four-bar with its crank sped up
+/// (10 t + t^2 / 1000 rad), so no period of it is followed in its stead:
+/// 6.3 s to t = 300 unstopped.
+#[test]
+fn following_a_solve_stops_at_the_time_limit() {
+    let s = Scratch::new("follow-limit");
+    let f = s.model("chirp.ink", "(import \"std\")\n(t-span 0 0.6283185307)\n(body crank (shape (move (box 100 4 4) 50 0 0)) (frame pin (at (move 100 0 0))))\n(body coupler (shape (move (box 400 4 4) 200 0 0)) (frame pin (at (move 400 0 0))))\n(body rocker (shape (move (box 300 4 4) 150 0 0)) (frame pin (at (move 300 0 0))))\n(param th3 0.85) (param th4 1.52)\n(assembly (fourbar (p 0))\n  (instance crank crank (at) (turn z p))\n  (instance coupler coupler (at (rot-z (rad->deg th3)) (frame-of crank pin)))\n  (instance rocker rocker (at (rot-z (rad->deg th4)) (move 350 0 0))))\n(assembly root (instance f (fourbar (rad->deg (+ (* 10 t) (* 0.001 t t))))))\n(def gap (- (get (frame-of root/f/coupler pin) \"origin\") (get (frame-of root/f/rocker pin) \"origin\")))\n(solve loop (unknowns th3 th4) (== (nth gap 0) 0) (== (nth gap 1) 0))\n(assert open (value (sin th4) > 0.5))\n");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let t0 = std::time::Instant::now();
+    // Searches stop 3 s before the call's limit, to answer whole.
+    let d = s.ink(["check", &f, "--t", "300"]).env("INK_NO_CACHE", "1").env("INK_DEADLINE", (now + 3.5).to_string()).ok();
+    let took = t0.elapsed().as_secs_f64();
+    let w: Vec<&str> = d["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).filter(|w| w.contains("is not followed")).collect();
+    assert!(w.len() == 1 && w[0].contains("the call's time limit passed") && took < 3.0, "{took:.1} s: {}", pretty(&d));
+}
+
+/// A motion repeats only over the period its real formula has: the sine
+/// of (x + 1) t warped to x = p = 0.1 is that of (1 + 0.1) t in real
+/// numbers, not of 1.1 t (0.1 and 1.1 are floats: at t = 1e16 they
+/// differ by 0.094), so over 1e17 s their difference is not guaranteed
+/// under 0.001 by a search of 2 pi / 1.1.
+#[test]
+fn a_motion_repeats_only_over_its_real_period() {
+    let s = Scratch::new("false-period");
+    let f = s.model(
+        "false-period.ink",
+        "(param p 0.1)\n(def a (warp (sin (* (+ x 1) t)) p y z))\n(def b (sin (* 1.1 t)))\n(t-span 0 100000000000000000)\n(assert same (value (abs (- a b)) < 0.001))\n",
+    );
+    let d = s.ink(["assert", &f]).env("INK_NO_CACHE", "1").any();
+    let c = &rows(&d)[0];
+    assert!(d["all_hold_guaranteed"] == false && !(verdict(c) == "holds" && has(c, "accuracy")), "{}", pretty(&d));
+}
+
+/// Whether a coefficient is a float or a real number is the evaluator's
+/// call: 1 + (select c 0.1 q) with q a tolerance is real arithmetic
+/// though c picks 0.1 (1 + 0.1, not 1.1's float), so over 1e17 s its sine
+/// is not guaranteed to follow sin(1.1 t) within 0.001.
+#[test]
+fn a_select_of_a_tolerance_is_real_in_a_period() {
+    let s = Scratch::new("select-period");
+    let f = s.model(
+        "selected.ink",
+        "(param c -1)\n(param q 0 (tol -1 1))\n(def a (sin (* (+ 1 (select c 0.1 q)) t)))\n(def b (sin (* 1.1 t)))\n(t-span 0 100000000000000000)\n(assert same (value (abs (- a b)) < 0.001))\n",
+    );
+    let d = s.ink(["assert", &f]).env("INK_NO_CACHE", "1").any();
+    let c = &rows(&d)[0];
+    assert!(d["all_hold_guaranteed"] == false && !(verdict(c) == "holds" && has(c, "accuracy")), "{}", pretty(&d));
 }

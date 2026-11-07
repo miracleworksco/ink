@@ -8,5 +8,6 @@ mod common;
 mod conformance;
 mod geometry;
 mod kernel;
+mod sign;
 mod solves;
 mod threads;

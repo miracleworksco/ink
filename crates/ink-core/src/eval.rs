@@ -329,6 +329,14 @@ impl ParamSpans {
         self
     }
 
+    /// Independent param k's span and band narrowed to `span` (a quotient
+    /// by a period: ink_core::period::quotient).
+    pub fn narrow(&mut self, k: u32, span: (f64, f64)) {
+        if let Some(s) = self.list.iter_mut().find(|s| s.k == k && !s.derived) {
+            (s.span, s.band) = (span, span);
+        }
+    }
+
     /// Param k's span set to `span`, as it is (a derivation's result: no
     /// other span follows it).
     pub fn set_span(&mut self, k: u32, span: (f64, f64)) {
@@ -511,7 +519,7 @@ fn run_lanes<const N: usize>(tape: &Tape, ctx: &Ctx, x: &[f64; N], y: &[f64; N],
 /// the params it reads (Tape::params_of) decide, so a param sharing only a
 /// ranged one's bit (64 apart) leaves it in floats.
 #[inline]
-fn fixed(tape: &Tape, ctx: &Ctx, i: usize) -> bool {
+pub(crate) fn fixed(tape: &Tape, ctx: &Ctx, i: usize) -> bool {
     tape.fixed[i] && (tape.pmask[i] & ctx.p_spans.mask == 0 || tape.params_of(i).iter().all(|&k| ctx.p_spans.get(k).is_none()))
 }
 
@@ -519,7 +527,7 @@ fn fixed(tape: &Tape, ctx: &Ctx, i: usize) -> bool {
 /// Params are fixed for a query, so this is the value a def would have: the
 /// interval bound of such an expression is this point, not an enclosure that
 /// widens through long chains (and through atan2 or floor near a cut).
-fn fixed_value(ins: &crate::tape::Ins, arg: impl Fn(u32) -> f64, ctx: &Ctx) -> f64 {
+pub(crate) fn fixed_value(ins: &crate::tape::Ins, arg: impl Fn(u32) -> f64, ctx: &Ctx) -> f64 {
     match ins.op {
         Op::Const(v) => v,
         Op::Var(Var::Param(p)) => ctx.params[p as usize],
@@ -542,22 +550,49 @@ pub fn eval_interval(tape: &Tape, ctx: &Ctx, b: [I; 3], choices: Option<&mut [u8
     eval_interval_in(tape, ctx, b, choices, &mut Vec::new())
 }
 
+/// Bound the tape over the points of a box where each clamped instruction's
+/// value lies in its interval (`clamps`: instruction, interval): each step
+/// as `eval_interval`'s (across a jump too, not forked), each clamped value
+/// intersected with its interval. So over a box split by the sign of a
+/// value the tape reads in several places, each part is bounded with that
+/// value's sign known everywhere it is read (bounds of the box alone lose
+/// that the reads agree). None where a clamp leaves a value none: no point
+/// of the box is in that part. `vals` gets each instruction's bound.
+pub fn eval_interval_clamped(tape: &Tape, ctx: &Ctx, b: [I; 3], clamps: &[(usize, I)], vals: &mut Vec<I>) -> Option<I> {
+    let mut s = vec![I::point(0.0); tape.nslots];
+    vals.clear();
+    for (i, ins) in tape.code.iter().enumerate() {
+        let mut v = interval_ins(tape, ctx, i, ins, &s, b, None, None);
+        for &(k, c) in clamps {
+            if k == i {
+                v = I { lo: v.lo.max(c.lo), hi: v.hi.min(c.hi) };
+                if !(v.lo <= v.hi) {
+                    return None;
+                }
+            }
+        }
+        vals.push(v);
+        s[ins.out as usize] = v;
+    }
+    Some(s[tape.out_slot()])
+}
+
 /// `eval_interval` with the caller's storage for the slots (reused across
 /// calls that evaluate many small boxes or points).
 pub fn eval_interval_in(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: Option<&mut [u8]>, s: &mut Vec<I>) -> I {
     s.clear();
     s.resize(tape.nslots, I::point(0.0));
-    let mut slopes = Slopes::of(tape, tape.nslots);
+    let (mut slopes, mut frames) = (Slopes::of(tape, tape.nslots), Vec::new());
     let (n, mut i) = (tape.code.len(), 0);
     for &j in &tape.jumps {
         let j = j as usize;
         // One inside the window of one before it was bounded there.
         if j >= i {
-            plain_run(tape, ctx, b, i, j, s, &mut slopes, choices.as_deref_mut());
-            i = fork(tape, &mut Plain { tape, ctx, b, s, slopes: &mut slopes }, j, n, choices.as_deref_mut());
+            plain_run(tape, ctx, b, i, j, s, &mut slopes, &mut frames, choices.as_deref_mut());
+            i = fork(tape, &mut Plain { tape, ctx, b, s, slopes: &mut slopes, frames: &mut frames }, j, n, choices.as_deref_mut());
         }
     }
-    plain_run(tape, ctx, b, i, n, s, &mut slopes, choices);
+    plain_run(tape, ctx, b, i, n, s, &mut slopes, &mut frames, choices);
     s[tape.out_slot()]
 }
 
@@ -565,10 +600,11 @@ pub fn eval_interval_in(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: Option<&
 /// step written out: the slots an argument the loop keeps in registers,
 /// not reloaded through the run's fields.
 #[inline(always)]
-fn plain_run(tape: &Tape, ctx: &Ctx, b: [I; 3], from: usize, to: usize, s: &mut [I], slopes: &mut Option<Slopes>, mut choices: Option<&mut [u8]>) {
+#[allow(clippy::too_many_arguments)]
+fn plain_run(tape: &Tape, ctx: &Ctx, b: [I; 3], from: usize, to: usize, s: &mut [I], slopes: &mut Option<Slopes>, frames: &mut Vec<f64>, mut choices: Option<&mut [u8]>) {
     for (i, ins) in tape.code[from..to].iter().enumerate() {
         let i = from + i;
-        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices.as_deref_mut());
+        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices.as_deref_mut(), Some(frames));
         if let Some(sl) = slopes {
             v = sl.tighten(tape, ctx, i, ins, b, v);
         }
@@ -683,6 +719,7 @@ struct Plain<'a> {
     b: [I; 3],
     s: &'a mut Vec<I>,
     slopes: &'a mut Option<Slopes>,
+    frames: &'a mut Vec<f64>,
 }
 
 impl Fork for Plain<'_> {
@@ -691,7 +728,7 @@ impl Fork for Plain<'_> {
     #[inline(always)]
     fn step(&mut self, i: usize, choices: Option<&mut [u8]>) -> I {
         let ins = &self.tape.code[i];
-        let mut v = interval_ins(self.tape, self.ctx, i, ins, self.s, self.b, choices);
+        let mut v = interval_ins(self.tape, self.ctx, i, ins, self.s, self.b, choices, Some(self.frames));
         if let Some(sl) = self.slopes {
             v = sl.tighten(self.tape, self.ctx, i, ins, self.b, v);
         }
@@ -926,9 +963,11 @@ pub fn eval_interval_scope_blur(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: 
         let (o, n, hw) = (tape.out_slot(), inputs.len(), inputs.half_widths(ctx));
         v = interval::meet(v, sc.v[o]);
         let axes = inputs.t.then_some(Var::T).into_iter().chain(inputs.params.iter().map(|&k| Var::Param(k)));
+        // A jump is every input's share (any may move its seam), as were
+        // unbounded rates.
         blur.extend(axes.enumerate().map(|(j, x)| {
             let r = interval::mag(sc.d[o * n + j]);
-            (x, if r == 0.0 { 0.0 } else { interval::mul_up(r, hw[j]) })
+            (x, interval::add_up(if r == 0.0 { 0.0 } else { interval::mul_up(r, hw[j]) }, sc.j[o]))
         }));
     }
     (v, blur)
@@ -940,13 +979,22 @@ pub fn eval_interval_scope_blur(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: 
 /// and the rest: ENTIRE where the value may jump). A solve's certified
 /// roots are built on these (the interval Jacobian of its equations).
 pub fn eval_interval_rates(tape: &Tape, ctx: &Ctx, b: [I; 3], inputs: &Inputs) -> (I, Vec<I>) {
+    let (v, d, j) = eval_interval_rates_jump(tape, ctx, b, inputs);
+    (v, if j > 0.0 { vec![I::ENTIRE; d.len()] } else { d })
+}
+
+/// eval_interval_rates, with where the value may jump along the inputs
+/// (a seam they move, its sides joined: Scoped) each side's rates and a
+/// bound on the jump's height: it moves from its value at the inputs'
+/// centre by at most the rates times how far each input moves plus that.
+pub fn eval_interval_rates_jump(tape: &Tape, ctx: &Ctx, b: [I; 3], inputs: &Inputs) -> (I, Vec<I>, f64) {
     assert!(inputs.len() <= MAX_INPUTS, "at most MAX_INPUTS rates at once");
     if inputs.is_empty() {
-        return (eval_interval(tape, ctx, b, None), Vec::new());
+        return (eval_interval(tape, ctx, b, None), Vec::new(), 0.0);
     }
     let sc = scope_run(tape, false, ctx, inputs, b, None, true);
     let (o, n) = (tape.out_slot(), inputs.len());
-    (sc.v[o], sc.d[o * n..(o + 1) * n].to_vec())
+    (sc.v[o], sc.d[o * n..(o + 1) * n].to_vec(), sc.j[o])
 }
 
 /// Inputs beyond space a first-order bound takes at once (time and ranged
@@ -1058,8 +1106,13 @@ impl Inputs {
 }
 
 /// Instruction `i` (`ins`, in the tape's slot code or its SSA form)'s bound
-/// from its arguments' bounds in `s`.
-fn interval_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[I], b: [I; 3], choices: Option<&mut [u8]>) -> I {
+/// from its arguments' bounds in `s`. `frames`, by slot beside `s`, keeps
+/// each frame's extent over the box, the diagonal of its coordinates'
+/// bounds (set where a frame is bounded, read where a promise is): apart
+/// from the values, so no rule of theirs touches it. None: a promise is
+/// read as its value.
+#[allow(clippy::too_many_arguments)]
+fn interval_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[I], b: [I; 3], choices: Option<&mut [u8]>, frames: Option<&mut Vec<f64>>) -> I {
     if fixed(tape, ctx, i) {
         return I::point(fixed_value(ins, |k| s[k as usize].lo, ctx));
     }
@@ -1087,13 +1140,107 @@ fn interval_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[I
             }
             v
         }
-        Op::Tag(_) | Op::Lipschitz | Op::Read | Op::Deriv(_) | Op::Real => s[ins.a as usize],
-        Op::Frame => I::point(0.0),
+        Op::Lipschitz => {
+            let (v, k) = (s[ins.a as usize], s[ins.b as usize]);
+            // Where its promise could bound it narrower: that bound is at
+            // least k times its frame's extent wide (`promised`).
+            let extent = frames.and_then(|f| f.get(ins.c as usize).copied());
+            if k.lo > 0.0 && extent.is_some_and(|e| v.hi - v.lo > k.lo * e) { promised(tape, ctx, i, b).map_or(v, |p| interval::meet(v, p)) } else { v }
+        }
+        Op::Tag(_) | Op::Read | Op::Deriv(_) | Op::Real => s[ins.a as usize],
+        Op::Frame => {
+            if let Some(f) = frames {
+                if f.len() < s.len() {
+                    f.resize(s.len(), 0.0);
+                }
+                f[ins.out as usize] = interval::norm([ins.a, ins.b, ins.c].map(|k| s[k as usize].hi - s[k as usize].lo));
+            }
+            I::point(0.0)
+        }
         Op::Grid(gi, m) => {
             let (g, b) = (&tape.grids[gi as usize], [s[ins.a as usize], s[ins.b as usize], s[ins.c as usize]]);
             g.component_bound(b, m)
         }
     }
+}
+
+/// Lipschitz instruction `i`'s bound over the box `b` from its promise:
+/// `(lipschitz k f)` moves f by at most k times as far as its frame's
+/// coordinates move, so over the box f lies within k d of its value at the
+/// box's centre, d the farthest the coordinates over the box lie from
+/// theirs at the centre. Its own formula's bound (`v`) can stay wide however
+/// small the box (a normal divided by the length of a short chord whose
+/// two ends each move: a drafted polygon's line through two points of a
+/// small arc), where this falls with the box. It is at least k times the
+/// frame's extent wide (d is at least half the diagonal of the coordinates'
+/// bounds over the box), so it is tried where the formula's is wider. Read again
+/// from the tape's SSA form (Tape::promise), in plain intervals (no jump
+/// forked, a promise within f read as its value): k and the coordinates
+/// over the box, f and the coordinates at the centre. None where it promises
+/// nothing: k not positive, its constants not real over the box
+/// (`promise_valid`), or a bound not finite.
+#[cold]
+#[inline(never)]
+fn promised(tape: &Tape, ctx: &Ctx, i: usize, b: [I; 3]) -> Option<I> {
+    let centre = b.map(|x| I::point(x.mid()));
+    if !centre.iter().all(|c| c.lo.is_finite()) {
+        return None;
+    }
+    let p = tape.promise(i);
+    // k and the coordinates over the box: a few instructions.
+    let (mut small, mut large) = ([I::point(0.0); 16], Vec::new());
+    let o: &mut [I] = if p.over.len() <= small.len() {
+        &mut small[..p.over.len()]
+    } else {
+        large.resize(p.over.len(), I::point(0.0));
+        &mut large
+    };
+    for (n, &(j, ins)) in p.over.iter().enumerate() {
+        o[n] = cone_ins(tape, ctx, j, &ins, o, b);
+    }
+    let (k, over) = (o[p.over_k as usize], p.over_frame.map(|c| o[c as usize]));
+    if !(k.lo > 0.0 && promise_valid(tape, ctx, i, b)) {
+        return None;
+    }
+    let mut s = vec![I::point(0.0); p.ins.len()];
+    for (n, &(j, ins)) in p.ins.iter().enumerate() {
+        if p.at[n] {
+            s[n] = cone_ins(tape, ctx, j, &ins, &s, centre);
+        }
+    }
+    let d = interval::norm(std::array::from_fn(|j| interval::mag(sub_o(over[j], s[p.frame[j] as usize]))));
+    let r = interval::mul_up(k.hi, d);
+    let f = add_o(s[p.f as usize], I::new(-r, r));
+    (f.lo.is_finite() && f.hi.is_finite()).then_some(f)
+}
+
+/// Instruction `j` of a promise's cone (`ins`, its arguments renumbered
+/// into `s`) bounded over `b`: a promise within it read as its value.
+fn cone_ins(tape: &Tape, ctx: &Ctx, j: u32, ins: &crate::tape::Ins, s: &[I], b: [I; 3]) -> I {
+    match ins.op {
+        Op::Lipschitz => s[ins.a as usize],
+        _ => interval_ins(tape, ctx, j as usize, ins, s, b, None, None),
+    }
+}
+
+/// Whether promise `i` (a Lipschitz instruction of the tape's SSA form)
+/// holds over the box `b`: its field's, k's and frame's constants are real
+/// numbers there (`real_flags`, `promise_holds`). Every bound that trusts a
+/// promise asks this: values' (`promised`) and gradients' (`grad_ins`).
+/// Each value the flags read is bounded over the box, in plain intervals:
+/// a select's condition, and each value that reads no x, y or z through
+/// what it takes (the flags of its arguments say; a select reads the branch
+/// its condition decides).
+fn promise_valid(tape: &Tape, ctx: &Ctx, i: usize, b: [I; 3]) -> bool {
+    let p = tape.promise(i);
+    let (mut s, mut f) = (vec![I::point(0.0); p.ins.len()], vec![0u8; p.ins.len()]);
+    for (n, &(j, ins)) in p.ins.iter().enumerate() {
+        if p.cond[n] || real_flags(&ins, |k| s[k as usize], &f, I::point(0.0)) & SPATIAL == 0 {
+            s[n] = cone_ins(tape, ctx, j, &ins, &s, b);
+        }
+        f[n] = real_flags(&ins, |k| s[k as usize], &f, s[n]);
+    }
+    promise_holds(&p.promise, &f)
 }
 
 /// A value linear in x, y, z: coefficients and constant term, as intervals
@@ -1161,7 +1308,8 @@ impl Linear {
 /// up to the sector's width. Sound: both bounds hold for the real-number
 /// value.
 pub fn eval_interval_linear(tape: &Tape, ctx: &Ctx, region: &Region, choices: Option<&mut [u8]>) -> I {
-    let mut run = Lin { tape, ctx, region, b: region.bounds(), s: vec![I::point(0.0); tape.nslots], lin: vec![None; tape.nslots], slopes: Slopes::of(tape, tape.nslots) };
+    let mut run =
+        Lin { tape, ctx, region, b: region.bounds(), s: vec![I::point(0.0); tape.nslots], lin: vec![None; tape.nslots], slopes: Slopes::of(tape, tape.nslots), frames: Vec::new() };
     forked(tape, &mut run, 0, tape.code.len(), choices);
     run.s[tape.out_slot()]
 }
@@ -1175,6 +1323,7 @@ struct Lin<'a> {
     s: Vec<I>,
     lin: Vec<Option<Linear>>,
     slopes: Option<Slopes>,
+    frames: Vec<f64>,
 }
 
 impl Fork for Lin<'_> {
@@ -1195,7 +1344,7 @@ impl Fork for Lin<'_> {
         let (tape, ctx, region, b) = (self.tape, self.ctx, self.region, self.b);
         let (s, lin) = (&self.s, &self.lin);
         let ins = &tape.code[i];
-        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices);
+        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices, Some(&mut self.frames));
         if let Some(sl) = &mut self.slopes {
             v = sl.tighten(tape, ctx, i, ins, b, v);
         }
@@ -1341,10 +1490,21 @@ impl Fork for Lin<'_> {
 /// one side is the tape wherever the jump takes that side, so each side is
 /// bounded first order over the whole region, and the two joined where the
 /// tape joins them (Tape::rejoin). The joined value's rates are the hull
-/// of the sides' where no jump it went through moves with the inputs (each
-/// point then takes one side for every value of them); elsewhere it may
-/// jump along them, and its rates are unbounded. A turning gear's teeth
-/// over a step are bounded as one tooth near its seam, turning.
+/// of the sides'. Where the inputs move the seam it takes one side at some
+/// values of them and the other at others, so it may also jump along them,
+/// by at most the second side less the first at a point: that difference
+/// is carried through the window like a rate along one more input (each
+/// value's from its arguments' by its slope over the way between the
+/// sides' values; sine and cosine first take whole turns off it), met with
+/// the two sides' bounds' difference, and joined into the value's jump
+/// (Scoped::j), which goes on through what reads it by its slope as rates
+/// do. A value moves from the centre by at most its rates times how far
+/// each input moves plus its jump. A turning gear's teeth over a step are
+/// bounded as one tooth near its seam, turning; a polar repeat turned
+/// across atan2's cut is one copy on both sides (a whole turn apart), so
+/// it jumps by rounding only. Callers that need a value continuous (a
+/// speed, a followed root, a Jacobian) take a jump as unbounded rates
+/// (eval_interval_rates, Scoped::rate).
 ///
 /// `choices`, as in eval_interval, records the branches decided over the
 /// whole box and scope.
@@ -1358,13 +1518,25 @@ fn scope_run(tape: &Tape, every: bool, ctx: &Ctx, inputs: &Inputs, b: [I; 3], ch
 }
 
 /// What scope_run bounds, per slot: the value over the box and scope (`v`),
-/// at the inputs' centre (`m`), and its rates along them (`d`, `inputs.len()`
+/// at the inputs' centre (`m`), its rates along them (`d`, `inputs.len()`
 /// per slot, when asked for: 0 where the value does not depend on them,
-/// ENTIRE where unbounded).
+/// ENTIRE where unbounded), and how far it may jump along them (`j`: 0
+/// where it is continuous in them). The value moves from the centre by at
+/// most its rates times how far each input moves, plus its jump.
 pub struct Scoped {
     pub v: Vec<I>,
     pub m: Vec<I>,
     pub d: Vec<I>,
+    pub j: Vec<f64>,
+}
+
+impl Scoped {
+    /// Slot `o`'s rate along input `k` of `n`, as a bound on how fast the
+    /// value moves: ENTIRE where it may jump (its rates bound each side's
+    /// slope, not a jump between them).
+    pub fn rate(&self, o: usize, n: usize, k: usize) -> I {
+        if self.j[o] > 0.0 { I::ENTIRE } else { self.d[o * n + k] }
+    }
 }
 
 /// scope_run over every value of the tape's SSA form (a max's terms: the
@@ -1399,9 +1571,13 @@ fn scope_run_n<const N: usize>(tape: &Tape, every: bool, ctx: &Ctx, inputs: &Inp
         v: vec![zero; n],
         m: vec![zero; n],
         d: vec![None; n],
-        crossed: vec![false; n],
+        j: vec![0.0; n],
+        g: Vec::new(),
+        pairs: Vec::new(),
         slopes: Slopes::of(tape, n),
         every,
+        fv: Vec::new(),
+        fm: Vec::new(),
     };
     forked(tape, &mut run, 0, code.len(), Some(ch));
     let k = inputs.len();
@@ -1411,7 +1587,25 @@ fn scope_run_n<const N: usize>(tape: &Tape, every: bool, ctx: &Ctx, inputs: &Inp
             flat.extend_from_slice(&x.unwrap_or([zero; N])[..k]);
         }
     }
-    Scoped { v: run.v, m: run.m, d: flat }
+    Scoped { v: run.v, m: run.m, d: flat, j: run.j }
+}
+
+/// Forks scope_run pairs the sides of (the innermost PAIRED it is inside).
+const PAIRED: usize = 4;
+
+/// A fork scope_run is inside: its jump `i`, where it joins `r`, whether
+/// the inputs move its seam, whether its second side is running, and its
+/// first side's bound of each value of its window i..=r (over each side of
+/// any fork inside it).
+struct Pair {
+    i: usize,
+    r: usize,
+    moving: bool,
+    second: bool,
+    first: Vec<Option<I>>,
+    /// Whether a derivative along t is marked of a value that differs
+    /// between the sides: it has the jump's impulse.
+    impulse: bool,
 }
 
 /// scope_run's state.
@@ -1433,14 +1627,23 @@ struct Scope<'a, const N: usize> {
     v: Vec<I>,
     m: Vec<I>,
     d: Vec<Option<[I; N]>>,
-    /// Per slot: whether the inputs may cross a jump it is bounded on one
-    /// side of. Each side's rates are bounded; the value itself may jump
-    /// along them.
-    crossed: Vec<bool>,
+    /// Per slot: how far the value may jump along the inputs, where they
+    /// move a seam it was bounded on each side of (0: continuous in them).
+    /// Its rates bound each side's slope; it moves from its value at the
+    /// centre by at most them times how far each input moves, plus this.
+    j: Vec<f64>,
+    /// Per slot, for each fork in `pairs` whose second side is running:
+    /// the value there less its value on the first side at each point of
+    /// the region (None: the same). Empty until a second side runs.
+    g: Vec<[Option<Gap>; PAIRED]>,
+    pairs: Vec<Pair>,
     /// Gradient bounds hold over the whole scope (each partial at every
     /// moment and param value), so they tighten the bound over it.
     slopes: Option<Slopes>,
     every: bool,
+    /// The frames' extents over the scope and at the centre (interval_ins).
+    fv: Vec<f64>,
+    fm: Vec<f64>,
 }
 
 /// How far the mean value form reaches from a value at the inputs' centre
@@ -1460,72 +1663,265 @@ fn around(over: I, m: I, e: f64) -> I {
     interval::meet(over, I::new((m.lo - e).next_down(), (m.hi + e).next_up()))
 }
 
-/// What a value's slot holds in scope_run: its bounds over the scope and at
-/// the centre, rates, whether the inputs may cross a jump it is on one side
-/// of, and its gradient bounds.
-type ScopeSlot<const N: usize> = (I, I, Option<[I; N]>, bool, Option<interval::G>);
+/// A difference between a fork's sides: `v` plus `turns` whole turns (2 pi
+/// each, pi exact; a whole number, counted in integers so no sum of them
+/// rounds), so a whole turn of degrees read in radians (UnOp::Rad) or
+/// atan2's branches stay exact to the sine and cosine that read them.
+/// What is not shown a whole number of turns goes into `v`, rounded
+/// outward.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Gap {
+    v: I,
+    turns: i64,
+}
 
-impl<const N: usize> Fork for Scope<'_, N> {
-    type Out = ScopeSlot<N>;
-    /// Each argument's bounds over the scope and at the centre, rates, and
-    /// whether the inputs may cross a jump it is on one side of.
-    type Args = [(I, I, Option<[I; N]>, bool); 2];
-
-    #[inline(always)]
-    fn step(&mut self, i: usize, choices: Option<&mut [u8]>) -> I {
-        let (tape, ctx, ins) = (self.tape, self.ctx, &self.code[i]);
-        let ch = choices.expect("scope_run passes its choices");
-        let o = ins.out as usize;
-        let mut over = interval_ins(tape, ctx, i, ins, &self.v, self.b, Some(&mut *ch));
-        if let Some(sl) = &mut self.slopes {
-            over = sl.tighten(tape, ctx, i, ins, self.b, over);
+impl Gap {
+    fn of(v: I) -> Gap {
+        Gap { v, turns: 0 }
+    }
+    /// As an interval (the count and 2 pi rounded outward).
+    fn bound(self) -> I {
+        use std::f64::consts::TAU;
+        if self.turns == 0 {
+            return self.v;
         }
-        let (args, na) = ins.args();
-        let args = &args[..na];
-        let axis = match ins.op {
-            Op::Var(x) => self.inputs.axis(x),
+        let k = self.turns as f64;
+        let k = if k as i128 == self.turns as i128 { I::point(k) } else { I::new(k.next_down(), k.next_up()) };
+        interval::add_o(self.v, interval::mul_o(k, I::new(TAU, TAU.next_up())))
+    }
+    /// The whole turns `d` degrees are, where d is a float that is 360 k
+    /// for a whole k (shown in integers, not by a rounded quotient: 1e20
+    /// is 280 degrees past a whole turn).
+    fn of_degrees(d: f64) -> Option<i64> {
+        if !(d.is_finite() && d == d.trunc() && d.abs() < 1e38) {
+            return None;
+        }
+        let d = d as i128;
+        if d % 360 != 0 {
+            return None;
+        }
+        i64::try_from(d / 360).ok()
+    }
+    /// `turns` turns in degrees, where that is a float.
+    fn degrees(turns: i64) -> Option<f64> {
+        let d = 360 * turns as i128;
+        let f = d as f64;
+        (f as i128 == d).then_some(f)
+    }
+    /// a + b or a - b: the counts added where their sum is a whole number
+    /// an i64 holds, else both as bounds.
+    fn sum(op: BinOp, a: Gap, b: Gap) -> Gap {
+        let turns = if op == BinOp::Add { a.turns.checked_add(b.turns) } else { a.turns.checked_sub(b.turns) };
+        match turns {
+            Some(turns) => Gap { v: interval::bin(op, a.v, b.v).0, turns },
+            None => Gap::of(interval::bin(op, a.bound(), b.bound()).0),
+        }
+    }
+
+    /// Instruction `ins`'s difference between the sides, from its
+    /// arguments' (`g`, None where the same), where whole turns carry it
+    /// exactly: through sums; from degrees that are a whole number of 360s
+    /// into radians and back; and none left by a sine, cosine or tangent of
+    /// whole turns alone. None where no rule here gives it.
+    fn exact(ins: &crate::tape::Ins, g: impl Fn(u32) -> Option<Gap>) -> Option<Gap> {
+        let zero = I::point(0.0);
+        let turns = |s: u32| g(s).map_or(0, |x| x.turns);
+        let gap = |s: u32| g(s).unwrap_or(Gap::of(zero));
+        match ins.op {
+            Op::Un(UnOp::Rad) => {
+                let x = gap(ins.a);
+                if x.turns == 0
+                    && x.v.lo == x.v.hi
+                    && let Some(turns) = Gap::of_degrees(x.v.lo)
+                {
+                    return Some(Gap { v: zero, turns });
+                }
+                None
+            }
+            Op::Un(UnOp::Deg) if gap(ins.a).v == zero && turns(ins.a) != 0 => Gap::degrees(turns(ins.a)).map(|d| Gap::of(I::point(d))),
+            Op::Un(UnOp::Sin | UnOp::Cos | UnOp::Tan) if gap(ins.a).v == zero => Some(Gap::of(zero)),
+            Op::Bin(op @ (BinOp::Add | BinOp::Sub)) if turns(ins.a) != 0 || turns(ins.b) != 0 => Some(Gap::sum(op, gap(ins.a), gap(ins.b))),
+            Op::Un(UnOp::Neg) if turns(ins.a) != 0 => Some(Gap::sum(BinOp::Sub, Gap::of(zero), gap(ins.a))),
+            Op::Tag(_) | Op::Lipschitz | Op::Deriv(_) | Op::Read | Op::Real if turns(ins.a) != 0 => g(ins.a),
             _ => None,
-        };
-        let (v, d) = (&self.v, &self.d);
-        if fixed(tape, ctx, i) || !(axis.is_some() || args.iter().any(|&k| d[k as usize].is_some())) {
-            (self.v[o], self.m[o], self.d[o], self.crossed[o]) = (over, over, None, false);
-            return over;
+        }
+    }
+}
+
+/// `x` less the whole turns (2 pi each) nearest its middle: what moves the
+/// sine and cosine of a value moved by `x` as far.
+fn off_turns(x: I) -> I {
+    use std::f64::consts::TAU;
+    let k = (x.mid() / TAU).round();
+    if k == 0.0 || !k.is_finite() {
+        return x;
+    }
+    interval::sub_o(x, interval::mul_o(I::point(k), I::new(TAU, TAU.next_up())))
+}
+
+/// What a value's slot holds in scope_run: its bounds over the scope and at
+/// the centre, rates, how far it may jump, its gradient bounds, and its
+/// differences from the first sides of the forks paired.
+type ScopeSlot<const N: usize> = (I, I, Option<[I; N]>, f64, Option<interval::G>, [Option<Gap>; PAIRED]);
+
+impl<const N: usize> Scope<'_, N> {
+    /// The derivative rules for instruction `i` (its bound `over`, its
+    /// branch `choice`), its arguments' partials `d` by slot along M
+    /// inputs, time the `t`-th: its partials, None where unbounded.
+    fn rule<const M: usize>(&self, i: usize, over: I, choice: u8, d: impl Fn(usize) -> [I; M], t: Option<usize>) -> Option<[I; M]> {
+        let (tape, ins, v) = (self.tape, &self.code[i], &self.v);
+        let (a, bb, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
+        match ins.op {
+            Op::Un(op) => interval::d_un(op, v[a], over, d(a)),
+            Op::Bin(op) => interval::d_bin(op, v[a], v[bb], over, choice, d(a), d(bb)),
+            Op::Select => interval::d_select(choice, same_branches(tape, i), d(bb), d(c)),
+            // A mark of `a` as the derivative along t of `b`: where b may
+            // jump (its rate along t has no bound, or a seam t moves joins
+            // its sides), so may a, by the jump's impulse, whatever a's
+            // formula.
+            Op::Deriv(3) => {
+                let mut r = d(a);
+                if let Some(j) = t
+                    && !(d(bb)[j].lo.is_finite() && d(bb)[j].hi.is_finite() && self.j[bb] == 0.0)
+                {
+                    r[j] = I::ENTIRE;
+                }
+                Some(r)
+            }
+            // The value of `a` (a promise bounds slopes in space, not
+            // rates in time or params).
+            Op::Tag(_) | Op::Lipschitz | Op::Deriv(_) | Op::Read | Op::Real => Some(d(a)),
+            Op::Grid(gi, mk) => Some(interval::d_grid(&tape.grids[gi as usize], mk, [v[a], v[bb], v[c]], [d(a), d(bb), d(c)])),
+            Op::Frame => Some([I::point(0.0); M]),
+            Op::Const(_) | Op::Var(_) => unreachable!(),
+        }
+    }
+
+    /// Instruction `i`'s value `v` (bound over the region on the sides
+    /// running) less its value at each point on the first side of fork
+    /// `k` (whose second is running): None where no argument differs.
+    /// Else by its slope over each argument's values on the way from the
+    /// first side's to the second's, as a rate along an input that takes
+    /// one to the other (sine and cosine taking whole turns off the
+    /// difference first: equal there); met with v less the first side's
+    /// bound of it.
+    fn diff(&self, i: usize, k: usize, v: I, vals: [I; 3]) -> Option<Gap> {
+        let ins = &self.code[i];
+        let (args, na) = ins.args();
+        let g = |s: u32| self.g[s as usize][k];
+        if args[..na].iter().all(|&s| g(s).is_none()) {
+            return None;
         }
         let zero = I::point(0.0);
-        let (a, bb, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
-        let da = |k: usize| d[k].unwrap_or([zero; N]);
-        let crossed = args.iter().any(|&k| self.crossed[k as usize]);
+        let gs = |s: u32| g(s).map_or(zero, Gap::bound);
+        if let Some(x) = Gap::exact(ins, g) {
+            return Some(x);
+        }
+        // An argument's values on the way: the second side's less [0, 1]
+        // times the difference.
+        let (a, b, c) = (ins.a, ins.b, ins.c);
+        let way = |s: u32, x: I| {
+            let w = if s == a {
+                vals[0]
+            } else if s == b {
+                vals[1]
+            } else {
+                vals[2]
+            };
+            interval::sub_o(w, interval::hull(zero, x))
+        };
+        let slope = match ins.op {
+            // floor(u + x) - floor(u) lies in [floor(x), ceil(x)].
+            Op::Un(UnOp::Floor) => Some([I::new(gs(a).lo.floor(), gs(a).hi.ceil())]),
+            // Whole turns move neither (tan's period is half a turn).
+            Op::Un(op @ (UnOp::Sin | UnOp::Cos | UnOp::Tan)) => {
+                let x = off_turns(g(a).map_or(zero, |x| x.v));
+                let w = way(a, x);
+                interval::d_un(op, w, interval::un(op, w), [x])
+            }
+            Op::Un(op) => {
+                let w = way(a, gs(a));
+                interval::d_un(op, w, interval::un(op, w), [gs(a)])
+            }
+            // Over a divisor the same at each point: exact where the
+            // quotient is.
+            Op::Bin(BinOp::Div) if g(b).is_none() => Some([interval::bin(BinOp::Div, gs(a), vals[1]).0]),
+            Op::Bin(op) => {
+                let (wa, wb) = (way(a, gs(a)), way(b, gs(b)));
+                interval::d_bin(op, wa, wb, interval::bin(op, wa, wb).0, crate::tape::BOTH, [gs(a)], [gs(b)])
+            }
+            // The condition the same at each point: its branch's difference.
+            Op::Select if g(a).is_none() => Some([interval::hull(gs(b), gs(c))]),
+            Op::Tag(_) | Op::Lipschitz | Op::Deriv(_) | Op::Read | Op::Real => Some([gs(a)]),
+            Op::Grid(gi, mk) => {
+                let w = [way(a, gs(a)), way(b, gs(b)), way(c, gs(c))];
+                Some(interval::d_grid(&self.tape.grids[gi as usize], mk, w, [[gs(a)], [gs(b)], [gs(c)]]))
+            }
+            _ => None,
+        };
+        let p = &self.pairs[k];
+        let sides = p.first[i - p.i].map(|f| interval::sub_o(v, f));
+        Some(Gap::of(match (slope, sides) {
+            (Some([x]), Some(y)) => interval::meet(x, y),
+            (Some([x]), None) => x,
+            (None, Some(y)) => y,
+            (None, None) => I::ENTIRE,
+        }))
+    }
+
+    /// Instruction `i`'s value `v`, just bounded, as the forks paired see
+    /// it (those of `pairs[..upto]` whose window holds it): recorded where
+    /// a first side runs, and given its arguments' bounds `vals` (as they
+    /// were before it), its difference from it bounded where a second
+    /// does.
+    fn pair(&mut self, i: usize, v: I, upto: usize, vals: Option<[I; 3]>) {
+        let o = self.code[i].out as usize;
+        for k in 0..upto {
+            let p = &self.pairs[k];
+            if i < p.i || i > p.r {
+                continue;
+            }
+            if !p.second {
+                let at = i - p.i;
+                let f = &mut self.pairs[k].first[at];
+                *f = Some(f.map_or(v, |f| interval::hull(f, v)));
+            } else if let Some(vals) = vals
+                && k < PAIRED
+            {
+                let ins = &self.code[i];
+                if matches!(ins.op, Op::Deriv(3)) && self.g[ins.b as usize][k].is_some_and(|x| x.bound() != I::point(0.0)) {
+                    self.pairs[k].impulse = true;
+                }
+                self.g[o][k] = self.diff(i, k, v, vals);
+            }
+        }
+    }
+
+    /// Instruction `i` (not constant in the inputs) bounded first order in
+    /// them: its value over the region `over`, branch `choice`.
+    fn first_order(&mut self, i: usize, over: I, choice: u8, axis: Option<usize>) -> I {
+        let (tape, ins) = (self.tape, &self.code[i]);
+        let o = ins.out as usize;
+        let (args, na) = ins.args();
+        let args = &args[..na];
+        let zero = I::point(0.0);
+        let da = |k: usize| self.d[k].unwrap_or([zero; N]);
         let du = if let Some(j) = axis {
             Some(std::array::from_fn(|k| I::point(if k == j { 1.0 } else { 0.0 })))
         } else if args.iter().all(|&k| da(k as usize) == [zero; N]) {
             // A function of values constant in the inputs is constant in them.
             Some([zero; N])
         } else {
-            match ins.op {
-                Op::Un(op) => interval::d_un(op, v[a], over, da(a)),
-                Op::Bin(op) => interval::d_bin(op, v[a], v[bb], over, ch[i], da(a), da(bb)),
-                Op::Select => interval::d_select(ch[i], same_branches(tape, i), da(bb), da(c)),
-                // A mark of `a` as the derivative along t of `b`: where b
-                // may jump (its rate along t has no bound), so may a, by
-                // the jump's impulse, whatever a's formula. (One side of a
-                // jump t may cross has bounded rates, but every value read
-                // after it is joined with unbounded ones: `join`.)
-                Op::Deriv(3) => {
-                    let mut r = da(a);
-                    if let Some(j) = self.inputs.axis(Var::T)
-                        && !(da(bb)[j].lo.is_finite() && da(bb)[j].hi.is_finite())
-                    {
-                        r[j] = I::ENTIRE;
-                    }
-                    Some(r)
-                }
-                // The value of `a` (a promise bounds slopes in space, not
-                // rates in time or params).
-                Op::Tag(_) | Op::Lipschitz | Op::Deriv(_) | Op::Read | Op::Real => Some(da(a)),
-                Op::Grid(gi, mk) => Some(interval::d_grid(&tape.grids[gi as usize], mk, [v[a], v[bb], v[c]], [da(a), da(bb), da(c)])),
-                Op::Frame => Some([zero; N]),
-                Op::Const(_) | Op::Var(_) => unreachable!(),
-            }
+            self.rule(i, over, choice, da, self.inputs.axis(Var::T))
+        };
+        // How far it may jump: its arguments' jumps through its slope, as
+        // rates along one more input reaching 1 (each side's value at a
+        // point is that of a branch of it, each continuous).
+        let jump = if args.iter().all(|&k| self.j[k as usize] == 0.0) {
+            0.0
+        } else {
+            let j = |k: usize| [I::new(-self.j[k], self.j[k])];
+            self.rule(i, over, choice, j, None).map_or(f64::INFINITY, |[x]| interval::mag(x))
         };
         // Along an input no argument moves along, neither does the value,
         // whatever the rule gives along the others: a bore's sqrt, its slope
@@ -1540,21 +1936,59 @@ impl<const N: usize> Fork for Scope<'_, N> {
                 *r = zero;
             }
         }
-        let e = reach(&du, &self.hw, self.inputs.len());
+        let e = interval::add_up(reach(&du, &self.hw, self.inputs.len()), jump);
         if !e.is_finite() {
-            (self.v[o], self.m[o], self.d[o], self.crossed[o]) = (over, over, Some(du), crossed);
+            (self.v[o], self.m[o], self.d[o], self.j[o]) = (over, over, Some(du), jump);
             return over;
         }
-        let at_mid = interval_ins(tape, &self.mid, i, ins, &self.m, self.b, None);
+        let at_mid = interval_ins(tape, &self.mid, i, ins, &self.m, self.b, None, Some(&mut self.fm));
         let r = around(over, at_mid, e);
-        (self.v[o], self.m[o], self.d[o], self.crossed[o]) = (r, at_mid, Some(du), crossed);
+        (self.v[o], self.m[o], self.d[o], self.j[o]) = (r, at_mid, Some(du), jump);
+        r
+    }
+}
+
+impl<const N: usize> Fork for Scope<'_, N> {
+    type Out = ScopeSlot<N>;
+    /// Each argument's bounds over the scope and at the centre, rates, how
+    /// far it may jump, and its differences from the paired forks' first
+    /// sides.
+    type Args = [(I, I, Option<[I; N]>, f64, [Option<Gap>; PAIRED]); 2];
+
+    #[inline(always)]
+    fn step(&mut self, i: usize, choices: Option<&mut [u8]>) -> I {
+        let (tape, ctx, ins) = (self.tape, self.ctx, &self.code[i]);
+        let ch = choices.expect("scope_run passes its choices");
+        let o = ins.out as usize;
+        let mut over = interval_ins(tape, ctx, i, ins, &self.v, self.b, Some(&mut *ch), Some(&mut self.fv));
+        if let Some(sl) = &mut self.slopes {
+            over = sl.tighten(tape, ctx, i, ins, self.b, over);
+        }
+        let (args, na) = ins.args();
+        let axis = match ins.op {
+            Op::Var(x) => self.inputs.axis(x),
+            _ => None,
+        };
+        // The arguments' bounds before the output's slot (maybe one's) is
+        // written, for the forks paired.
+        let vals = (!self.pairs.is_empty()).then(|| [ins.a, ins.b, ins.c].map(|k| self.v[k as usize]));
+        let (d, j) = (&self.d, &self.j);
+        let r = if fixed(tape, ctx, i) || !(axis.is_some() || args[..na].iter().any(|&k| d[k as usize].is_some() || j[k as usize] > 0.0)) {
+            (self.v[o], self.m[o], self.d[o], self.j[o]) = (over, over, None, 0.0);
+            over
+        } else {
+            self.first_order(i, over, ch[i], axis)
+        };
+        if !self.pairs.is_empty() {
+            self.pair(i, r, self.pairs.len(), vals);
+        }
         r
     }
     fn args(&self, i: usize) -> Self::Args {
         let ins = &self.code[i];
         [ins.a, ins.b].map(|k| {
             let k = k as usize;
-            (self.v[k], self.m[k], self.d[k], self.crossed[k])
+            (self.v[k], self.m[k], self.d[k], self.j[k], self.g.get(k).copied().unwrap_or([None; PAIRED]))
         })
     }
     fn bounds(args: &Self::Args) -> (I, I) {
@@ -1564,21 +1998,21 @@ impl<const N: usize> Fork for Scope<'_, N> {
         self.ctx
     }
     fn side(&mut self, i: usize, args: &Self::Args, k: usize, side: I) {
-        let o = self.code[i].out as usize;
-        let zero = [I::point(0.0); N];
-        // Whether an argument moves with the inputs (or the inputs may
-        // cross a jump it is on one side of).
-        let moves = |&(_, _, d, c): &(I, I, Option<[I; N]>, bool)| c || d.is_some_and(|d| d != zero);
+        let (ins, zero) = (&self.code[i], [I::point(0.0); N]);
+        let o = ins.out as usize;
+        // Whether an argument moves with the inputs (or may jump along them).
+        let moves = |&(_, _, d, j, _): &(I, I, Option<[I; N]>, f64, [Option<Gap>; PAIRED])| j > 0.0 || d.is_some_and(|d| d != zero);
         let [y, x] = args;
-        let (v, m, d, crossed) = match self.code[i].op {
+        let (v, m, d, j, moving) = match ins.op {
             // One integer over the region: constant in the inputs.
-            Op::Un(UnOp::Floor) => (side, side, y.2.map(|_| zero), moves(y)),
+            Op::Un(UnOp::Floor) => (side, side, y.2.map(|_| zero), 0.0, moves(y)),
             // The branch continued over the region, at the centre from its
             // arguments' bounds there (within those over the scope: both
-            // hold there), its rates atan2's.
-            Op::Bin(BinOp::Atan2) if y.2.is_none() && x.2.is_none() => {
+            // hold there), its rates atan2's, and its arguments' jumps
+            // through its slope.
+            Op::Bin(BinOp::Atan2) if !moves(y) && !moves(x) && y.2.is_none() && x.2.is_none() => {
                 let v = interval::atan2_branch(y.0, x.0, k == 1);
-                (v, v, None, false)
+                (v, v, None, 0.0, false)
             }
             Op::Bin(BinOp::Atan2) => {
                 let up = k == 1;
@@ -1586,47 +2020,129 @@ impl<const N: usize> Fork for Scope<'_, N> {
                 let (yc, xc) = (interval::meet(y.1, y.0), interval::meet(x.1, x.0));
                 let m = if xc.hi < 0.0 { interval::meet(v, interval::atan2_branch(yc, xc, up)) } else { v };
                 let du = interval::d_atan2(y.0, x.0, y.2.unwrap_or(zero), x.2.unwrap_or(zero)).unwrap_or([I::ENTIRE; N]);
-                let e = reach(&du, &self.hw, self.inputs.len());
-                let crossed = moves(y) | moves(x);
-                if e.is_finite() { (around(v, m, e), m, Some(du), crossed) } else { (v, v, Some([I::ENTIRE; N]), crossed) }
+                let j = if y.3 == 0.0 && x.3 == 0.0 {
+                    0.0
+                } else {
+                    interval::d_atan2(y.0, x.0, [I::new(-y.3, y.3)], [I::new(-x.3, x.3)]).map_or(f64::INFINITY, |[x]| interval::mag(x))
+                };
+                let e = interval::add_up(reach(&du, &self.hw, self.inputs.len()), j);
+                let moving = moves(y) | moves(x);
+                if e.is_finite() { (around(v, m, e), m, Some(du), j, moving) } else { (v, v, Some(du), j, moving) }
             }
             _ => unreachable!("jump_sides takes floors and atan2"),
         };
-        (self.v[o], self.m[o], self.d[o], self.crossed[o]) = (v, m, d, crossed);
+        (self.v[o], self.m[o], self.d[o], self.j[o]) = (v, m, d, j);
         // This side's range, not a meet: the bound across the cut is not
         // of this branch.
         if let Some(sl) = &mut self.slopes {
             sl.0[o].v = v;
         }
+        // The forks this one is inside: its value recorded, or (by its
+        // arguments' differences and its value less the first side's) its
+        // difference bounded.
+        let outer = if k == 0 { self.pairs.len() } else { self.pairs.len() - 1 };
+        for q in 0..outer {
+            let p = &self.pairs[q];
+            if !p.second {
+                let at = i - p.i;
+                let f = &mut self.pairs[q].first[at];
+                *f = Some(f.map_or(v, |f| interval::hull(f, v)));
+            } else if q < PAIRED {
+                self.g[o][q] = match ins.op {
+                    Op::Un(UnOp::Floor) if y.4[q].is_none() => None,
+                    Op::Bin(BinOp::Atan2) if y.4[q].is_none() && x.4[q].is_none() => None,
+                    _ => {
+                        let sides = p.first[i - p.i].map_or(I::ENTIRE, |f| interval::sub_o(v, f));
+                        Some(Gap::of(match (ins.op, y.4[q].map(Gap::bound)) {
+                            (Op::Un(UnOp::Floor), Some(x)) => interval::meet(sides, I::new(x.lo.floor(), x.hi.ceil())),
+                            _ => sides,
+                        }))
+                    }
+                };
+            }
+        }
+        // This fork: its first side recorded; as its second starts, every
+        // difference from the first cleared but the jump's own (the next
+        // integer; atan2's branch a whole turn up).
+        let depth = outer;
+        if k == 0 {
+            let r = self.tape.rejoin(i);
+            let mut first = vec![None; r - i + 1];
+            first[0] = Some(v);
+            self.pairs.push(Pair { i, r, moving, second: false, first, impulse: false });
+        } else {
+            self.pairs[depth].second = true;
+            if depth < PAIRED {
+                if self.g.is_empty() {
+                    self.g = vec![[None; PAIRED]; self.v.len()];
+                }
+                self.g.iter_mut().for_each(|g| g[depth] = None);
+                self.g[o][depth] = Some(match ins.op {
+                    Op::Un(UnOp::Floor) => Gap::of(I::point(1.0)),
+                    _ => Gap { v: I::point(0.0), turns: 1 },
+                });
+            }
+        }
     }
     fn out(&self, i: usize) -> Self::Out {
         let o = self.code[i].out as usize;
-        (self.v[o], self.m[o], self.d[o], self.crossed[o], self.slopes.as_ref().map(|sl| sl.0[o]))
+        let g = self.g.get(o).copied().unwrap_or([None; PAIRED]);
+        (self.v[o], self.m[o], self.d[o], self.j[o], self.slopes.as_ref().map(|sl| sl.0[o]), g)
     }
-    fn put(&mut self, i: usize, (v, m, d, c, g): Self::Out) {
+    fn put(&mut self, i: usize, (v, m, d, j, s, g): Self::Out) {
         let o = self.code[i].out as usize;
-        (self.v[o], self.m[o], self.d[o], self.crossed[o]) = (v, m, d, c);
-        if let (Some(sl), Some(g)) = (&mut self.slopes, g) {
-            sl.0[o] = g;
+        (self.v[o], self.m[o], self.d[o], self.j[o]) = (v, m, d, j);
+        if let (Some(sl), Some(s)) = (&mut self.slopes, s) {
+            sl.0[o] = s;
+        }
+        if let Some(x) = self.g.get_mut(o) {
+            *x = g;
         }
     }
+    /// The fork joined is the innermost paired. Where the inputs move its
+    /// seam, a value is one side's at some of their values and the other's
+    /// at others: it may jump between them, by at most the second side
+    /// less the first at a point (the pair's difference), on top of either
+    /// side's own jumps. Each side's rates bound its slope.
     fn join(&mut self, i: usize, a: Self::Out, b: Self::Out) {
         let o = self.code[i].out as usize;
-        let (v, crossed, zero) = (interval::hull(a.0, b.0), a.3 || b.3, [I::point(0.0); N]);
-        let (m, d) = match (a.2, b.2) {
-            (None, None) => (interval::hull(a.1, b.1), None),
-            // Each point takes one side for every value of the inputs: its
-            // rates are that side's.
-            (da, db) if !crossed => {
-                let (da, db) = (da.unwrap_or(zero), db.unwrap_or(zero));
-                (interval::hull(a.1, b.1), Some(std::array::from_fn(|j| interval::hull(da[j], db[j]))))
-            }
-            // It may jump along the inputs.
-            _ => (v, Some([I::ENTIRE; N])),
+        let zero = I::point(0.0);
+        let depth = self.pairs.len() - 1;
+        let p = &self.pairs[depth];
+        let gap = match if depth < PAIRED { b.5[depth] } else { Some(Gap::of(I::ENTIRE)) } {
+            Some(x) if p.moving => interval::mag(interval::meet(x.bound(), interval::sub_o(b.0, a.0))),
+            _ => 0.0,
         };
-        (self.v[o], self.m[o], self.d[o], self.crossed[o]) = (v, m, d, crossed);
+        let j = interval::add_up(a.3.max(b.3), gap);
+        let (v, m) = (interval::hull(a.0, b.0), interval::hull(a.1, b.1));
+        let mut d = match (a.2, b.2) {
+            (None, None) if j == 0.0 => None,
+            (da, db) => {
+                let (da, db) = (da.unwrap_or([zero; N]), db.unwrap_or([zero; N]));
+                Some(std::array::from_fn(|k| interval::hull(da[k], db[k])))
+            }
+        };
+        // A speed of what jumps where t moves the seam: unbounded along t.
+        if let (Some(d), Some(t), true) = (&mut d, self.inputs.axis(Var::T), p.moving && p.impulse) {
+            d[t] = I::ENTIRE;
+        }
+        (self.v[o], self.m[o], self.d[o], self.j[o]) = (v, m, d, j);
         if let (Some(sl), Some(ga), Some(gb)) = (&mut self.slopes, a.4, b.4) {
             sl.0[o] = ga.hull(&gb);
+        }
+        // The outer forks' differences: either side's.
+        if let Some(g) = self.g.get_mut(o) {
+            *g = std::array::from_fn(|k| match (a.5[k], b.5[k]) {
+                _ if k >= depth => None,
+                (None, None) => None,
+                (Some(x), Some(y)) if x.turns == y.turns => Some(Gap { v: interval::hull(x.v, y.v), turns: x.turns }),
+                (x, y) => Some(Gap::of(interval::hull(x.map_or(zero, Gap::bound), y.map_or(zero, Gap::bound)))),
+            });
+        }
+        let r = p.r;
+        self.pair(i, v, depth, None);
+        if i == r {
+            self.pairs.pop();
         }
     }
     fn every_value(&self) -> bool {
@@ -2081,14 +2597,14 @@ pub fn undefined_cases(tape: &Tape, ctx: &Ctx, pts: &[V3]) -> Vec<Undefined> {
 /// Value and gradient bounds over a box (see interval::G). The gradient bound
 /// is a Lipschitz constant for the field there: |f(p) - f(q)| <= L |p - q|.
 pub fn eval_interval_grad(tape: &Tape, ctx: &Ctx, b: [I; 3]) -> interval::G {
-    grad_run(tape, &tape.code, tape.nslots, ctx, b)[tape.out_slot()]
+    grad_run(tape, &tape.code, tape.nslots, false, ctx, b)[tape.out_slot()]
 }
 
 /// `eval_interval_grad`'s bounds of every value of the tape's SSA form (a
 /// max's terms: the clearance proofs' first-order forms, ink-kernel's
 /// `centred`).
 pub fn eval_interval_grad_every(tape: &Tape, ctx: &Ctx, b: [I; 3]) -> Vec<interval::G> {
-    grad_run(tape, &tape.ssa, tape.ssa.len(), ctx, b)
+    grad_run(tape, &tape.ssa, tape.ssa.len(), true, ctx, b)
 }
 
 /// Whether select instruction `i`'s two branches are the same field, up to
@@ -2105,16 +2621,244 @@ fn same_branches(tape: &Tape, i: usize) -> bool {
 }
 
 /// Interval forward-mode AD over `code` (the tape's slot code, or its SSA
-/// form to keep every value): the bounds in every slot.
-fn grad_run(tape: &Tape, code: &[crate::tape::Ins], nslots: usize, ctx: &Ctx, b: [I; 3]) -> Vec<interval::G> {
-    let mut s = vec![interval::G::constant(0.0); nslots];
-    let mut f = vec![0u8; nslots];
-    for (i, ins) in code.iter().enumerate() {
-        let g = grad_ins(tape, ctx, i, ins, &s, &f, b);
-        f[ins.out as usize] = real_flags(ins, &s, &f, &g);
-        s[ins.out as usize] = g;
+/// form to keep every value, `every`): the bounds in every slot.
+///
+/// A jump the box straddles once is a choice of two sides (`forked`), as in
+/// eval_interval, each its branch continued over the box (a floor's one
+/// integer, slope 0; atan2's branch near pi or near -pi, its slope atan2's
+/// formula). Each side's bounds hold for the tape with the jump taken so,
+/// over the whole box, so for the field wherever it takes that side. Where
+/// the field is continuous across the seam, its slope on any segment is
+/// one side's or the other's, so the sides' joined bounds hold: where the
+/// two sides are one function over the box (their difference exact and 0:
+/// atan2's branches a whole turn apart, read by a sine or cosine, or in
+/// degrees as turns less their floor; Grad::gap), or give one exact value
+/// where they meet (Grad::seam: a wrap read by its distance from 1/2).
+/// Elsewhere the field may jump where the sides meet, so its partials are
+/// unbounded, but along an axis the jump's arguments do not move along
+/// (each line along it takes one side throughout).
+fn grad_run(tape: &Tape, code: &[crate::tape::Ins], nslots: usize, every: bool, ctx: &Ctx, b: [I; 3]) -> Vec<interval::G> {
+    let mut run = Grad { tape, code, ctx, b, s: vec![interval::G::constant(0.0); nslots], every, g: Vec::new(), pairs: Vec::new() };
+    forked(tape, &mut run, 0, code.len(), None);
+    run.s
+}
+
+/// A fork grad_run is inside: its jump `i`, where it joins `r`, whether its
+/// second side is running, the axes its jump's arguments are constant
+/// along over the box, and which values of its window i..=r its sides give
+/// alike where they meet (Grad::seam).
+struct GradPair {
+    i: usize,
+    r: usize,
+    second: bool,
+    flat: [bool; 3],
+    seam: Vec<bool>,
+}
+
+/// grad_run's state.
+struct Grad<'a> {
+    tape: &'a Tape,
+    code: &'a [crate::tape::Ins],
+    ctx: &'a Ctx,
+    b: [I; 3],
+    s: Vec<interval::G>,
+    every: bool,
+    /// Per slot, for each fork in `pairs` (the innermost PAIRED) whose
+    /// second side is running: the value there less the first side's at
+    /// each point, where exact (Gap::exact; None: the same; a Gap of
+    /// ENTIRE: unknown). Empty until a second side runs.
+    g: Vec<[Option<Gap>; PAIRED]>,
+    pairs: Vec<GradPair>,
+}
+
+impl Grad<'_> {
+    /// Instruction `ins`'s difference between the sides of fork `k`, from
+    /// its arguments': exact (Gap::exact), through sums, and through
+    /// products and quotients by a value the same on both sides; else
+    /// unknown. None where it is 0.
+    fn gap(&self, ins: &crate::tape::Ins, k: usize) -> Option<Gap> {
+        let (args, na) = ins.args();
+        let g = |s: u32| self.g[s as usize][k];
+        if args[..na].iter().all(|&s| g(s).is_none()) {
+            return None;
+        }
+        let zero = I::point(0.0);
+        let gap = |s: u32| g(s).unwrap_or(Gap::of(zero));
+        let v = |s: u32| self.s[s as usize].v;
+        let unknown = Gap::of(I::ENTIRE);
+        let x = Gap::exact(ins, g).unwrap_or(match ins.op {
+            Op::Bin(op @ (BinOp::Add | BinOp::Sub)) => Gap::sum(op, gap(ins.a), gap(ins.b)),
+            Op::Un(UnOp::Neg) => Gap::sum(BinOp::Sub, Gap::of(zero), gap(ins.a)),
+            Op::Bin(BinOp::Mul) if g(ins.b).is_none() && gap(ins.a).turns == 0 => Gap::of(interval::mul_o(gap(ins.a).v, v(ins.b))),
+            Op::Bin(BinOp::Mul) if g(ins.a).is_none() && gap(ins.b).turns == 0 => Gap::of(interval::mul_o(v(ins.a), gap(ins.b).v)),
+            Op::Bin(BinOp::Div) if g(ins.b).is_none() && gap(ins.a).turns == 0 => Gap::of(interval::bin(BinOp::Div, gap(ins.a).v, v(ins.b)).0),
+            // floor(u + n) = floor(u) + n for a whole n.
+            Op::Un(UnOp::Floor) => Grad::whole(gap(ins.a)).unwrap_or(unknown),
+            // The value of `a` (a promise's constants bound slopes, not it).
+            Op::Tag(_) | Op::Read | Op::Real | Op::Lipschitz if args[1..na].iter().all(|&s| g(s).is_none()) => gap(ins.a),
+            _ => unknown,
+        });
+        (x != Gap::of(zero)).then_some(x)
     }
-    s
+
+    /// `x` where it is a whole number exactly.
+    fn whole(x: Gap) -> Option<Gap> {
+        (x.turns == 0 && x.v.lo == x.v.hi && x.v.lo == x.v.lo.trunc()).then_some(x)
+    }
+
+    /// Which values of a floor `i`'s window i..=r its two sides give alike
+    /// where they meet: the window bounded where the floor's argument is the
+    /// whole number `m` it crosses, the floor m - 1 on one side and m on
+    /// the other, every other value as over the box. A value is alike where
+    /// its arguments are, or where both sides bound it by one number, by an
+    /// operation whose bound is a point only where it is exact (a sum,
+    /// product, quotient, min, max, negation, magnitude or floor): there
+    /// it is that number on both sides at every point where they meet.
+    fn seam(&self, i: usize, r: usize, m: f64) -> Vec<bool> {
+        let ins = &self.code[i];
+        let mut s0: Vec<I> = self.s.iter().map(|g| g.v).collect();
+        s0[ins.a as usize] = I::point(m);
+        let mut s1 = s0.clone();
+        let o = ins.out as usize;
+        (s0[o], s1[o]) = (I::point(m - 1.0), I::point(m));
+        let mut differs = vec![false; s0.len()];
+        differs[o] = true;
+        let mut alike = vec![false; r - i + 1];
+        for j in i + 1..=r {
+            let x = &self.code[j];
+            let (args, na) = x.args();
+            let (v0, v1) = (interval_ins(self.tape, self.ctx, j, x, &s0, self.b, None, None), interval_ins(self.tape, self.ctx, j, x, &s1, self.b, None, None));
+            let exact = matches!(x.op, Op::Un(UnOp::Neg | UnOp::Abs | UnOp::Floor) | Op::Bin(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Min | BinOp::Max));
+            let d = args[..na].iter().any(|&a| differs[a as usize]) && !(exact && v0.lo == v0.hi && v0 == v1);
+            let o = x.out as usize;
+            (s0[o], s1[o], differs[o]) = (v0, v1, d);
+            alike[j - i] = !d;
+        }
+        alike
+    }
+}
+
+impl Fork for Grad<'_> {
+    type Out = (interval::G, [Option<Gap>; PAIRED]);
+    type Args = (interval::G, interval::G);
+
+    fn step(&mut self, i: usize, _: Option<&mut [u8]>) -> I {
+        let ins = &self.code[i];
+        let o = ins.out as usize;
+        let x = grad_ins(self.tape, self.ctx, i, ins, &self.s, self.b);
+        // Its differences from the forks' first sides, from its arguments'
+        // before the output's slot (maybe one's) is written.
+        if !self.g.is_empty() {
+            let mut d = self.g[o];
+            for (k, p) in self.pairs.iter().enumerate().take(PAIRED) {
+                if p.second {
+                    d[k] = self.gap(ins, k);
+                }
+            }
+            self.g[o] = d;
+        }
+        self.s[o] = x;
+        x.v
+    }
+    fn args(&self, i: usize) -> Self::Args {
+        let ins = &self.code[i];
+        (self.s[ins.a as usize], self.s[ins.b as usize])
+    }
+    fn bounds(args: &Self::Args) -> (I, I) {
+        (args.0.v, args.1.v)
+    }
+    fn ctx(&self) -> &Ctx {
+        self.ctx
+    }
+    fn side(&mut self, i: usize, (y, x): &Self::Args, k: usize, side: I) {
+        use interval::G;
+        let ins = &self.code[i];
+        let o = ins.out as usize;
+        let zero = I::point(0.0);
+        let (s, flat) = match ins.op {
+            Op::Un(UnOp::Floor) => (G { v: side, d: [zero; 3], l: 0.0, s2: None, m: interval::NO_GRAM }, y.d.map(|d| d == zero)),
+            Op::Bin(BinOp::Atan2) => {
+                let d = interval::d_atan2(y.v, x.v, y.d, x.d).unwrap_or([I::ENTIRE; 3]);
+                (G { v: side, d, l: f64::INFINITY, s2: None, m: interval::NO_GRAM }, std::array::from_fn(|j| y.d[j] == zero && x.d[j] == zero))
+            }
+            _ => unreachable!("jump_sides takes floors and atan2"),
+        };
+        self.s[o] = s;
+        // The outer forks' differences: none where its arguments have none.
+        // The outer forks' differences: a floor's argument's where whole
+        // (each side's integer moves with it), else none where its
+        // arguments have none.
+        let outer = if k == 0 { self.pairs.len() } else { self.pairs.len() - 1 };
+        if !self.g.is_empty() {
+            for q in 0..outer.min(PAIRED) {
+                if self.pairs[q].second {
+                    let (ga, gb) = (self.g[ins.a as usize][q], self.g[ins.b as usize][q]);
+                    self.g[o][q] = match ins.op {
+                        Op::Un(UnOp::Floor) => ga.map(|x| Grad::whole(x).unwrap_or(Gap::of(I::ENTIRE))),
+                        _ => (ga.is_some() || gb.is_some()).then_some(Gap::of(I::ENTIRE)),
+                    };
+                }
+            }
+        }
+        if k == 0 {
+            let r = self.tape.rejoin(i);
+            let seam = match ins.op {
+                Op::Un(UnOp::Floor) => self.seam(i, r, side.lo + 1.0),
+                _ => Vec::new(),
+            };
+            self.pairs.push(GradPair { i, r, second: false, flat, seam });
+        } else {
+            self.pairs[outer].second = true;
+            if outer < PAIRED {
+                if self.g.is_empty() {
+                    self.g = vec![[None; PAIRED]; self.s.len()];
+                }
+                self.g.iter_mut().for_each(|g| g[outer] = None);
+                self.g[o][outer] = Some(match ins.op {
+                    Op::Un(UnOp::Floor) => Gap::of(I::point(1.0)),
+                    _ => Gap { v: zero, turns: 1 },
+                });
+            }
+        }
+    }
+    fn out(&self, i: usize) -> Self::Out {
+        let o = self.code[i].out as usize;
+        (self.s[o], self.g.get(o).copied().unwrap_or([None; PAIRED]))
+    }
+    fn put(&mut self, i: usize, (s, g): Self::Out) {
+        let o = self.code[i].out as usize;
+        self.s[o] = s;
+        if let Some(x) = self.g.get_mut(o) {
+            *x = g;
+        }
+    }
+    /// The fork joined is the innermost.
+    fn join(&mut self, i: usize, a: Self::Out, b: Self::Out) {
+        let o = self.code[i].out as usize;
+        let depth = self.pairs.len() - 1;
+        let p = &self.pairs[depth];
+        let same = (depth < PAIRED && b.1[depth].is_none()) || p.seam.get(i - p.i) == Some(&true);
+        self.s[o] = if same {
+            a.0.hull(&b.0)
+        } else {
+            let d = std::array::from_fn(|k| if p.flat[k] { interval::hull(a.0.d[k], b.0.d[k]) } else { I::ENTIRE });
+            interval::G { v: interval::hull(a.0.v, b.0.v), d, l: f64::INFINITY, s2: None, m: interval::NO_GRAM }
+        };
+        // The outer forks' differences: either side's.
+        if let Some(g) = self.g.get_mut(o) {
+            *g = std::array::from_fn(|k| match (a.1[k], b.1[k]) {
+                _ if k >= depth => None,
+                (x, y) if x == y => x,
+                _ => Some(Gap::of(I::ENTIRE)),
+            });
+        }
+        if i == p.r {
+            self.pairs.pop();
+        }
+    }
+    fn every_value(&self) -> bool {
+        self.every
+    }
 }
 
 // What `real_flags` says of a value: it reads x, y or z; or, in space alone,
@@ -2130,14 +2874,15 @@ const UNREAL: u8 = 2;
 /// query's, a warp's substitutions included, so the check is of the
 /// numbers the promise is used with (a param at 1e200 made a k of
 /// 1 + inf / inf, 1.001 at every real value, 0.001).
-fn real_flags(ins: &crate::tape::Ins, s: &[interval::G], f: &[u8], g: &interval::G) -> u8 {
+/// `s` holds the arguments' bounds, `v` the value's.
+fn real_flags(ins: &crate::tape::Ins, s: impl Fn(u32) -> I, f: &[u8], v: I) -> u8 {
     let (args, n) = ins.args();
     let of = |k: usize| f[args[k] as usize];
     let mut out = match ins.op {
         Op::Var(Var::X | Var::Y | Var::Z) => return SPATIAL,
         // Of the taken branch, where the condition decides one.
         Op::Select => {
-            let c = s[ins.a as usize].v;
+            let c = s(ins.a);
             of(0)
                 | if c.hi < 0.0 {
                     of(1)
@@ -2150,23 +2895,33 @@ fn real_flags(ins: &crate::tape::Ins, s: &[interval::G], f: &[u8], g: &interval:
         _ => (0..n).fold(0, |acc, k| acc | of(k)),
     };
     if out & SPATIAL == 0 {
-        let arg = |k: usize| s[args[k] as usize].v;
+        let arg = |k: usize| {
+            let r = s(args[k]);
+            [r.lo, r.hi]
+        };
+        // The one table of operator domains (graph::undefined_un_over).
         let undefined = match ins.op {
-            Op::Bin(BinOp::Div) => arg(1).lo <= 0.0 && arg(1).hi >= 0.0,
-            Op::Bin(BinOp::Pow) => arg(0).lo < 0.0 && !(arg(1).lo == arg(1).hi && arg(1).lo.fract() == 0.0),
-            Op::Un(UnOp::Ln) => arg(0).lo < 0.0,
+            Op::Un(op) => crate::graph::undefined_un_over(op, arg(0)).is_some(),
+            Op::Bin(op) => crate::graph::undefined_bin_over(op, arg(0), arg(1)).is_some(),
             _ => false,
         };
-        if undefined || !(g.v.lo.is_finite() && g.v.hi.is_finite()) {
+        if undefined || !(v.lo.is_finite() && v.hi.is_finite()) {
             out |= UNREAL;
         }
     }
     out
 }
 
+/// Whether a promise, Lipschitz instruction `ins`, holds over a region: its
+/// field's, k's and frame's constants are real numbers there (their
+/// `real_flags` in `f`). Gradient bounds and value bounds trust it alike.
+fn promise_holds(ins: &crate::tape::Ins, f: &[u8]) -> bool {
+    (f[ins.a as usize] | f[ins.b as usize] | f[ins.c as usize]) & UNREAL == 0
+}
+
 /// Instruction `i`'s value and gradient bounds (interval::G) from its
 /// arguments' in `s` (and their flags, `real_flags`, in `f`).
-fn grad_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[interval::G], f: &[u8], b: [I; 3]) -> interval::G {
+fn grad_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[interval::G], b: [I; 3]) -> interval::G {
     use interval::G;
     if fixed(tape, ctx, i) {
         return G::constant(fixed_value(ins, |k| s[k as usize].v.lo, ctx));
@@ -2192,7 +2947,7 @@ fn grad_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[inter
         Op::Select => interval::g_select(s[ins.a as usize], s[ins.b as usize], s[ins.c as usize], same_branches(tape, i)),
         Op::Tag(_) | Op::Read | Op::Real => s[ins.a as usize],
         // Trusted only where its field's, k's and frame's constants are real.
-        Op::Lipschitz if (f[ins.a as usize] | f[ins.b as usize] | f[ins.c as usize]) & UNREAL != 0 => s[ins.a as usize],
+        Op::Lipschitz if !promise_valid(tape, ctx, i, b) => s[ins.a as usize],
         Op::Lipschitz => interval::g_lipschitz(s[ins.a as usize], s[ins.b as usize], s[ins.c as usize]),
         Op::Frame => interval::g_frame([s[ins.a as usize], s[ins.b as usize], s[ins.c as usize]]),
         // Sampled fields: value bounds only (no derivative bounds yet).
@@ -2229,12 +2984,12 @@ fn grad_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[inter
 /// one rounding of a value inside a bound with float ends stays inside it.
 /// The exception is a tie's mean, da/2 + db/2, whose halvings round below
 /// 2^-1021: interval::tie_slack makes room for it.
-struct Slopes(Vec<interval::G>, Vec<u8>);
+struct Slopes(Vec<interval::G>);
 
 impl Slopes {
     /// For an evaluator over `n` slots (the tape's code, or its SSA form).
     fn of(tape: &Tape, n: usize) -> Option<Slopes> {
-        (!tape.slopes.is_empty()).then(|| Slopes(vec![interval::G::constant(0.0); n], vec![0; n]))
+        (!tape.slopes.is_empty()).then(|| Slopes(vec![interval::G::constant(0.0); n]))
     }
 
     /// Instruction `i`'s bound `v` (from interval_ins over the box `b`),
@@ -2249,8 +3004,7 @@ impl Slopes {
             v = interval::meet(v, self.0[ins.b as usize].d[k as usize]);
         }
         if tape.slopes[i] {
-            let g = grad_ins(tape, ctx, i, ins, &self.0, &self.1, b);
-            self.1[ins.out as usize] = real_flags(ins, &self.0, &self.1, &g);
+            let g = grad_ins(tape, ctx, i, ins, &self.0, b);
             v = interval::meet(v, g.v);
             self.0[ins.out as usize] = interval::G { v, ..g };
         }

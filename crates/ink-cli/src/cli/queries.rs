@@ -502,7 +502,7 @@ pub(crate) fn cmd_eval(s: &mut Session, a: &Args) -> Result<J, InkError> {
                 let total = |var: Var, partial: f64| {
                     terms.iter().filter(|x| x.1 == var).try_fold(partial, |acc, &(k, _, y)| (!undefined.contains(&y)).then(|| acc + d[5 + k] * s.ctx.params[y]))
                 };
-                let mut r = json!({"point": v3(p), "value": n(d[0]), "inside": d[0] < 0.0,
+                let mut r = json!({"point": v3(p), "value": n(d[0]), "inside": ink::sign::inside(d[0]),
                        "grad": v3([d[1], d[2], d[3]]), "d_dt": total(Var::T, d[4]).map_or(J::Null, n)});
                 if shape.wants("d_dparams") {
                     r["d_dparams"] =
@@ -616,6 +616,8 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
         return Err(InkError::msg(format!("--out {o}: a slice writes .dxf")));
     }
     let (mut total, mut lj, mut hmin, mut tmax) = (0.0, Vec::new(), f64::INFINITY, 0.0f64);
+    // Samples on 0 no bound decides, drawn as air (sign::undecided).
+    let mut undecided: Vec<V3> = Vec::new();
     // Each outline's layer, points, whether it closes and whether a mark.
     let mut cut: Vec<(String, Vec<[f64; 2]>, bool, bool)> = Vec::new();
     for ((it, &f), b) in items.iter().zip(&fields).zip(&bounds) {
@@ -628,7 +630,9 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
         let tol = a.f64("accuracy")?.unwrap_or(h * 0.5);
         tmax = tmax.max(tol);
         let tape = s.clipped(f);
-        for l in query::slice(&tape, &s.ctx, axis, at, *lo, *hi, h) {
+        let (loops, open) = query::slice_checked(&tape, &s.ctx, axis, at, *lo, *hi, h);
+        undecided.extend(open);
+        for l in loops {
             total += l.area;
             let (mut b0, mut b1) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
             for p in &l.pts {
@@ -658,7 +662,9 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
         for (name, g, rg) in marks {
             let (g, rg) = (s.doc.place(g, it), s.doc.place(rg, it));
             let (gt, rt) = (Arc::new(Tape::new(&s.doc.g, g)), Tape::new(&s.doc.g, rg));
-            for l in query::slice_mark(&gt, &rt, &s.ctx, axis, at, *lo, *hi, h) {
+            let (loops, open) = query::slice_mark(&gt, &rt, &s.ctx, axis, at, *lo, *hi, h);
+            undecided.extend(open);
+            for l in loops {
                 let mut r = json!({"target": it.label, "kind": "mark", "mark": name, "closed": l.closed, "length": n(l.perimeter)});
                 if shape.names("points") || out.is_some() {
                     let pts = simplify_polyline(&l.pts, l.closed, tol);
@@ -675,6 +681,9 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
     // (positive area) in plane_axes, holes clockwise.
     let mut r = json!({"axis": names[axis], "at": n(at), "plane_axes": [names[u], names[v]], "res": n(hmin),
               "area": n(total), "loop_count": lj.len(), "loops": shape.shape(lj, &[])?});
+    if let Some(p) = undecided.first() {
+        r["unresolved"] = json!({"samples": undecided.len(), "at": v3(*p)});
+    }
     if let Some(o) = out {
         let outlines: Vec<export::Outline> = cut.iter().map(|(l, p, c, m)| export::Outline { layer: l, pts: p, closed: *c, mark: *m }).collect();
         let note = format!("ink {}: slice {}={} in {}{} mm, res {} accuracy {}", s.stem(), names[axis], measured(at), names[u], names[v], measured(hmin), measured(tmax));
@@ -888,32 +897,38 @@ pub fn plan_meshes(s: &mut Session, a: &Args, items: &[Item], how: &MeshHow) -> 
 /// --res) a mesh is no finer than the model's floor times the cube root of
 /// the times it is made (`view_floor`: its meshes within VIEW_TRIANGLES,
 /// as their surfaces' areas predict them, ink::seen::surface), on the
-/// ladder (`ladder`); one whose surface lies farther from it on average
-/// than its res is made finer whatever the budget (`drawn`). For seeing, a
-/// mesh that leaves material out is made again finer, and kept where it
-/// draws more, within `how.budget` (not one at --max-res). Each mesh is
-/// reported as it is made (ink::claims::progress); the budget, as planned
-/// and made, is returned for `cost_warnings`.
+/// ladder (`ladder`), and what it leaves out is searched for within its
+/// share of the budget (`search`). A mesh that leaves material out is made
+/// again under the thinnest of it, within `how.budget` (not one at
+/// --max-res); what is left is reported (`mesh_warnings`). Each
+/// mesh is reported as it is made (ink::claims::progress); the budget, as
+/// planned and made, is returned for `cost_warnings`.
 pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Result<(Vec<Meshed>, Option<Budget>), InkError> {
     let (res, coarsest, tol) = (plan.res, plan.coarsest, a.f64("accuracy")?);
-    let Plan { jobs, mut boxes, times, targets, frames, .. } = plan;
+    let Plan { jobs, mut boxes, times, targets, frames, div, .. } = plan;
     // For seeing, each mesh's surface (ink::seen::surface): its area
     // predicts what it samples (a body of thin strips over a large box
-    // samples its strips', not its box's), and its boundary points judge
-    // the mesh made (`drawn`). Where none is found, its box's area.
+    // samples its strips', not its box's). Where none is found, its box's.
     use rayon::prelude::*;
     let sized = how.seen && res.is_none();
-    let surfaces: Vec<ink::seen::Surface> = match sized {
+    let areas: Vec<f64> = match sized {
         true => {
             let fields: Vec<Arc<Tape>> = jobs.iter().map(|(it, _)| Arc::new(Tape::new(&s.doc.g, it.shape))).collect();
             fields.par_iter().zip(&boxes).map(|(t, b)| ink::seen::surface(t, &s.ctx, b.0, b.1)).collect()
         }
-        false => vec![Default::default(); jobs.len()],
+        false => vec![0.0; jobs.len()],
     };
+    // For seeing, a mesh's own res gives its surface as many cells as a
+    // cube `div` cells across has (Plan::own gives its box's, before its
+    // surface is found): a belt looped round a large box is not coarse.
+    if sized {
+        for (b, &area) in boxes.iter_mut().zip(&areas).filter(|(_, a)| **a > 0.0) {
+            b.2 = b.2.min((area / (6.0 * div * div)).sqrt());
+        }
+    }
     // Each mesh's triangles sampled at res 1 (all the times it is made), as
     // its area predicts them, and as its box does.
-    let at_1: Vec<f64> = surfaces.iter().zip(&boxes).zip(&times).map(|((f, b), t)| t * SAMPLED_PER_CELL * if f.area > 0.0 { f.area } else { box_area(b.0, b.1) }).collect();
-    let box_1: Vec<f64> = boxes.iter().zip(&times).map(|(b, t)| t * SAMPLED_PER_CELL * box_area(b.0, b.1)).collect();
+    let at_1: Vec<f64> = areas.iter().zip(&boxes).zip(&times).map(|((&area, b), t)| t * SAMPLED_PER_CELL * if area > 0.0 { area } else { box_area(b.0, b.1) }).collect();
     // For seeing, no mesh finer than the model's floor times the cube root
     // of the times it is made: its meshes' triangles sampled, as their
     // areas predict them, within VIEW_TRIANGLES.
@@ -933,22 +948,33 @@ pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Resu
     let paints: Vec<Vec<Arc<Tape>>> = jobs.iter().map(|(it, _)| paint_tapes(s, &it.attrs)).collect();
     let ctx = &s.ctx;
     let labels: Vec<&str> = jobs.iter().map(|(it, _)| it.label.as_str()).collect();
-    let seen_how = |j: usize, h: f64| ink::seen::How { res: h, tol, tol_per_res: how.tol_per_res, bend: boxes[j].3 };
-    // Each mesh (ink::seen::mesh, as `drawn` makes it: a view's made again
-    // where it leaves its surface out, an export's once), what making it
-    // cost (`work`: every mesh `drawn` made of it, the same whether made or
-    // found in the cache) and what the one kept cost alone, with what
-    // `how` measures of it.
+    // Whether a mesh's res is the plan's (no --res or --accuracy, and under
+    // --max-res). A mesh's search for what it leaves out samples as much
+    // again as its grid is planned to (mesh::mesh_checked; its own alone,
+    // so it is the same mesh in any model); for seeing, grid and search no
+    // more than the whole budget pays for (past that its grid is made
+    // coarser, and says so).
+    let free = |j: usize| sized && tol.is_none() && boxes[j].2 < coarsest;
+    let limit = |j: usize| {
+        let planned = at_1[j] / (boxes[j].2 * boxes[j].2);
+        match how.seen {
+            true => mesh::Limit { bricks: mesh::Limit::bricks_for(how.budget), search: mesh::Limit::samples_for(planned.min(how.budget)) },
+            false => mesh::Limit { bricks: usize::MAX, search: mesh::Limit::samples_for(planned) },
+        }
+    };
+    let seen_how = |j: usize, h: f64| ink::seen::How { res: h, limit: limit(j), tol, tol_per_res: how.tol_per_res, bend: boxes[j].3 };
+    // Each mesh (ink::seen::mesh, reported as made: `drawn`), what making
+    // it cost (`work`, the same whether made or found in the cache), with
+    // what `how` measures of it.
     let mesh = |j: usize, h: f64| {
         let (lo, hi, _, _) = boxes[j];
-        let finest = finest_drawn(how.seen && sized && tol.is_none() && h < coarsest, lo, hi, h);
-        let (v, spent) = drawn(&tapes[j], &paints[j], ctx, lo, hi, seen_how(j, h), finest, &|| surfaces[j].clone(), labels[j]);
-        let own = work(&v);
+        let v = drawn(&tapes[j], &paints[j], ctx, lo, hi, seen_how(j, h), labels[j]);
+        let cost = work(&v);
         let mut m = viewed(v);
         if how.measure || how.errors {
             measure(&m.0, &mut m.2, &tapes[j], ctx, lo, how);
         }
-        (m, spent, own)
+        (m, cost)
     };
     // For seeing, each mesh is reported as it is made: it is cached then.
     let mut total = REPORTED.load(std::sync::atomic::Ordering::Relaxed) + jobs.len();
@@ -960,24 +986,21 @@ pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Resu
     // (`how.budget`), and each kept's own. A client's frames of a mesh
     // (Plan::frames) are made after: they are predicted, not counted.
     let mut spent: f64 = first.iter().map(|m| m.1).sum();
-    let mut own: Vec<f64> = first.iter().map(|m| m.2).collect();
+    let mut own: Vec<f64> = first.iter().map(|m| m.1).collect();
     let mut made: Vec<(Mesh, Vec<[f32; 3]>, Quality, Vec<V3>)> = first.into_iter().map(|m| m.0).collect();
-    // A mesh that leaves material out (mesh::Unresolved: holes in a part, or
-    // the part gone) is made again where that would draw more (`drew_more`),
-    // at the res that resolves it: its res halved until finer than the
-    // thickest of it, but no finer than `how.finest` (and not one at
-    // --max-res: at the res asked for, as with --res). The cheapest first,
+    // A mesh that leaves material out (mesh::Unresolved: a part, or a
+    // stretch of one, thinner than res) is made again at the ladder's res
+    // under the thinnest of it (no finer than `how.finest`, nor than the
+    // cells' limit across its box allows, as --res). Those
+    // drawing the most of what is left out for what they cost first (each
+    // cell left out holds a sheet across it, two faces of res squared),
     // while what the meshes cost, a client's frames as predicted and what
-    // the next is predicted to cost stay within `how.budget`. The
-    // finer is kept where it drew more, and only then made again: a thin
-    // long part (a belt) is resolved at once, a speck or a crest thinning to
-    // nothing is left as it is. A gap thinner than res, two surfaces closed
-    // into one (a ball resting in its race), is not made again: it looks as
-    // it would apart, and where it thins to nothing no res resolves it.
+    // the next is predicted to cost stay within `how.budget`; again while
+    // one still leaves material out. A gap
+    // thinner than res (two surfaces closed into one, a ball resting in its
+    // race) is not: it looks as it would apart, and where it thins to
+    // nothing no res resolves it. What is left is reported.
     if how.seen && res.is_none() && tol.is_none() {
-        let mut area: Vec<f64> = made.par_iter().map(|m| m.0.area()).collect();
-        // The area each drew before it was last made again.
-        let mut before: Vec<Option<f64>> = vec![None; jobs.len()];
         loop {
             // A mesh a client makes again per frame (Plan::frames), after
             // this: each frame predicted at its mesh's.
@@ -988,29 +1011,21 @@ pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Resu
                 _ => 0.0,
             };
             let mut room = how.budget - spent - frames;
-            // Each to make again, its res, and what it costs: four times what
-            // it cost (at least a sheet in each cell it left out) per halving,
-            // and at least its box's surface's triangles (a part left out whole
-            // drew none).
-            let mut again: Vec<(usize, f64, f64)> = (0..jobs.len())
-                .filter(|&j| {
-                    // What it leaves out, by area: a sheet as thick as the
-                    // thickest of it, which only that share of the cells it
-                    // passes through have their centre in.
-                    let u = &made[j].2.unresolved;
-                    let missing = 2.0 * u.material as f64 * made[j].2.res.powi(3) / u.thickest;
-                    u.material > 0 && made[j].2.res < coarsest && before[j].is_none_or(|a| drew_more(a, area[j])) && drew_more(area[j], area[j] + missing)
-                })
+            // Each to make again, its res, what it costs (its cost now per
+            // cell, over the cells at the finer res, and at least what its
+            // surface's area predicts there: a part left out whole drew
+            // none) and the area it would draw that it leaves out.
+            let mut again: Vec<(usize, f64, f64, f64)> = (0..jobs.len())
                 .filter_map(|j| {
                     let q = &made[j].2;
-                    let k = ((q.res / q.unresolved.thickest).log2().floor().max(0.0) + 1.0).min((q.res / how.finest).log2().floor()).min(60.0);
-                    let h = q.res / 2f64.powf(k);
-                    let cost = own[j].max(8.0 * q.unresolved.cells as f64);
-                    (k >= 1.0).then(|| (j, h, (times[j] * 4f64.powf(k) * cost).max(box_1[j] / (h * h))))
+                    let u = &q.unresolved;
+                    let h = ladder(u.thinnest.min(q.res) / 2f64.powf(0.25)).max(how.finest).max(ladder(max_extent(boxes[j].0, boxes[j].1) / 20000.0));
+                    let drawn = 2.0 * u.material as f64 * q.res * q.res;
+                    (free(j) && u.thinnest > 0.0 && u.refused == 0.0 && h < q.res).then(|| (j, h, (times[j] * own[j] * (q.res / h).powi(2)).max(at_1[j] / (h * h)), drawn))
                 })
                 .collect();
-            again.sort_by(|a, b| a.2.total_cmp(&b.2));
-            again.retain(|&(_, _, more)| {
+            again.sort_by(|a, b| (a.2 / a.3).total_cmp(&(b.2 / b.3)));
+            again.retain(|&(_, _, more, _)| {
                 more <= room && {
                     room -= more;
                     true
@@ -1020,17 +1035,11 @@ pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Resu
                 break;
             }
             total += again.len();
-            if how.seen {
-                ink::claims::progress(json!({"total": total, "of": "meshes", "kept": true}));
-            }
-            let finer: Vec<_> = again.par_iter().map(|&(j, h, _)| (j, mesh(j, h))).collect();
-            spent += finer.iter().map(|(_, m)| m.1).sum::<f64>();
-            for (j, (m, _, c)) in finer {
-                let a = m.0.area();
-                before[j] = Some(area[j]);
-                if drew_more(area[j], a) {
-                    (made[j], area[j], own[j]) = (m, a, c);
-                }
+            ink::claims::progress(json!({"total": total, "of": "meshes", "kept": true}));
+            let finer: Vec<_> = again.par_iter().map(|&(j, h, _, _)| (j, mesh(j, h))).collect();
+            for (j, (m, c)) in finer {
+                spent += c;
+                (made[j], own[j]) = (m, c);
             }
         }
     }
@@ -1093,63 +1102,21 @@ impl Budget {
     }
 }
 
-/// The finest a view mesh is made at where it leaves its surface out
-/// (`drawn`): where `free` (its res is the plan's: no --res or --accuracy,
-/// and not at --max-res), what the cells' limit allows across its box (as
-/// `--res` does), else its res.
-pub fn finest_drawn(free: bool, lo: V3, hi: V3, h: f64) -> f64 {
-    if free { max_extent(lo, hi) / 20000.0 } else { h }
+/// A view mesh of a body (ink::seen::mesh), reported as made or found in
+/// the cache (`label`).
+pub fn drawn(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &ink::eval::Ctx, lo: V3, hi: V3, how: ink::seen::How, label: &str) -> ink::seen::Viewed {
+    let t = Instant::now();
+    let v = ink::seen::mesh(tape, paint, ctx, lo, hi, how);
+    reported(&format!("{label} at res {}", measured(how.res)), v.cached, t);
+    v
 }
 
-/// A view mesh that draws its body: made at `how.res`, and made again,
-/// whatever the budget, while its surface's boundary points (`surface`,
-/// asked for only then; ink::seen::Surface::off) lie farther from it on
-/// average than its res, the error the floor plans each mesh at
-/// (`view_floor`): at the ladder's res under the thickest material it
-/// leaves out (half the res where it measures none), no finer than
-/// `finest`. The best is kept, and none is made after one that does not
-/// bring the mean down: a part the floor brought past its features (a belt
-/// run, a pulley) is drawn, a detail within a cell of the mesh is not
-/// chased, nor a face of no thickness. Each mesh is reported as made or
-/// found (`label`). Also what every mesh made of it cost (`work`), as much
-/// whether it was made or found in the cache.
-pub fn drawn(
-    tape: &Arc<Tape>,
-    paint: &[Arc<Tape>],
-    ctx: &ink::eval::Ctx,
-    lo: V3,
-    hi: V3,
-    mut how: ink::seen::How,
-    finest: f64,
-    surface: &dyn Fn() -> ink::seen::Surface,
-    label: &str,
-) -> (ink::seen::Viewed, f64) {
-    let (mut spent, mut asked) = (0.0, None);
-    let mut best: Option<(ink::seen::Viewed, f64)> = None;
-    loop {
-        let t = Instant::now();
-        let v = ink::seen::mesh(tape, paint, ctx, lo, hi, how);
-        reported(&format!("{label} at res {}", measured(how.res)), v.cached, t);
-        spent += work(&v);
-        let h = how.res;
-        let off = (h > finest).then(|| asked.get_or_insert_with(surface).off(&v.mesh(), h, tape, ctx));
-        let mean = off.map_or(0.0, |o| o.mean);
-        if best.as_ref().is_some_and(|b| mean >= b.1) {
-            break;
-        }
-        best = Some((v, mean));
-        match off {
-            Some(o) if o.mean > h => how.res = if o.thickest > 0.0 && o.thickest < h { ladder(o.thickest / 2f64.powf(0.25)) } else { h / 2.0 }.max(finest),
-            _ => break,
-        }
-    }
-    (best.unwrap().0, spent)
-}
-
-/// What making a view mesh costs, in triangles sampled: its own, and the
-/// instructions reading its paint ran at PAINT_PER_TRIANGLE a triangle.
+/// What making a view mesh costs, in triangles sampled: its own, or what
+/// its sampling cost where more (mesh::Unresolved::cost: a grid of bricks
+/// its field's bounds did not rule out, its search), and the instructions
+/// reading its paint ran at PAINT_PER_TRIANGLE a triangle.
 fn work(v: &ink::seen::Viewed) -> f64 {
-    v.uniform_triangles as f64 + v.paint_work as f64 / PAINT_PER_TRIANGLE
+    (v.uniform_triangles as f64).max(v.unresolved.cost) + v.paint_work as f64 / PAINT_PER_TRIANGLE
 }
 
 /// A viewing mesh as `mesh_tape` gives one.
@@ -1216,18 +1183,14 @@ fn mesh_warnings(meshed: &[Meshed]) -> Vec<String> {
             if m.mesh.tris.is_empty() {
                 return Some(format!("'{}': its mesh at res {} has no triangles. It is empty, or thinner than res everywhere. {EMPTY_CAUSE}", m.label, measured(m.quality.res)));
             }
-            let (q, at) = (&m.quality, m.quality.unresolved.at?);
+            let q = &m.quality;
+            let at = match q.unresolved.at {
+                Some(at) => at,
+                None if q.unresolved.refused > 0.0 => m.mesh.verts.first().copied()?,
+                None => return None,
+            };
             let at = m.place.map_or(at, |p| p.apply(at));
-            Some(format!(
-                "'{}': {} cells hold material or a gap thinner than res {} that the mesh leaves out (e.g. the cell centred at [{}, {}, {}]): \
-                 it has holes or misses features there; use a smaller --res",
-                m.label,
-                q.unresolved.cells,
-                measured(q.res),
-                measured(at[0]),
-                measured(at[1]),
-                measured(at[2])
-            ))
+            Some(format!("'{}': {}", m.label, left_out(&q.unresolved, q.res, at)))
         })
         .collect()
 }
@@ -1263,9 +1226,71 @@ fn missed_accuracy(meshed: &[Meshed], asked: Option<f64>) -> Vec<String> {
         .collect()
 }
 
+/// What a mesh at res `h` leaves out (mesh::Unresolved), `at` a point of
+/// it in the world.
+pub fn left_out(u: &mesh::Unresolved, h: f64, at: V3) -> String {
+    let found = u.cells - u.undecided;
+    let mut what = Vec::new();
+    if u.refused > 0.0 {
+        what.push(format!("made at res {}, not {}: its field's bounds left more of its box to sample there than the budget pays for", measured(h), measured(u.refused)));
+    }
+    match u.thinnest {
+        t if t > 0.0 && t < h => what.push(format!("{} cells hold material thinner than res that it leaves out ({} across at the thinnest)", u.material, measured(t))),
+        _ if u.material > 0 => what.push(format!("{} cells hold material that it leaves out", u.material)),
+        _ => {}
+    }
+    if found > u.material {
+        what.push(format!("{} cells hold a gap thinner than res that it closes", found - u.material));
+    }
+    if u.undecided > 0 {
+        what.push(format!("in {} cells the field's bounds could not rule out material or a gap thinner than {}, the finest it was searched at", u.undecided, measured(u.searched)));
+    }
+    if u.beside > 0 {
+        what.push(format!("{} of these cells are beside one its surface crosses", u.beside));
+    }
+    if u.seams > 0 {
+        what.push(format!("{} of them lie where a select switches between two fields (a seam, as at a sweep's mitres), which bounds cannot show continuous", u.seams));
+    }
+    if let Some(r) = u.regions.iter().max_by_key(|r| r.cells) {
+        what.push(format!(
+            "they lie in {} regions (unresolved.regions), the largest {} cells in [{}, {}, {}] to [{}, {}, {}] in the body's frame",
+            u.regions.len(),
+            r.cells,
+            measured(r.lo[0]),
+            measured(r.lo[1]),
+            measured(r.lo[2]),
+            measured(r.hi[0]),
+            measured(r.hi[1]),
+            measured(r.hi[2])
+        ));
+    }
+    let advice = if found > 0 { "it has holes or misses features there; use a smaller --res" } else { "it may miss features there" };
+    format!("its mesh at res {}: {} (e.g. at [{}, {}, {}]); {advice}", measured(h), what.join("; "), measured(at[0]), measured(at[1]), measured(at[2]))
+}
+
 fn unresolved_json(m: &Meshed) -> J {
     let u = &m.quality.unresolved;
-    json!({"cells": u.cells, "at": u.at.map(|p| v3(m.place.map_or(p, |r| r.apply(p))))})
+    let mut j = regions_json(u, m.place.as_ref(), m.quality.res);
+    j["at"] = json!(u.at.map(|p| v3(m.place.map_or(p, |r| r.apply(p)))));
+    j
+}
+
+/// A mesh's `Unresolved` at res `h` as JSON, its regions' boxes and points
+/// placed by `place` (a box turned: the box round it), and how near what it
+/// shows drawn lies to its vertices (mesh: 2 sqrt 3 h).
+fn regions_json(u: &mesh::Unresolved, place: Option<&Rigid>, h: f64) -> J {
+    let pt = |p: V3| v3(place.map_or(p, |r| r.apply(p)));
+    let regions: Vec<J> = u
+        .regions
+        .iter()
+        .map(|r| {
+            let (lo, hi) = place.map_or((r.lo, r.hi), |p| p.aabb(r.lo, r.hi));
+            json!({"lo": v3(lo), "hi": v3(hi), "cells": r.cells, "material": r.material, "gaps": r.gaps, "undecided": r.undecided, "beside": r.beside, "seams": r.seams,
+                   "searched": n(r.searched), "thinnest": n(r.thinnest), "at": pt(r.at), "found": r.found, "groups": r.groups})
+        })
+        .collect();
+    json!({"cells": u.cells, "material": u.material, "thinnest": n(u.thinnest), "undecided": u.undecided, "beside": u.beside, "seams": u.seams, "searched": n(u.searched), "refused": n(u.refused),
+           "drawn_within": n(2.0 * 3f64.sqrt() * h), "at": u.at.map(pt), "regions": regions})
 }
 
 fn mesh_report(m: &Meshed, cache: &mut HashMap<usize, Arc<mesh::Analysis>>) -> J {
@@ -1406,13 +1431,6 @@ const VIEW_TRIANGLES: f64 = 2.5e6;
 /// costs 3.0 CPU ns (2.5 to 5.6 over six boards, each with and without its
 /// paint), corexy 13.4 CPU µs a triangle besides its paint.
 const PAINT_PER_TRIANGLE: f64 = 4.4e3;
-
-/// Whether a mesh made again draws more than the one before it: a
-/// thousandth more area (a speck on the part, or a crest drawn a little
-/// further toward nothing, is not worth four times the triangles).
-fn drew_more(before: f64, after: f64) -> bool {
-    after > 1.001 * before
-}
 
 /// The triangles a surface samples per cell of it, as predicted: a flat
 /// face's two (a folded surface samples more).
@@ -1661,13 +1679,8 @@ pub(crate) fn cmd_components(s: &mut Session, a: &Args) -> Result<J, InkError> {
             })
             .collect();
         let solids = an.shells.iter().filter(|s| s.volume >= 0.0).count();
-        if m.unresolved.cells > 0 {
-            warnings.push(format!(
-                "{}: {} cells hold material or a gap thinner than res {}, which the mesh misses. A smaller --res resolves them",
-                it.label,
-                m.unresolved.cells,
-                measured(m.res)
-            ));
+        if let (true, Some(at)) = (m.unresolved.cells > 0, m.unresolved.at) {
+            warnings.push(format!("{}: {}", it.label, left_out(&m.unresolved, m.res, at)));
         }
         let c = &m.voids;
         if let Some((what, decide)) = c.why_undecided() {
@@ -1677,9 +1690,10 @@ pub(crate) fn cmd_components(s: &mut Session, a: &Args) -> Result<J, InkError> {
         }
         out.push(json!({"target": it.label, "res": n(m.res), "solids": solids, "cavities": c.count(),
                         "proven": {"cavities": {"at_least": c.at_least, "at_most": c.at_most, "at": c.at.map(v3), "cells": c.cells, "finest": n(c.finest),
-                                               "undecided": c.undecided.map(|(a, b)| json!([n(a), n(b)])), "ended": c.ended}},
+                                               "undecided": c.undecided.map(|(a, b)| json!([n(a), n(b)])), "ended": c.ended,
+                                               "accuracy": n(c.accuracy), "set_aside": (c.thin > 0).then(|| json!({"cells": c.thin, "at": c.thin_at.map(v3)}))}},
                         "watertight": an.boundary_edges == 0 && an.nonmanifold_edges == 0, "shells": shells,
-                        "unresolved": {"cells": m.unresolved.cells, "at": m.unresolved.at.map(v3)}}));
+                        "unresolved": regions_json(&m.unresolved, None, m.res)}));
     }
     let mut r = json!({"targets": out});
     if !warnings.is_empty() {
@@ -2184,10 +2198,10 @@ fn no_material(tape: &Tape, ctx: &ink::eval::Ctx, lo: V3, hi: V3) -> bool {
     let mut boxes = vec![(lo, hi, 0)];
     while let Some((lo, hi, depth)) = boxes.pop() {
         let r = ink::eval::eval_interval(tape, ctx, std::array::from_fn(|a| I::new(lo[a], hi[a])), None);
-        if r.lo >= 0.0 {
+        if r.none_inside() {
             continue;
         }
-        if r.hi < 0.0 || depth == 4 {
+        if r.all_inside() || depth == 4 {
             return false;
         }
         let mid: V3 = std::array::from_fn(|a| 0.5 * (lo[a] + hi[a]));
@@ -2289,9 +2303,9 @@ mod tests {
     }
 
     /// A body with no inside (move's arguments swapped: its field is 0
-    /// over its box) has no pair: the distance says so at once, without
-    /// meshing the body first, finer each time to 32,768 cells a side (past
-    /// 30 s).
+    /// over its box) is an empty target: the distance says so at once,
+    /// without meshing the body first, finer each time to 32,768 cells a
+    /// side (past 30 s).
     #[test]
     fn distance_to_a_body_with_no_inside_ends() {
         let src = "(import \"std\")
@@ -2302,8 +2316,8 @@ mod tests {
         let ctx = doc.ctx(&[], 0.0).unwrap();
         let mut s = ModelView::new(doc, ctx);
         let args = Args::parse(&["distance", "unused.ink", "--a", "root/flat", "--b", "root/base"].map(str::to_string));
-        let answer = cmd_distance(&mut s, &args).unwrap();
-        assert!(answer["distance"]["upper_witness"].is_null() && answer["distance"]["lower_proven"].is_number(), "{answer}");
+        let Err(e) = cmd_distance(&mut s, &args) else { panic!("a distance to no material") };
+        assert!(e.message.contains("empty"), "{e:?}");
     }
 
     #[test]

@@ -407,6 +407,14 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
                 }
             }
         }
+        // A void count's: what it set aside as thinner than the accuracy.
+        Some(crate::claims::Held::SetAside { cells, at }) => {
+            r["held"] = json!("to the accuracy");
+            r["set_aside"] = json!({"what": "air no deeper than the accuracy", "cells": cells});
+            if let Some(p) = at {
+                r["set_aside"]["at"] = v3(*p);
+            }
+        }
         None => {}
     }
     if let Some(m) = &c.motion {

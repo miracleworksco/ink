@@ -165,7 +165,7 @@ ink assert bracket.ink --param edge=7.5
 ```json
 {"ok": true, "all_hold": false,
  "asserts": [{"name": "edge-distance", "status": "fails", "accuracy": 0.05, "gap": 7.375,
-              "witness_pair": {"in_first": [-35.0, 2.6875, 0.443], "in_second": [-35.0, 10.0625, 0.443]}}]}
+              "witness_pair": {"in_first": [-35.0, 2.6875, 0.641], "in_second": [-35.0, 10.0625, 0.641]}}]}
 ```
 
 The witness is two real points 7.375 mm apart, one in the left hole and
@@ -354,16 +354,16 @@ ink assert swing.ink --own --t-span 0:1.2
 ```json
 {"ok": true, "all_hold": false,
  "asserts": [
-   {"name": "limits:root/lever", "status": "fails", "accuracy": 0, "t": 1.031, "terms": {"drive": 185.6}},
-   {"name": "fork-clears-lug", "status": "fails", "accuracy": 0.05, "t": 1.144, "gap": 0.073},
-   {"name": "clears-base", "status": "fails", "accuracy": 0.05, "t": 1.106, "gap": 4.55},
+   {"name": "limits:root/lever", "status": "fails", "accuracy": 0, "t": 1.05, "terms": {"drive": 189}},
+   {"name": "fork-clears-lug", "status": "fails", "accuracy": 0.05, "t": 1.125, "gap": 0.127},
+   {"name": "clears-base", "status": "fails", "accuracy": 0.05, "t": 1.125, "gap": 3.13},
    {"name": "pin-held", "status": "holds"},
    {"name": "pin-fit", "status": "holds"}]}
 ```
 
-Each failure gives its moment `t`. The lever passes its 180° limit at
-1.03 s, comes within 5 mm of the base at 1.11 s, and the fork within
-0.15 mm of the lug at 1.14 s. A witness is a real pair of points at a
+Each failure gives a moment `t` that fails. The lever is past its 180°
+limit at 1.05 s, and by 1.125 s within 5 mm of the base and the fork
+within 0.15 mm of the lug. A witness is a real pair of points at a
 real moment, so each failure is proven.
 
 ## 6. Can it be made?

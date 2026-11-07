@@ -182,7 +182,7 @@ fn holds_material(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3) -> bool {
     let query::Verdict::Disproven { witness, .. } = query::prove_empty(shape, ctx, lo, hi, None, floor, 0.0).verdict else { return false };
     let Some(p) = query::confirm_inside(shape, ctx, witness, scale) else { return false };
     let e = 1e-9 * scale;
-    eval_interval(shape, ctx, p.map(|x| I::new(x - e, x + e)), None).hi < 0.0
+    eval_interval(shape, ctx, p.map(|x| I::new(x - e, x + e)), None).all_inside()
 }
 
 /// Why an assembly's published mass is not used, where every body it

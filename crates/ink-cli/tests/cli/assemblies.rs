@@ -1196,3 +1196,20 @@ fn a_mesh_of_a_param_module_loads_and_one_reading_a_toleranced_face_is_unknown_o
     let r = short(&s, &[&t, "--nominal"]);
     assert!(r.len() == 4 && r.values().all(|v| v == "holds"), "at its values: {r:?}");
 }
+
+#[test]
+fn a_contact_zone_read_as_0_excuses_no_overlap() {
+    // The zone is a param, 0: no point is in it. Two boxes overlapping,
+    // still or moving together, are not apart outside it.
+    let s = sc("zone-0");
+    for at in ["", " (slide x t)"] {
+        let m = s.model(
+            "zone.ink",
+            &format!(
+                "(import \"std\")\n(param zone 0)\n(body b (shape (box 2 2 2)))\n(assembly root (instance a b (at){at}) (instance b b (at){at}) (contact a b zone))\n(t-span 0 1)\n"
+            ),
+        );
+        let d = run(&s, &["interfere", &m]);
+        assert!(d["pairs"][0]["status"] == "fails", "{at}: {}", pretty(&d));
+    }
+}

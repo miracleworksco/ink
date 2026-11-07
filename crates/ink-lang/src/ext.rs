@@ -49,9 +49,16 @@ pub trait Package: Sync {
     fn shape_metrics(&self) -> &'static [&'static str] {
         &[]
     }
+    /// Whether shape metric `metric` is answered to a length accuracy on
+    /// its shape (the claim's), not on its value: a count of voids, each
+    /// holding a point deeper than it.
+    fn shape_accuracy(&self, _metric: &str) -> bool {
+        false
+    }
     /// Metric `metric` (one of `shape_metrics`) of shape `f`, proven
-    /// bounded, at cell size `res` (None: its own).
-    fn shape_metric(&self, _v: &mut crate::view::ModelView, metric: &str, _f: NodeId, _res: Option<f64>) -> Result<Measured, InkError> {
+    /// bounded, at cell size `res` (None: its own), to `accuracy` where it
+    /// is answered to one (`shape_accuracy`).
+    fn shape_metric(&self, _v: &mut crate::view::ModelView, metric: &str, _f: NodeId, _res: Option<f64>, _accuracy: f64) -> Result<Measured, InkError> {
         Err(InkError::msg(format!("'{metric}' is no metric of a shape")))
     }
     /// Read one of its forms, `(head name clause ...)` (`args` is everything
@@ -306,11 +313,14 @@ pub struct RunOpts {
     pub res: Option<f64>,
     /// Relative tolerance of iterative solvers.
     pub tol: f64,
+    /// A shape metric's accuracy, a length, where it is answered to one
+    /// (Package::shape_accuracy). None: the view's (ModelView::accuracy).
+    pub accuracy: Option<f64>,
 }
 
 impl Default for RunOpts {
     fn default() -> Self {
-        RunOpts { res: None, tol: 1e-8 }
+        RunOpts { res: None, tol: 1e-8, accuracy: None }
     }
 }
 
@@ -419,6 +429,9 @@ pub struct Measured {
     /// voids by proof): a claim on it is exact, not an estimate, unless it
     /// leaves out on purpose what the proof left undecided.
     pub proven: bool,
+    /// How a proven value held to its accuracy (a void count: outright,
+    /// or with the thin air it set aside). None: not to one.
+    pub held: Option<crate::claims::Held>,
 }
 
 /// A value a metric leaves out (`Measured::excluded`).
@@ -521,6 +534,12 @@ impl Registry {
     /// The quantity metric `head` is, if it has a unit.
     pub fn metric_quantity(&self, head: &str) -> Option<Quantity> {
         self.metric(head).and_then(|(p, m)| p.metric_quantity(m))
+    }
+
+    /// Whether metric `head` is answered to a length accuracy on its shape
+    /// (Package::shape_accuracy).
+    pub fn shape_accuracy(&self, head: &str) -> bool {
+        self.metric(head).is_some_and(|(p, m)| p.shape_accuracy(m))
     }
 
     /// What metric `head`'s package says its metrics may leave out.

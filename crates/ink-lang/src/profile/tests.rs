@@ -1268,6 +1268,322 @@ fn a_drafted_field_reads_the_distance_to_its_walls() {
 }
 
 #[test]
+fn a_drafted_field_s_slope_is_at_most_1_where_its_construction_changes() {
+    // MPM's plate where two drafted pieces hand over: weighted across their
+    // overlap, (f_next - f_prev) times the weight's slope (1 / its 0.01 mm)
+    // read -2.66 and -0.79 4e-12 apart in z, a slope over 4e11.
+    let (p, d, z0, z1) = mpm_plate();
+    let ds: Vec<String> = d.iter().map(|d| d.to_string()).collect();
+    let src = format!("(polygon {} (vec {}) {z0} {z1})", ink_points(&p), ds.join(" "));
+    let doc = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let at = |z: f64| crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), [29.0, 23.0, z].map(ink_core::interval::I::point), None);
+    let (a, b) = (at(-0.168249779095), at(-0.168249779091));
+    let apart = (b.lo - a.hi).max(a.lo - b.hi).max(0.0);
+    assert!(apart <= (-0.168249779091f64 - -0.168249779095f64), "{a:?} {b:?}");
+}
+
+#[test]
+fn a_polygon_across_any_magnitudes_is_built() {
+    // From 1e-100 to 1e70: its small differences' products, at one scale
+    // for the whole loop, fall below the floats; it was refused as
+    // doubling back.
+    let src = "(def f (polygon (vec (vec 0 0) (vec 1e-100 0) (vec 2e-100 1e-100) (vec 1e70 1e70) (vec 0 1e70))))";
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let at = |p: [f64; 3]| crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), p.map(ink_core::interval::I::point), None);
+    assert!(at([1e60, 1e69, 0.0]).hi < 0.0 && at([1e69, 1e60, 0.0]).lo > 0.0);
+}
+
+#[test]
+fn a_straight_line_is_at_most_1_lipschitz_in_real_numbers() {
+    // The triangle (0, 0) (3, 4) (0, 4): its slanted edge scaled by 1 / 5
+    // rounded to nearest (above 1 / 5) read 1 + 2^-54 between (3/2, 9/4) and
+    // (7/4, 33/16), in exact arithmetic.
+    let doc = Doc::load_str_in(&CORE, "(def f (polygon (vec (vec 0 0) (vec 3 4) (vec 0 4))))", "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    // |f(q) - f(p)| <= 5/16.
+    assert!(exact::differs_by_at_most(&doc.g, fid, [1.5, 2.25], [1.75, 2.0625], 0.3125), "slope above 1");
+}
+
+#[test]
+fn a_straight_polygon_does_not_drift_over_many_corners() {
+    // A bottom of 8192 segments, corner i at (i / 8192, 1.2e-9 i ln i): each
+    // corner within polygon's allowance of the line its neighbours' merges
+    // left, they drifted to a chord 3.4e-6 off the drawn run, and a point
+    // 1e-6 inside read outside. Built exactly, it reads inside.
+    let n = 8192;
+    let mut pts: Vec<String> = (0..=n)
+        .map(|i| {
+            let x = i as f64 / n as f64;
+            let y = if i > 1 { 1.2e-9 * i as f64 * (i as f64).ln() } else { 0.0 };
+            format!("(vec {x:?} {y:?})")
+        })
+        .collect();
+    pts.extend(["(vec 1.0 1.0)".into(), "(vec 0.0 1.0)".into()]);
+    let doc = Doc::load_str_in(&CORE, &format!("(def f (polygon (vec {})))", pts.join(" ")), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let i = (n / 2) as f64;
+    let (x, y) = (0.5, 1.2e-9 * i * i.ln() + 1e-6);
+    let v = crate::eval::eval_interval(
+        &tape,
+        &crate::eval::Ctx::new(0.0, vec![]),
+        [ink_core::interval::I::point(x), ink_core::interval::I::point(y), ink_core::interval::I::point(0.0)],
+        None,
+    );
+    assert!(v.hi < 0.0 && (v.lo + 1e-6).abs() < 1e-12, "{v:?}");
+}
+
+#[test]
+fn a_drafted_line_is_read_about_its_middle() {
+    // A 10 square, corners rounded 0.02, its bottom edge an arc bowed by
+    // a bulge of 2.9e-9 (at the size where a bow is kept, not dropped),
+    // drafted 45 degrees or mixed: the lines its construction adds there
+    // slope alike read about their middle or an end, and read about an
+    // end, the bound at a point 0.3 microns outside spanned 0 (lane E's
+    // arcbound probes: 90 of 160 went unknown, 30 more excluded the side
+    // they are on). Each point's bound there is on its side.
+    let outline = |drafts: &str| format!("(polygon (vec (vec 0 0 -2.9e-09 0.02) (vec 10 0 0 0.02) (vec 10 10 0 0.02) (vec 0 10 0 0.02)) (vec {drafts}) 0 0.5)");
+    let ctx = crate::eval::Ctx::new(0.0, vec![]);
+    for (src, p) in [
+        (outline("45 45 45 45"), [10.494142347710815, -0.4941423507183473, 0.5]),
+        (outline("-17 7 23 -11"), [0.005857652285083452, 0.005857652319153936, 0.0]),
+        (outline("-17 7 23 -11"), [0.032487754636732445, 0.047742755832634313, 0.137]),
+        (outline("-17 7 23 -11"), [0.10304780685314548, 0.1587229936052508, 0.5]),
+    ] {
+        let doc = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+        let Value::Field(f, _) = doc.def("f").unwrap().clone() else { panic!() };
+        let t = crate::tape::Tape::new(&doc.g, f);
+        let v = crate::eval::eval_interval(&t, &ctx, p.map(ink_core::interval::I::point), None);
+        assert!(v.lo > 0.0, "{src} at {p:?}: [{:e}, {:e}] spans 0, 3e-7 outside", v.lo, v.hi);
+    }
+}
+
+#[test]
+fn a_drafted_profile_prunes_to_a_short_formula_in_small_cells() {
+    // A rectangle stepped 0.2 down its bottom by a small concave arc,
+    // drafted 45 degrees: the lines its construction adds there (the arc's
+    // chord, lines to it) run between points under 0.05 apart, each moving
+    // about 1 per unit z, so a normal read from two of them has no bound
+    // over a cell taller than they are apart, and neither had the field
+    // there however small the cell (MPM's saddle plate: 233 of its 3,636
+    // instructions left at 0.006, three quarters of the cells its surface
+    // was not near). Each line's promised slope bounds it instead. Followed
+    // down an octree, the cells the surface may cross, each's bound at most
+    // its diagonal wide and its pruned formula short.
+    use ink_core::interval::I;
+    let src = "(polygon (vec (vec -10 -0.2) (vec -10 10) (vec 10 10) (vec 10 -0.4) (vec 0 -0.4 -0.2) (vec -0.5 -0.2)) -45 -0.2 0.2)";
+    let doc = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let ctx = crate::eval::Ctx::new(0.0, vec![]);
+    let root = std::sync::Arc::new(crate::tape::Tape::new(&doc.g, fid));
+    // Cubes from one 24 across about it, 2^-12 of it at the finest.
+    let mut cells = vec![([-12.0, -7.0, -12.0], 24.0, root)];
+    let mut rng = Rng(0x9e3779b97f4a7c15);
+    let (mut widest, mut lens) = (0.0f64, Vec::new());
+    for level in 1..=12 {
+        let mut next = Vec::new();
+        for (o, s, t) in &cells {
+            let h = 0.5 * s;
+            for k in 0..8 {
+                let a: [f64; 3] = std::array::from_fn(|j| o[j] + if k >> j & 1 == 1 { h } else { 0.0 });
+                let mut ch = vec![crate::tape::BOTH; t.len()];
+                let v = crate::eval::eval_interval(t, &ctx, a.map(|x| I::new(x, x + h)), Some(&mut ch));
+                if v.lo <= 0.0 && v.hi >= 0.0 {
+                    if level == 12 {
+                        widest = widest.max((v.hi - v.lo) / (h * 3f64.sqrt()));
+                        lens.push(t.simplify(&ch).len());
+                    }
+                    next.push((a, h, std::sync::Arc::new(t.simplify(&ch))));
+                }
+            }
+        }
+        while next.len() > 64 {
+            let i = (rng.f() * next.len() as f64) as usize;
+            next.swap_remove(i);
+        }
+        cells = next;
+    }
+    lens.sort();
+    let median = lens[lens.len() / 2];
+    assert!(widest <= 1.0 + 1e-9 && median <= 32, "widest {widest} of a cell's diagonal, median {median} instructions");
+}
+
+/// A double-double number (hi + lo, about 32 digits): enough to see a
+/// slope past 1 by an ulp.
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+struct Dd(f64, f64);
+
+impl Dd {
+    fn k(v: f64) -> Dd {
+        Dd(v, 0.0)
+    }
+    fn norm(hi: f64, lo: f64) -> Dd {
+        let s = hi + lo;
+        Dd(s, lo - (s - hi))
+    }
+    fn add(self, o: Dd) -> Dd {
+        let s = self.0 + o.0;
+        let bb = s - self.0;
+        let e = (self.0 - (s - bb)) + (o.0 - bb);
+        Dd::norm(s, e + self.1 + o.1)
+    }
+    fn neg(self) -> Dd {
+        Dd(-self.0, -self.1)
+    }
+    fn mul(self, o: Dd) -> Dd {
+        let p = self.0 * o.0;
+        Dd::norm(p, self.0.mul_add(o.0, -p) + self.0 * o.1 + self.1 * o.0)
+    }
+    fn div(self, o: Dd) -> Dd {
+        let q = self.0 / o.0;
+        let r = self.add(o.mul(Dd::k(q)).neg());
+        Dd::norm(q, r.0 / o.0)
+    }
+    fn sqrt(self) -> Dd {
+        if self.0 <= 0.0 {
+            return Dd::k(0.0);
+        }
+        let x = self.0.sqrt();
+        let r = self.add(Dd::k(x).mul(Dd::k(x)).neg());
+        Dd::norm(x, r.0 / (2.0 * x))
+    }
+}
+
+/// The value and gradient of a tape at p, in double-double arithmetic.
+fn dd_grad(t: &crate::tape::Tape, p: [f64; 3]) -> (Dd, [Dd; 3]) {
+    use crate::graph::{BinOp, UnOp, Var};
+    use crate::tape::Op;
+    let z = Dd::k(0.0);
+    let mut v: Vec<(Dd, [Dd; 3])> = Vec::with_capacity(t.ssa.len());
+    for ins in &t.ssa {
+        let (a, b) = (ins.a as usize, ins.b as usize);
+        let lin = |f: &dyn Fn(Dd, Dd) -> Dd, (x, dx): (Dd, [Dd; 3]), (y, dy): (Dd, [Dd; 3])| (f(x, y), [0, 1, 2].map(|k| f(dx[k], dy[k])));
+        let r = match ins.op {
+            Op::Const(c) => (Dd::k(c), [z; 3]),
+            Op::Var(Var::X | Var::Y | Var::Z) => {
+                let j = match ins.op {
+                    Op::Var(Var::X) => 0,
+                    Op::Var(Var::Y) => 1,
+                    _ => 2,
+                };
+                (Dd::k(p[j]), [0, 1, 2].map(|k| Dd::k(if k == j { 1.0 } else { 0.0 })))
+            }
+            Op::Tag(_) | Op::Lipschitz | Op::Real => v[a],
+            Op::Frame => (z, [z; 3]),
+            Op::Bin(BinOp::Add) => lin(&|x, y| x.add(y), v[a], v[b]),
+            Op::Bin(BinOp::Sub) => lin(&|x, y| x.add(y.neg()), v[a], v[b]),
+            Op::Bin(BinOp::Mul) => {
+                let ((x, dx), (y, dy)) = (v[a], v[b]);
+                (x.mul(y), [0, 1, 2].map(|k| dx[k].mul(y).add(dy[k].mul(x))))
+            }
+            Op::Bin(BinOp::Div) => {
+                let ((x, dx), (y, dy)) = (v[a], v[b]);
+                let q = x.div(y);
+                (q, [0, 1, 2].map(|k| dx[k].add(dy[k].mul(q).neg()).div(y)))
+            }
+            Op::Bin(BinOp::Min) => {
+                if v[a].0 <= v[b].0 {
+                    v[a]
+                } else {
+                    v[b]
+                }
+            }
+            Op::Bin(BinOp::Max) => {
+                if v[a].0 >= v[b].0 {
+                    v[a]
+                } else {
+                    v[b]
+                }
+            }
+            Op::Un(UnOp::Neg) => (v[a].0.neg(), v[a].1.map(Dd::neg)),
+            Op::Un(UnOp::Square) => {
+                let (x, dx) = v[a];
+                (x.mul(x), dx.map(|d| d.mul(x).mul(Dd::k(2.0))))
+            }
+            Op::Un(UnOp::Sqrt) => {
+                let (x, dx) = v[a];
+                let r = x.sqrt();
+                (r, dx.map(|d| if r.0 > 0.0 { d.div(r.mul(Dd::k(2.0))) } else { z }))
+            }
+            op => panic!("{op:?} in a drafted field"),
+        };
+        v.push(r);
+    }
+    v[v.len() - 1]
+}
+
+/// Each promised leaf of the drafted field `src`, read in real numbers from
+/// its constants as computed: its worst slope past its promise, and where.
+fn promise_excess(src: &str) -> Option<(Dd, [f64; 3])> {
+    let doc = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).ok()?;
+    let mut worst: Option<(Dd, [f64; 3])> = None;
+    for node in &doc.g.nodes {
+        let crate::graph::Node::Lipschitz(a, k, _) = *node else { continue };
+        let k = doc.g.as_const(k).expect("a drafted promise's constant");
+        let t = crate::tape::Tape::new(&doc.g, a);
+        for x in [-10.0, -1.0, -0.3, 0.0, 0.004, 1.0] {
+            for y in [-1.0, -0.004, 0.0, 1.0] {
+                for z in [-0.02, -0.01, -0.005, 0.0, 0.005, 0.01, 0.02] {
+                    let (_, g) = dd_grad(&t, [x, y, z]);
+                    let over = g[0].mul(g[0]).add(g[1].mul(g[1])).add(g[2].mul(g[2])).sqrt().add(Dd::k(-k));
+                    if worst.is_none_or(|w| over > w.0) {
+                        worst = Some((over, [x, y, z]));
+                    }
+                }
+            }
+        }
+    }
+    worst
+}
+
+#[test]
+fn a_drafted_profiles_promises_hold_in_real_numbers() {
+    // Each promised leaf of a drafted profile, read in real numbers from its
+    // constants as computed, has a slope of at most its promise: its scale
+    // from its rate's bound rounded up, and down itself (rounded to nearest,
+    // each of these went over by 1e-17 to 1.4e-16). Steps by a small
+    // concave arc, drafted alike or not.
+    for src in [
+        "(polygon (vec (vec -96.70866030515135 -0.41653411565695303) (vec -96.70866030515135 96.70866030515135) (vec 96.70866030515135 96.70866030515135) (vec 96.70866030515135 -0.8330682313139061) (vec 0.0 -0.8330682313139061 -0.2939028637685043) (vec -2.5553740565951535 -0.41653411565695303)) (vec -2.6115328216160507 0 -2.6115328216160507 -2.6115328216160507 -2.6115328216160507 -2.6115328216160507) -0.1277687028297577 0.1277687028297577)",
+        "(polygon (vec (vec -112.21413049019851 -0.12157340354488907) (vec -112.21413049019851 112.21413049019851) (vec 112.21413049019851 112.21413049019851) (vec 112.21413049019851 -0.24314680708977815) (vec 0.0 -0.24314680708977815 -0.23441377092754592) (vec -0.17593704088099904 -0.12157340354488907)) -0.9288834944677701 -0.008796852044049952 0.008796852044049952)",
+        "(polygon (vec (vec -0.016565269827376064 -3.174596157293424e-06) (vec -0.016565269827376064 0.016565269827376064) (vec 0.016565269827376064 0.016565269827376064) (vec 0.016565269827376064 -6.349192314586848e-06) (vec 0.0 -6.349192314586848e-06 -0.5341988189136128) (vec -2.799769430685777e-05 -3.174596157293424e-06)) -18.48080005810317 -1.3998847153428887e-06 1.3998847153428887e-06)",
+    ] {
+        let (over, at) = promise_excess(src).expect("promised leaves");
+        // Double-double's own rounding is under 1e-28.
+        assert!(over.0 <= 1e-28, "a promise exceeded by {} at {at:?}", over.0);
+    }
+}
+
+#[test]
+fn a_drafted_profiles_planes_and_cones_slope_at_most_1() {
+    // A drafted line wall's plane, scaled coefficient by coefficient by 1 /
+    // hypot(1, its slope), read 11258999068426241 / 11258999068426240 at
+    // the slanted edge of (0, 0) (3, 4) (0, 4) drafted 0 over 0..1; each
+    // plane is scaled once from all its coefficients, rounded down. A cone
+    // drafted 1e-8 degrees, its rate's hypot rounded to 1, was promised
+    // unscaled: its scale is rounded down too.
+    let doc = Doc::load_str_in(&CORE, "(def f (polygon (vec (vec 0 0) (vec 3 4) (vec 0 4)) 0 0 1))", "test", std::path::Path::new("."), &[]).unwrap();
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let t = crate::tape::Tape::new(&doc.g, fid);
+    for x in [-1.0, 0.5, 1.5, 2.0, 3.5] {
+        for y in [-1.0, 1.0, 2.25, 3.0, 4.5] {
+            for z in [0.25, 0.5, 0.75] {
+                let (_, g) = dd_grad(&t, [x, y, z]);
+                let slope = g[0].mul(g[0]).add(g[1].mul(g[1])).add(g[2].mul(g[2])).sqrt();
+                // Double-double's own rounding is under 1e-28.
+                assert!(slope <= Dd::k(1.0 + 1e-28), "sloped {} + {} at {:?}", slope.0, slope.1, [x, y, z]);
+            }
+        }
+    }
+    let (over, at) = promise_excess("(polygon (vec (vec -4 0 1) (vec 4 0 1)) 0.00000001 -1 1)").expect("promised leaves");
+    assert!(over.0 <= 1e-28, "a promise exceeded by {} at {at:?}", over.0);
+}
+
+#[test]
 fn a_mesh_of_a_drafted_chamfer_lies_on_its_walls() {
     // A uniform mesh of MPM's plate where its chamfer meets the undrafted
     // fillet of its tab: each vertex, placed by the field's values at its

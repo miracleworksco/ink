@@ -4,7 +4,7 @@
 ; turned whole turns: 1080 degrees of the drive, a second. b's arm meets
 ; a's only near 700 degrees of the drive in each 1080 (a at 233, b at 467),
 ; found at a moment there. c's arm sweeps across a's but never meets it
-; (2.9 mm apart near 896): held at the moments measured, an estimate.
+; (2.9 mm apart near 896): proven over one second, and so over the ten.
 (import "std")
 (t-span 0 10)
 (def drive (* 1080 t))
@@ -17,4 +17,4 @@
 (assert meets (disjoint (shape-of root/a/arm) (shape-of root/b/arm)))
 (assert misses (disjoint (shape-of root/a/arm) (shape-of root/c/arm)))
 ; expect-status: meets fails
-; expect-status: misses holds estimate
+; expect-status: misses holds

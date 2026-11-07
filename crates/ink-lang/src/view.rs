@@ -150,7 +150,7 @@ impl ModelView {
     pub fn load_in(registry: &'static Registry, path: &Path, overrides: &[(String, Given)], t: f64) -> Result<ModelView, InkError> {
         let doc = Doc::load_file_in(registry, path, overrides)?;
         let (ctx, unsolved) = doc.ctx_at(overrides, t)?;
-        doc.check_conditions(&ctx, None, &unsolved.iter().map(|u| u.0).collect::<Vec<_>>(), false)?;
+        doc.check_conditions(&ctx, None, &unsolved.iter().map(|u| u.0).collect::<Vec<_>>(), false, None)?;
         zones_bounded(&doc, &ctx)?;
         Ok(ModelView { path: Some(path.to_path_buf()), overrides: overrides.to_vec(), unsolved, ..ModelView::new(doc, ctx) })
     }
@@ -258,7 +258,7 @@ impl ModelView {
 
     /// The solves that do not solve at the view's moment (by index in
     /// Doc::solves).
-    fn unsolved_solves(&self) -> Vec<usize> {
+    pub(crate) fn unsolved_solves(&self) -> Vec<usize> {
         self.unsolved.iter().map(|u| u.0).collect()
     }
 
@@ -333,7 +333,7 @@ impl ModelView {
             self.set_moment(a)?;
         }
         if span.is_some() {
-            self.doc.check_conditions(&self.ctx, span, &self.unsolved_solves(), false)?;
+            self.doc.check_conditions(&self.ctx, span, &self.unsolved_solves(), false, None)?;
             zones_bounded(&self.doc, &Ctx { t_span: span, ..self.ctx.clone() })?;
             // Made now, so the answers' param names hold it.
             self.t_param();
@@ -521,10 +521,10 @@ impl ModelView {
         let mut ctx = Ctx { p_spans: ink_core::eval::ParamSpans::new(spans.iter().map(|&(k, s)| (k as u32, s))), ..self.ctx.clone() };
         let doc = &self.doc;
         // Over the solves provided here: not one on demand nothing reads
-        // (a published mass a claim over the range does not weigh).
-        // Rates have no proven range: what reads them is refused claim by
-        // claim (set_param_spans).
-        for (_, s) in doc.solves.iter().enumerate().filter(|&(i, s)| doc.provided_always(i) && s.rates.is_none()) {
+        // (a published mass a claim over the range does not weigh). Rates
+        // with no proven range are not derived: what reads them is refused
+        // claim by claim (set_param_spans).
+        for (_, s) in doc.solves.iter().enumerate().filter(|&(i, _)| doc.provided_always(i)) {
             let e = &doc.ext[s.ext];
             let Some(p) = e.form.provider(doc) else { continue };
             // What it read (Doc::form_inputs): its equations...
@@ -546,11 +546,14 @@ impl ModelView {
                     });
                 }
             }
-            let o = p.over_scope(&ctx).map_err(|m| InkError { hint: hint.clone(), ..InkError::msg(format!("{what}, and what it solves has no proven range: {m}")) })?;
+            let o = match p.over_scope(&ctx) {
+                Err(_) if s.rates.is_some() => continue,
+                o => o.map_err(|m| InkError { hint: hint.clone(), ..InkError::msg(format!("{what}, and what it solves has no proven range: {m}")) })?,
+            };
             ctx.p_spans = ctx.p_spans.derived(o.derive, &o.bands);
         }
         if !ctx.p_spans.is_empty() {
-            doc.check_conditions(&ctx, self.motion, &self.unsolved_solves(), false)?;
+            doc.check_conditions(&ctx, self.motion, &self.unsolved_solves(), false, None)?;
             zones_bounded(doc, &ctx)?;
         }
         Ok(ctx.p_spans)
@@ -562,12 +565,14 @@ impl ModelView {
     /// certified root; what cannot be covered is refused (scope_spans).
     pub fn set_param_spans(&mut self, spans: &[(usize, (f64, f64))]) -> Result<(), InkError> {
         self.ctx.p_spans = self.scope_spans(spans)?;
-        // Rates over ranged params are found at single values only: what
-        // reads them is refused (`refusal`), the rest decided.
+        // Rates over ranged params with no proven range: what reads them
+        // is refused (`refusal`), the rest decided.
         for i in (0..self.doc.solves.len()).filter(|&i| self.doc.solves[i].rates.is_some()) {
             let s = &self.doc.solves[i];
             let ks: Vec<usize> = s.reads.iter().copied().filter(|&k| self.ctx.p_spans.get(k as u32).is_some()).collect();
-            if !ks.is_empty() && !self.unsolved.iter().any(|u| u.0 == i) {
+            let derived = s.owns.iter().all(|&k| self.ctx.p_spans.get(k as u32).is_some());
+            if !ks.is_empty() && !derived && !self.unsolved.iter().any(|u| u.0 == i) {
+                let why = self.doc.ext[s.ext].form.provider(&self.doc).map_or_else(|| "it has no provider".into(), |p| p.over_scope(&self.ctx).err().unwrap_or_default());
                 let rates: Vec<&str> = s.owns.iter().map(|&k| self.doc.params[k].name.as_str()).collect();
                 let ranged: Vec<String> = ks.iter().map(|&k| format!("'{}'", self.doc.params[k].name)).collect();
                 let e = InkError {
@@ -575,7 +580,7 @@ impl ModelView {
                     ..self.doc.solve_error(
                         i,
                         format!(
-                            "the rates {} of solve '{}' read ranged {}, but are found at single values only, with nothing proven over the ranges",
+                            "the rates {} of solve '{}' read ranged {}, and have no proven range over them: {why}",
                             rates.join(", "),
                             self.doc.ext[s.ext].form.name(),
                             ranged.join(", ")
@@ -655,10 +660,11 @@ impl ModelView {
     pub fn measure(&mut self, m: &FormMetric, opts: RunOpts) -> Result<Measured, InkError> {
         if let Some(f) = m.shape {
             let p = self.doc.registry.packages.iter().find(|p| p.name() == m.package).expect("a metric's package");
-            return p.shape_metric(self, m.metric, f, opts.res);
+            let accuracy = opts.accuracy.unwrap_or_else(|| self.accuracy());
+            return p.shape_metric(self, m.metric, f, opts.res, accuracy);
         }
         if let Some(why) = self.doc.ext_form(Some(m.package), &m.form).and_then(|e| e.form.unavailable(m.metric)) {
-            return Ok(Measured { value: Err(why), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false });
+            return Ok(Measured { value: Err(why), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None });
         }
         let out = self.outcome(Some(m.package), &m.form, opts)?;
         let mut measured = out.metric(m.metric).ok_or_else(|| InkError::msg(format!("'{}' gave no '{}'", m.form, m.metric)))?;
@@ -823,6 +829,19 @@ impl ModelView {
         self.prove_with(f, &opts)
     }
 
+    /// `prove`, of "inside a and not inside b" where `except` is (a, b), f
+    /// being max(a, -b) (query::Except).
+    pub fn prove_except(&mut self, f: u32, except: Option<(u32, u32)>, res: Option<f64>, tol: f64) -> (Proof, bool) {
+        let opts = self.proof_options(res, tol);
+        let Some(except) = except else { return self.prove_with(f, &opts) };
+        let (a, b) = except;
+        let Reach { lo, hi, whole } = self.reach(crate::claims::subset_reach(a, b));
+        let clip = self.doc.clip(f, lo, hi);
+        let tape = Arc::new(Tape::new(&self.doc.g, clip));
+        let e = ink_kernel::query::Except { a: self.clipped(a), b: Arc::new(Tape::new(&self.doc.g, b)) };
+        (ranged::prove_except(&tape, Some(&e), &self.ctx, lo, hi, &opts), whole)
+    }
+
     /// `prove` with these options.
     pub fn prove_with(&mut self, f: u32, opts: &ProofOptions) -> (Proof, bool) {
         let tape = self.clipped(f);
@@ -971,11 +990,11 @@ impl ModelView {
         Some(if samples.is_empty() { Err(h) } else { Ok((samples, h)) })
     }
 
-    /// A field's enclosed voids, by proof (voids::voids): its cells halved
-    /// down to `res`, else to its box's longest side / COMPONENT_CELLS.
-    /// None: the field is empty. More than COMPONENT_CELLS across at `res`
-    /// is an error.
-    pub fn voids(&mut self, f: u32, res: Option<f64>) -> Result<Option<ink_kernel::voids::Voids>, InkError> {
+    /// A field's enclosed voids, by proof (voids::voids), to `accuracy` (a
+    /// void holds a point deeper than it): its cells halved down to `res`, else to
+    /// its box's longest side / COMPONENT_CELLS. None: the field is empty.
+    /// More than COMPONENT_CELLS across at `res` is an error.
+    pub fn voids(&mut self, f: u32, res: Option<f64>, accuracy: f64) -> Result<Option<ink_kernel::voids::Voids>, InkError> {
         let Some((lo, hi, _)) = self.bounds(f) else { return Ok(None) };
         let ext = max_extent(lo, hi);
         if let Some(h) = res
@@ -986,34 +1005,53 @@ impl ModelView {
         let tape = self.clipped(f);
         // Not cached: the claim reading it is computed.
         ink_kernel::cache::computed();
-        Ok(Some(ink_kernel::voids::voids(&tape, &self.ctx, lo, hi, res.unwrap_or(ext / COMPONENT_CELLS))))
+        Ok(Some(ink_kernel::voids::voids(&tape, &self.ctx, lo, hi, res.unwrap_or(ext / COMPONENT_CELLS), accuracy)))
     }
 
     /// `ink components`: a field's shells (mesh::analyze: those whose
     /// triangles face inward are voids; an estimate), meshed at cells
     /// `res`, used as given; else at its box's longest side / 160, made
     /// again where it leaves material out (mesh::Unresolved: a wall or
-    /// sheet thinner than the cells), each time at cells finer than the
-    /// thickest of what it left, while at most COMPONENT_CELLS across and
-    /// COMPONENT_TRIANGLES predicted; and its voids by proof (`voids`).
-    /// None: the field is empty.
+    /// sheet thinner than the cells, or a part between them), each time at
+    /// cells finer than the thinnest of what it left, while at most
+    /// COMPONENT_CELLS across and COMPONENT_TRIANGLES predicted; and its
+    /// voids by proof (`voids`), to the claims' default accuracy. None: the
+    /// field is empty.
     pub fn components(&mut self, f: u32, res: Option<f64>) -> Result<Option<Components>, InkError> {
-        let Some(voids) = self.voids(f, res)? else { return Ok(None) };
+        let accuracy = self.accuracy();
+        let Some(voids) = self.voids(f, res, accuracy)? else { return Ok(None) };
         let Some((lo, hi, _)) = self.bounds(f) else { return Ok(None) };
         let ext = max_extent(lo, hi);
         let tape = self.clipped(f);
         let mut h = res.unwrap_or(ext / 160.0);
-        let (mut m, mut unresolved) = ink_kernel::mesh::mesh_checked(&tape, &self.ctx, lo, hi, h);
-        while res.is_none() && unresolved.material > 0 {
-            let k = ((h / unresolved.thickest).log2().floor().max(0.0) + 1.0).min(60.0);
+        // Sampled within COMPONENT_TRIANGLES (made at twice the res where
+        // its grid would take more), and searched with as many.
+        use ink_kernel::mesh::Limit;
+        let limit = Limit { bricks: Limit::bricks_for(COMPONENT_TRIANGLES), search: Limit::samples_for(COMPONENT_TRIANGLES) };
+        let checked = |h: f64| {
+            let (mut at, mut limit) = (h, limit);
+            loop {
+                if let Some((m, mut u)) = ink_kernel::mesh::mesh_checked(&tape, &self.ctx, lo, hi, at, limit) {
+                    if at > h {
+                        u.refused = h;
+                    }
+                    break (m, u, at);
+                }
+                at *= 2.0;
+                limit.search *= 0.25;
+            }
+        };
+        let (mut m, mut unresolved, mut made_at) = checked(h);
+        while res.is_none() && unresolved.thinnest > 0.0 && made_at == h {
+            let k = ((h / unresolved.thinnest).log2().floor().max(0.0) + 1.0).min(60.0);
             let finer = h / 2f64.powf(k);
             if ext / finer > COMPONENT_CELLS || (m.tris.len().max(1) as f64) * 4f64.powf(k) > COMPONENT_TRIANGLES {
                 break;
             }
             h = finer;
-            (m, unresolved) = ink_kernel::mesh::mesh_checked(&tape, &self.ctx, lo, hi, h);
+            (m, unresolved, made_at) = checked(h);
         }
-        Ok(Some(Components { analysis: ink_kernel::mesh::analyze(&m), unresolved, voids, res: h }))
+        Ok(Some(Components { analysis: ink_kernel::mesh::analyze(&m), unresolved, voids, res: made_at }))
     }
 
     /// Mass moments of a field (weighted by a density field, if any) and its

@@ -491,6 +491,36 @@ pub fn winding_near(g: &Graph, x: NodeId, y: NodeId, ctx: &Ctx) -> Option<(Vec<(
     found.filter(|_| !tied)
 }
 
+/// A placement's turn `r` (p_world = r p + t) as a constant turn after a
+/// turn about its own z: r = C R_z(th), C's entries constant over `ctx`'s
+/// scope and th the sum of m_i a_i plus a constant, exactly (the angles a_i
+/// with their integers m_i, read as `winding` reads them). Each row j of r
+/// is then (C_j0 + i C_j1) e^(-i th) in its first two entries, and C_j2 in
+/// its third: so each row whose first two are not both 0 winds as -th
+/// (`winding`, one winding for every row), and no third-column entry reads
+/// what moves (`moving`: a node that is not constant over the scope). So
+/// the field placed, f(r^T (p - t)), reads its own point turned by -th
+/// about its z. The windings are -th's. None where that is not shown.
+pub fn own_turn(g: &Graph, r: &[[NodeId; 3]; 3], ctx: &Ctx, moving: impl Fn(NodeId) -> bool) -> Option<Vec<(NodeId, i32)>> {
+    let mut read = Reading::new(g, ctx);
+    let mut wound: Option<Vec<(NodeId, i32)>> = None;
+    for row in r {
+        let (px, py, pz) = (read.poly(row[0])?, read.poly(row[1])?, read.poly(row[2])?);
+        if pz.0.keys().flatten().any(|(a, _)| moving(a.node())) {
+            return None;
+        }
+        if px.0.is_empty() && py.0.is_empty() {
+            continue;
+        }
+        let w = winding(g, row[0], row[1], ctx)?;
+        if wound.as_ref().is_some_and(|v| *v != w) {
+            return None;
+        }
+        wound = Some(w);
+    }
+    wound
+}
+
 /// A variable of a placement's polynomials: the cosine or sine of an angle
 /// (the node they are of), or any other node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

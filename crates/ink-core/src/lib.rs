@@ -7,6 +7,8 @@ pub mod eval;
 pub mod graph;
 pub mod grid;
 pub mod interval;
+pub mod period;
+pub mod sign;
 pub mod symmetry;
 pub mod tape;
 pub mod v3;

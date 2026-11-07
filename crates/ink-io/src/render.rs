@@ -90,8 +90,8 @@ impl<'a> Object<'a> {
 
 /// Triangles whose normals differ by more than this angle (its cosine, 30
 /// degrees) meet at a crease: shading turns there, and an outline marks it.
-/// A smooth surface's facets differ by far less: a mesh simplified to its
-/// tolerance keeps them within 20 degrees (seen::SMOOTH_COS).
+/// A smooth surface's facets differ by far less, a mesh simplified to its
+/// tolerance.
 const CREASE: f64 = 0.866;
 
 /// The mesh's own normal at each triangle's corners, for a mesh the field

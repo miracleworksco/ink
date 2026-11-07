@@ -70,24 +70,29 @@ fn a_solve_may_not_make_vary_what_a_derivative_held() {
     }
 }
 
-/// Over tolerances a solve's rates have no proven range: a claim reading
-/// them is unknown, saying so, and the rest are decided (benchmark 37's
-/// solve: sx can pass 40.2, a failure at a value).
+/// Over tolerances a solve's rates are certified as its root is: their
+/// equations, linear in them, over the root's certified band (benchmark
+/// 37's solve, L 50 +-5, h 30 +-0.1: d sx / d L = L / sqrt(L^2 - h^2), from
+/// 1.1948 at L = 55, h = 29.9 to 1.3452 at L = 45, h = 30.1). Below 1.26
+/// fails at a witness, below 1.35 and above 1.19 hold.
 #[test]
-fn rates_over_tolerances_refuse_only_what_reads_them() {
+fn rates_over_tolerances_are_certified() {
     let mut v = view(
         "(param L 50 (tol -5 5)) (param h 30 (tol -0.1 0.1))
          (solve place (unknowns (theta 37) (sx 40)) (== (* L (cos (* theta (/ pi 180)))) sx) (== (* L (sin (* theta (/ pi 180)))) h))
-         (assert rate-mid (value (diff sx L) < 1.26)) (assert sx-high (value sx <= 40.2))",
+         (assert rate-mid (value (diff sx L) < 1.26)) (assert rate-lo (value (diff sx L) < 1.35)) (assert rate-hi (value (diff sx L) > 1.19))
+         (assert sx-high (value sx <= 40.2))",
         "ranged",
     )
     .unwrap();
     let spans = v.declared_spans().unwrap();
     v.set_param_spans(&spans).unwrap();
     let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
-    let (rate, high) = (&r.asserts[0].check, &r.asserts[1].check);
-    assert!(rate.status == Status::Unknown && format!("{:?}", rate.evidence).contains("the rates (diff theta L), (diff sx L) of solve 'place' read ranged"), "{rate:?}");
-    assert!(high.status == Status::Fails && high.accuracy.is_some(), "{high:?}");
+    let c: Vec<&ink::claims::Check> = r.asserts.iter().map(|a| &a.check).collect();
+    let ink::claims::Evidence::ValueSpan(s) = &c[0].evidence else { panic!("{:?}", c[0]) };
+    let at = s.witness.as_ref().map_or(f64::NAN, |w| w.1);
+    assert!(c[0].status == Status::Fails && at > 1.26 && at < 1.3452, "{:?}", c[0]);
+    assert!(c[1..].iter().all(|c| c.accuracy.is_some()) && c[1].status == Status::Holds && c[2].status == Status::Holds && c[3].status == Status::Fails, "{c:?}");
 }
 
 /// Rates are taken at the root shown regular, not where the solver
@@ -139,6 +144,30 @@ fn a_solve_reading_a_rate_is_followed_over_its_bounds() {
     }
     let (_, failed) = v.doc.ctx_at(&[], 1.5).unwrap();
     assert!(failed.iter().any(|(_, e)| e.message.starts_with("solve 'B' is not followed") && e.message.contains("the rates of solve 'A' along t")), "{failed:?}");
+}
+
+/// P3's four-bar with its crank's cosine and sine each the mean of four
+/// angles wrapped at one moment (t = 2 pi / 10), in degrees read through
+/// `deg->rad` (pi exact): each wraps by exactly a whole turn, so the
+/// equations' sides agree exactly there and it is followed across, to the
+/// root a continuation of the closed form gives at t = 1. In radians
+/// (`(mod (* 10 t) (* 2 pi))`, 2 pi rounded) the sides differ by
+/// rounding, a jump the equations really make: refused
+/// (a_switch_is_not_called_a_dead_point).
+#[test]
+fn a_crank_wrapped_by_whole_turns_in_degrees_is_followed() {
+    let src = "(param a 100) (param b 400) (param c 300) (param d 350)
+        (def ang (rad->deg (* 10 t)))
+        (def w1 (mod ang 360)) (def w2 (* 0.5 (mod (* 2 ang) 720))) (def w3 (* 2 (mod (* 0.5 ang) 180))) (def w4 (* 0.25 (mod (* 4 ang) 1440)))
+        (fn c4 (f) (* 0.25 (+ (f (deg->rad w1)) (f (deg->rad w2)) (f (deg->rad w3)) (f (deg->rad w4)))))
+        (def cs (c4 cos)) (def sn (c4 sin))
+        (solve loop (unknowns (th3 0.85) (th4 1.52)) (== (+ (* a cs) (* b (cos th3))) (+ d (* c (cos th4)))) (== (+ (* a sn) (* b (sin th3))) (* c (sin th4))))";
+    let v = view(src, "crank").unwrap();
+    let k = |n: &str| v.doc.param_index(n).unwrap();
+    let (ctx, failed) = v.doc.ctx_at(&[], 1.0).unwrap();
+    assert!(failed.is_empty(), "{failed:?}");
+    let (th3, th4) = (ctx.params[k("th3")], ctx.params[k("th4")]);
+    assert!((th3 - 0.852406022535).abs() < 1e-9 && (th4 - 2.175833101771).abs() < 1e-9, "th3 {th3}, th4 {th4}");
 }
 
 /// Following stops where no step is certified. Where the equations are
@@ -218,6 +247,84 @@ fn a_rate_read_over_a_step_is_bounded_by_how_far_it_moves() {
     assert!((w + 0.5 / u).abs() < 1e-9 && steps < 1000, "v {w} after {steps} steps");
 }
 
+/// A solve whose equations repeat in t is followed one period, and every
+/// other moment folded into it (ink_core::period): sin(th - 10 t) = 1/2
+/// from th = 0.5 is th = 10 t + pi / 6, a turn a period, at t = 1e7 and
+/// -1e7 (16 M periods each way, which step by step would take hours).
+/// tests/motion/solve-branch.ink's four-bar at t = 628.3, 1000 turns: the
+/// rocker where following every step put it (11.7 s cold).
+#[test]
+fn a_solve_that_repeats_in_t_is_followed_one_period() {
+    let v = view("(solve A (unknowns (th 0.5)) (== (sin (- th (* 10 t))) 0.5))", "period").unwrap();
+    let th = v.doc.param_index("th").unwrap();
+    for t in [1e7, -1e7, 0.3] {
+        let (ctx, failed) = v.doc.ctx_at(&[], t).unwrap();
+        let want = 10.0 * t + PI / 6.0;
+        assert!(failed.is_empty() && (ctx.params[th] - want).abs() < 1e-6, "t = {t}: th {} against {want}, {failed:?}", ctx.params[th]);
+    }
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/motion/solve-branch.ink")).unwrap();
+    let v = view(&src.replace("(import \"std\")", ""), "period-branch").unwrap();
+    // Its crank turns in degrees (deg->rad, pi exact): a period of exactly
+    // 36 degrees of t's 10 rad / s. At 628.3 + 1e6 periods, 1e6 turns more
+    // (step by step, hours), the same rocker.
+    for t in [628.3, 628.3 + 1e6 * 2.0 * PI / 10.0] {
+        let (ctx, failed) = v.doc.ctx_at(&[], t).unwrap();
+        let th4 = ctx.params[v.doc.param_index("th4").unwrap()];
+        assert!(failed.is_empty() && (th4 - 1.6022386532214294).abs() < 1e-6, "t = {t}: th4 {th4}, {failed:?}");
+    }
+}
+
+/// An unknown with no period of its own is not moved over t's period: q
+/// = sin t repeats with q held, shown so where its root at 0 lands in the
+/// tube at 2 pi. At t = 1e12 (followed step by step, about a step per
+/// 1000 s: a billion) it is sin(1e12).
+#[test]
+fn a_root_that_repeats_unmoved_is_folded() {
+    let v = view("(solve s (unknowns (q 0)) (== q (sin t)))", "period-unmoved").unwrap();
+    let q = v.doc.param_index("q").unwrap();
+    let (ctx, failed) = v.doc.ctx_at(&[], 1e12).unwrap();
+    assert!(failed.is_empty() && (ctx.params[q] - 1e12f64.sin()).abs() < 1e-6, "q {} against {}, {failed:?}", ctx.params[q], 1e12f64.sin());
+}
+
+/// Folding is a shortcut, never a detour: q = sin 0.3 t + sin 0.7 t
+/// repeats only every 1.13e17 s (0.3 and 0.7 as floats), so a moment
+/// nearer 0 than that, t = -0.1 as t = 0.1, is followed straight there.
+#[test]
+fn a_moment_nearer_than_a_period_is_not_folded() {
+    let v = view("(solve s (unknowns (q 0)) (== q (+ (sin (* 0.3 t)) (sin (* 0.7 t)))))", "period-long").unwrap();
+    let q = v.doc.param_index("q").unwrap();
+    for t in [0.1, -0.1] {
+        let (ctx, failed) = v.doc.ctx_at(&[], t).unwrap();
+        let want = (0.3 * t).sin() + (0.7 * t).sin();
+        assert!(failed.is_empty() && (ctx.params[q] - want).abs() < 1e-9, "t = {t}: q {} against {want}, {failed:?}", ctx.params[q]);
+    }
+}
+
+/// A moment so far that its count of periods is uncertain (t = 1e20, the
+/// period 2 pi enclosed to a float: about 1e4 periods either way) is one
+/// of the whole first period's moments, its root certified at t itself:
+/// q = sin t is sin(1e20), never followed over all the time between.
+#[test]
+fn a_moment_whose_count_of_periods_is_uncertain_is_folded() {
+    let v = view("(solve s (unknowns (q 0)) (== q (sin t)))", "period-far").unwrap();
+    let q = v.doc.param_index("q").unwrap();
+    for t in [1e20, -1e20] {
+        let (ctx, failed) = v.doc.ctx_at(&[], t).unwrap();
+        assert!(failed.is_empty() && (ctx.params[q] - t.sin()).abs() < 1e-9, "t = {t}: q {} against {}, {failed:?}", ctx.params[q], t.sin());
+    }
+}
+
+/// Steps grow as long as they are certified, whatever the time scale: q =
+/// sin(1e-20 t) at t = 3e20 (its period 6.3e20 s) is sin 3 after about 70
+/// steps, as q = sin t at t = 3 is after a few.
+#[test]
+fn steps_grow_with_how_slowly_the_equations_change() {
+    let v = view("(solve s (unknowns (q 0)) (== q (sin (* 1e-20 t))))", "period-slow").unwrap();
+    let q = v.doc.param_index("q").unwrap();
+    let (ctx, failed) = v.doc.ctx_at(&[], 3e20).unwrap();
+    assert!(failed.is_empty() && (ctx.params[q] - 3f64.sin()).abs() < 1e-9, "q {} against {}, {failed:?}", ctx.params[q], 3f64.sin());
+}
+
 /// A solve on t only through others sets the root followed to the moment,
 /// whatever moment is asked first, not its root at load time, t = 0, which
 /// its reads repeating their bits there would hand back. q = v', v = u',
@@ -248,16 +355,21 @@ fn a_solve_on_t_through_others_is_followed_whatever_is_asked_first() {
 
 /// A claim's terms at its witness take what a solve on t sets at the
 /// witness's moment, one on t only through another too: b = a, a = 100 t,
-/// drives a slide limited to 30 over t in [0, 1]: the limit fails by 2.8
-/// at 32.8, the drive the witness gives, not the view's moment's (50,
-/// t = 0.5).
+/// drives a slide limited to 75 over t in [0, 1]: the limit fails past
+/// t = 0.75, by the drive the witness gives less 75, not the view's
+/// moment's (50, t = 0.5), which is inside it.
 #[test]
 fn a_witness_takes_a_solve_on_t_through_others_at_its_moment() {
-    let mut v = view("(t-span 0 1) (solve A (unknowns (a 0)) (== a (* 100 t))) (solve B (unknowns (b 0)) (== b a)) (body block (shape (box 2 2 2))) (assembly root (instance block block (at) (slide x b) (limits -1000 30)))", "witness-t").unwrap();
+    let mut v = view("(t-span 0 1) (solve A (unknowns (a 0)) (== a (* 100 t))) (solve B (unknowns (b 0)) (== b a)) (body block (shape (box 2 2 2))) (assembly root (instance block block (at) (slide x b) (limits -1000 75)))", "witness-t").unwrap();
     v.set_motion(Some((0.0, 1.0))).unwrap();
     let a = &run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap().asserts[0];
-    let (ink::claims::Evidence::Value(margin), Some(&(_, drive))) = (&a.check.evidence, a.terms.iter().find(|t| t.0 == "drive")) else { panic!("{a:?}") };
-    assert!(a.check.status == Status::Fails && (drive - (30.0 - margin)).abs() < 1e-9, "drive {drive}, margin {margin}");
+    let margin = match &a.check.evidence {
+        ink::claims::Evidence::Value(m) => *m,
+        ink::claims::Evidence::ValueSpan(s) => s.witness.as_ref().expect("a witness").1,
+        e => panic!("{e:?}"),
+    };
+    let drive = a.terms.iter().find(|t| t.0 == "drive").expect("a drive").1;
+    assert!(a.check.status == Status::Fails && drive > 75.0 && (drive - (75.0 - margin)).abs() < 1e-9, "drive {drive}, margin {margin}");
 }
 
 /// A rate an upstream solve leaves unbounded over a step is no rate of 0 to

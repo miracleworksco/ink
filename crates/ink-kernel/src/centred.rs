@@ -72,7 +72,8 @@ pub enum Settles {
 /// the choices (a min a term), whose ways would each exit elsewhere.
 pub fn centred_settles(tape: &Tape, ctx: &Ctx, b: [I; 3], tol: f64, bounded: bool) -> Settles {
     match centred_bound(&[(tape, 0.0)], ctx, b, Some(0.0), bounded, tol) {
-        Some((lo, _)) if lo >= 0.0 => Settles::AtLeast,
+        // Its least bound not inside: no point is.
+        Some((lo, _)) if !ink_core::sign::inside(lo) => Settles::AtLeast,
         Some((_, true)) => Settles::Covered,
         _ => Settles::No,
     }
@@ -177,12 +178,12 @@ fn centred_bound(parts: &[(&Tape, f64)], ctx: &Ctx, b: [I; 3], enough: Option<f6
                 let inputs = scoped.as_ref().filter(|sc| tm.by.is_some() && !sc.d.is_empty()).map(|sc| {
                     let (mut m, mut r) = (add_o(signed(sc.m[tm.i], tm.neg), I::point(-s)), [I::point(0.0); MAX_INPUTS]);
                     for (j, r) in r.iter_mut().enumerate().take(n) {
-                        *r = signed(sc.d[tm.i * n + j], tm.neg);
+                        *r = signed(sc.rate(tm.i, n, j), tm.neg);
                     }
                     for &(k, neg) in tm.by.as_ref().map_or(&[][..], |b| b.as_slice()) {
                         m = add_o(m, signed(sc.m[k as usize], neg));
                         for (j, r) in r.iter_mut().enumerate().take(n) {
-                            *r = add_o(*r, signed(sc.d[k as usize * n + j], neg));
+                            *r = add_o(*r, signed(sc.rate(k as usize, n, j), neg));
                         }
                     }
                     Box::new((m, r))

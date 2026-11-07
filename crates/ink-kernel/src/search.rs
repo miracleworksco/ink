@@ -514,7 +514,7 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
         // the budget, or once it has tested as many boxes as the proof.
         let ended = match self.hunting {
             Some((from, _)) => self.tested - from >= from,
-            None => self.tested as f64 + self.ahead() > 4.0 * limit as f64,
+            None => self.forecast() > 4.0 * limit as f64,
         };
         if self.tested >= limit || ended {
             return Err(self.end(Ended::Limit, None, seek));
@@ -597,6 +597,12 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
             }
         }
         stuck.map(|s| self.end(Ended::Finest, Some(s), seek))
+    }
+
+    /// The boxes it would test in all: those tested and those `ahead`
+    /// (Knuth's estimate).
+    pub fn forecast(&self) -> f64 {
+        self.tested as f64 + self.ahead()
     }
 
     /// The boxes the search would still test, at the rates each depth has

@@ -378,7 +378,9 @@ fn add_rounded(a: f64, b: f64, up: bool) -> f64 {
 /// radians: a multiple of 90 is exactly 0 and +-1, where sin(180 pi/180)
 /// is 1.2e-16 (an axis turned half round would be off by that, and a
 /// claim that two axes are parallel would fail). Others are as near as
-/// before. A turn reading params or t stays the graph's sin and cos.
+/// before. A turn reading params or t is the graph's sin and cos of its
+/// degrees in radians with pi exact (UnOp::Rad): a turn wrapped at 360
+/// agrees exactly either side of the wrap.
 pub(crate) fn turn_sin_cos(g: &mut Graph, deg: NodeId) -> [NodeId; 2] {
     if let Some(d) = g.as_const(deg).filter(|d| d.is_finite()) {
         let r = d % 360.0;
@@ -393,8 +395,7 @@ pub(crate) fn turn_sin_cos(g: &mut Graph, deg: NodeId) -> [NodeId; 2] {
         // + 0: no -0 entries.
         return [g.constant(s + 0.0), g.constant(c + 0.0)];
     }
-    let k = g.constant(std::f64::consts::PI / 180.0);
-    let rad = g.mul(deg, k);
+    let rad = g.un(UnOp::Rad, deg);
     [g.un(UnOp::Sin, rad), g.un(UnOp::Cos, rad)]
 }
 
@@ -977,7 +978,7 @@ pub struct Doc {
     /// (Doc::rate_joints), through every solve their drives read, however
     /// the file orders them (a loop closed over the assembly's frames
     /// comes after it).
-    rated: Vec<(usize, NodeId, NodeId, NodeId)>,
+    rated: Vec<(usize, NodeId, NodeId, NodeId, bool)>,
     /// The solves read so far do not all solve at load time: the first
     /// that fails, as an error at its form. An error once the document is
     /// read, unless a solve read later makes them solve (Doc::solve_at_load).
@@ -1185,6 +1186,8 @@ const BUILTINS: &[(&str, Builtin)] = {
         ("cos", Un(UnOp::Cos)),
         ("tan", Un(UnOp::Tan)),
         ("floor", Un(UnOp::Floor)),
+        ("deg->rad", Un(UnOp::Rad)),
+        ("rad->deg", Un(UnOp::Deg)),
         ("select", Select),
     ]
 };
@@ -1717,7 +1720,7 @@ impl Doc {
         // The directions at the params' values (Doc::unit), once every
         // solve is read; those depending on t at each moment a view is
         // made at.
-        let read = read.and_then(|()| if unsolved.is_none() { d.check_conditions(&d.load_ctx(), None, &[], true) } else { Ok(()) });
+        let read = read.and_then(|()| if unsolved.is_none() { d.check_conditions(&d.load_ctx(), None, &[], true, None) } else { Ok(()) });
         let failed = match (read, unsolved) {
             (Ok(()), None) => return Ok(d),
             (Ok(()), Some(u)) => u,
@@ -3373,13 +3376,18 @@ impl Doc {
                 let (file, line) = self.building.as_ref().unwrap().passed.clone().unwrap_or((self.file.clone(), c.line));
                 // The rate as the drive reads so far: taken again once the
                 // file is read (rate_joints).
-                let rate = self.g.derivative(drive, Var::T);
+                let rate = if turn {
+                    let read = turn_sin_cos(&mut self.g, drive);
+                    self.g.speed_read(drive, &read)
+                } else {
+                    self.g.derivative(drive, Var::T)
+                };
                 let what = [("limits", drive, text.clone(), "drive"), ("speed-limits", rate, format!("(diff {text} t)"), "rate")];
                 for ((((lo, hi, lt, ht, _), tol), quantity), (kind, v, vt, term)) in
                     bounds.iter().zip(tols).zip(quantities).zip(what).filter_map(|(((b, t), q), w)| Some((((b.as_ref()?, t), q), w)))
                 {
                     if kind == "speed-limits" {
-                        self.rated.push((self.asserts.len(), drive, *lo, *hi));
+                        self.rated.push((self.asserts.len(), drive, *lo, *hi, turn));
                     }
                     let (a, b) = (self.g.sub(v, *lo), self.g.sub(*hi, v));
                     let claim = Claim::Value(self.g.min(a, b), Cmp::Ge, 0.0);
@@ -3860,13 +3868,20 @@ impl Doc {
         Ok((res, accuracy))
     }
 
+    /// Whether claim `c` is a shape's metric answered to a length accuracy
+    /// on the shape (Package::shape_accuracy: a void count), not on its
+    /// value.
+    pub fn shape_accuracy(&self, c: &Claim) -> bool {
+        matches!(c, Claim::Metric { metric, .. } if metric.shape.is_some() && self.registry.shape_accuracy(metric.metric))
+    }
+
     /// What a claim's accuracy (and a comparison's value) is in, where
     /// known: a length for a claim about shapes or a thickness, a volume's
     /// volume, a metric's quantity. None: the model's own units (a value,
     /// an integral, a mean), or none at all (points and ranges).
     pub fn accuracy_quantity(&self, c: &Claim) -> Option<Quantity> {
         match c {
-            _ if c.accuracy_is_length() => Some(Quantity::Length),
+            _ if c.accuracy_is_length() || self.shape_accuracy(c) => Some(Quantity::Length),
             Claim::Metric { metric, .. } => self.registry.metric_quantity(metric.metric),
             _ => None,
         }
@@ -4299,14 +4314,24 @@ impl Doc {
     /// values are at t = 0; a moment is checked when a view is made at it).
     /// Solves that failed at ctx (`failed`) are skipped: what rests on them
     /// is refused already (ModelView::refusal), and over a motion so is
-    /// what rests on a solve depending on t (solved again at each step).
-    pub fn check_conditions(&self, ctx: &Ctx, motion: Option<(f64, f64)>, failed: &[usize], at_load: bool) -> R<()> {
+    /// what rests on a solve depending on t that ctx does not derive (solved
+    /// again at each step); one it derives from t's param over the span
+    /// (motion::scope_over) is checked over it. `of`: only the directions
+    /// these fields read that rest on a solve on t (a claim's, in its
+    /// scope over a motion: claims::ask_in).
+    pub fn check_conditions(&self, ctx: &Ctx, motion: Option<(f64, f64)>, failed: &[usize], at_load: bool, of: Option<&[u32]>) -> R<()> {
         use ink_kernel::ranged::{Cmp, Comparison, ProofOptions, Status, value_span};
+        let read: Option<std::collections::HashSet<u32>> = of.map(|r| self.g.reachable(r).into_iter().collect());
         for c in &self.conditions {
             let solves = self.solves_read(&[c.len2]);
-            let solved_on_t = solves.iter().any(|&i| self.solves[i].on_t);
+            let on_t: Vec<usize> = solves.iter().copied().filter(|&i| self.solves[i].on_t).collect();
+            let solved_on_t = !on_t.is_empty();
+            let derived = solved_on_t && on_t.iter().all(|&i| self.solves[i].owns.iter().all(|&k| ctx.p_spans.is_derived(k as u32)));
+            if read.as_ref().is_some_and(|r| !solved_on_t || !r.contains(&c.len2)) {
+                continue;
+            }
             let reads_t = solved_on_t || self.g.depends_on(c.len2, |v| matches!(v, Var::T));
-            if solves.iter().any(|i| failed.contains(i)) || (at_load && reads_t) || (motion.is_some() && solved_on_t) {
+            if solves.iter().any(|i| failed.contains(i)) || (at_load && reads_t) || (motion.is_some() && solved_on_t && !derived) {
                 continue;
             }
             let ranged = self.g.depends_on(c.len2, |v| matches!(v, Var::Param(k) if ctx.p_spans.get(k).is_some()));
@@ -4314,7 +4339,8 @@ impl Doc {
             let err = |message: String| InkError { message, ..c.at.clone() };
             let named = |t: f64, values: &[(usize, f64)]| -> String {
                 let mut at: Vec<String> = values.iter().map(|&(k, v)| format!("{} = {v}", self.params[k].name)).collect();
-                if reads_t {
+                // t's own param (a motion's scope) names the moment.
+                if reads_t && !values.iter().any(|&(k, _)| self.params[k].name == "t") {
                     at.insert(0, format!("t = {t}"));
                 }
                 if at.is_empty() { String::new() } else { format!(" at {}", at.join(", ")) }
@@ -4891,7 +4917,7 @@ impl Doc {
         match failed.iter().find(|(i, _)| self.needed(*i)) {
             Some((_, e)) => Err(e.message.clone()),
             None => {
-                self.check_conditions(&ctx, None, &[], false).map_err(|e| e.message)?;
+                self.check_conditions(&ctx, None, &[], false, None).map_err(|e| e.message)?;
                 Ok(ctx)
             }
         }

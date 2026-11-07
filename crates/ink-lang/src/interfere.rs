@@ -157,16 +157,20 @@ struct Question {
     node: u32,
     region: (V3, V3),
     framed: bool,
+    /// With a zone: the intersection (clipped as `node` is) and the zone, the
+    /// question being no point inside the one and not inside the other
+    /// (query::Except), `node` max(f, -zone).
+    except: Option<(u32, u32)>,
 }
 
-/// f (an intersection, or b of a pair a, b) where `zone` is not: what must
-/// be empty, or what a must not meet, for a pair apart outside its zone.
-fn outside(v: &mut ModelView, f: u32, zone: Option<u32>) -> u32 {
+/// The question for intersection f where `zone` is not, in region lo..hi:
+/// its field (clipped) and, with a zone, its two shapes (`Question`).
+fn outside(v: &mut ModelView, f: u32, zone: Option<u32>, (lo, hi): (V3, V3)) -> (u32, Option<(u32, u32)>) {
     match zone {
-        None => f,
+        None => (v.doc.clip(f, lo, hi), None),
         Some(z) => {
-            let out = v.doc.g.neg(z);
-            v.doc.g.max(f, out)
+            let h = claims::subset_field(&mut v.doc.g, f, z);
+            (v.doc.clip(h, lo, hi), Some((v.doc.clip(f, lo, hi), z)))
         }
     }
 }
@@ -411,8 +415,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
         };
         let (fa, fb) = (fr.items[0].0, fr.items[1].0);
         let f = v.doc.g.max(fa, fb);
-        let f = outside(v, f, fr.zone);
-        let node = v.doc.clip(f, fr.region.0, fr.region.1);
+        let (node, except) = outside(v, f, fr.zone, fr.region);
         // Riding a moving group, it is proven once only where its whole
         // question in the group's frame reads no t: a zone still in the
         // world moves in that frame (it counter-moves), and its parts may
@@ -421,7 +424,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
             continue;
         }
         let q = *asked.entry(node).or_insert_with(|| {
-            plan.questions.push(Question { node, region: fr.region, framed: true });
+            plan.questions.push(Question { node, region: fr.region, framed: true, except });
             plan.questions.len() - 1
         });
         plan.asks.push((k, q, Some(fr)));
@@ -528,9 +531,8 @@ impl Plan {
         let (i, j) = self.candidates[k];
         let (fa, fb) = (v.doc.placed_field(&self.items[i]), v.doc.placed_field(&self.items[j]));
         let f = v.doc.g.max(fa, fb);
-        let f = outside(v, f, self.zones[k]);
-        let (lo, hi) = self.regions[k];
-        Question { node: v.doc.clip(f, lo, hi), region: self.regions[k], framed: false }
+        let (node, except) = outside(v, f, self.zones[k], self.regions[k]);
+        Question { node, region: self.regions[k], framed: false, except }
     }
 
     /// Every pair checked, in order, at cell size `res` (None: automatic). Each is reported as it is decided
@@ -703,8 +705,6 @@ fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Opt
     let reads: Vec<Vec<(u32, (f64, f64))>> = questions.iter().map(|q| v.ranged_reads(&[q.node])).collect();
     let quantity = Some(crate::units::Quantity::Length);
     let g = &v.doc.g;
-    // Each pair's held unsaid where it reads ranged params or t as placed.
-    let unsaid: Vec<bool> = facts.iter().map(|f| f.world.is_none_or(|w| claims::held_unsaid(v, w))).collect();
     let why: Vec<Option<String>> =
         asks.iter().map(|(_, q, fr)| crate::validity::outside_region(&v.doc, &ctx, questions[*q].region, fr.as_ref().map(|fr| &fr.at), tol, res)).collect();
     questions
@@ -731,31 +731,35 @@ fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Opt
                     })
                     .collect::<Vec<_>>();
             }
-            let p = ranged::prove(&tape, &ctx, lo, hi, if q.framed { &shared } else { &world });
+            let except = q.except.map(|(a, z)| ink_kernel::query::Except { a: Arc::new(Tape::new(g, a)), b: Arc::new(Tape::new(g, z)) });
+            let p = ranged::prove_except(&tape, except.as_ref(), &ctx, lo, hi, if q.framed { &shared } else { &world });
             let proof_ms = asked.elapsed();
             // Overlap volume for colliding pairs, measured once a pair gives
             // it (a frame's witness not shown in the world gives none: the
             // world measures its own).
             let measured = std::cell::OnceCell::new();
             let volume = || *measured.get_or_init(|| p.disproven().then(|| overlap_volume(&tape, &ctx, q.region)).flatten());
-            // How it held: unsaid where the pair as placed reads ranged
-            // params or t (`unsaid`); outright only where a frame reads back
-            // exactly; its near point found in the question (once), moved to
-            // each pair's world and confirmed on the pair's world field.
+            // How it held: outright only where a frame reads back exactly;
+            // its near point found in the question (once, where in the
+            // scope with it), moved to each pair's world and confirmed on
+            // the pair's world field there (a frame moved at the view's
+            // values: a point it misplaces is not confirmed).
             let candidates = std::cell::OnceCell::new();
             let check = |c: Proof, k: usize, fr: Option<&Framed>| {
-                let held = (!unsaid[k]).then(|| match fr {
+                let held = Some(match fr {
                     Some(fr) if p.exact && fr.error > 0.0 => claims::Held::ToAccuracy { near: None },
                     _ => {
-                        let points: Vec<V3> = match p.exact {
+                        let points: Vec<(V3, ink_kernel::scope::At)> = match p.exact {
                             true => Vec::new(),
-                            false => candidates.get_or_init(|| claims::Held::candidates(&p, &tape, &ctx)).iter().map(|&c| fr.map_or(c, |fr| fr.world(c).0)).collect(),
+                            false => {
+                                candidates.get_or_init(|| claims::Held::scoped(&p, &tape, &ctx)).iter().map(|(c, at)| (fr.map_or(*c, |fr| fr.world(*c).0), at.clone())).collect()
+                            }
                         };
                         let world = match (fr, facts[k].world) {
                             (Some(_), Some(w)) if !points.is_empty() => Arc::new(Tape::new(g, w)),
                             _ => tape.clone(),
                         };
-                        claims::Held::confirmed(p.exact, points, &world, &ctx)
+                        claims::Held::confirmed_at(p.exact, points, &world, &ctx)
                     }
                 });
                 Check { held, ..claims::answer(claims::emptied(c, facts[k].whole), tol, facts[k].inexact.clone(), quantity, read.clone()) }
@@ -804,7 +808,7 @@ fn framed(p: &Proof, fr: &Framed, tape: &Tape, ctx: &Ctx, tol: f64) -> Option<Pr
                 at = at.with_param(k, (x, x));
             }
             let cube = std::array::from_fn(|d| I::new((witness[d] - h).next_down(), (witness[d] + h).next_up()));
-            if !(ink_core::eval::eval_interval(tape, &at, cube, None).hi < 0.0) {
+            if !(ink_core::eval::eval_interval(tape, &at, cube, None).all_inside()) {
                 return None;
             }
             Verdict::Disproven { witness: w, t: *t, value: *value, params: params.clone() }
@@ -825,8 +829,12 @@ fn framed(p: &Proof, fr: &Framed, tape: &Tape, ctx: &Ctx, tol: f64) -> Option<Pr
 /// A moving pair checked over the motion as a claim (claims::ask), a
 /// apart from b outside its zones.
 fn over_motion(v: &mut ModelView, (a, b): (u32, u32), zone: Option<u32>, opts: ClaimOptions) -> Result<Asked<Answer>, InkError> {
-    let b = outside(v, b, zone);
-    claims::ask(v, Claim::Disjoint(a, b), None, opts)?.then(v, move |_, check| Ok(Asked::Done(Answer::Moving { check })))
+    // Apart outside the zone: what they share lies in it.
+    let claim = match zone {
+        None => Claim::Disjoint(a, b),
+        Some(z) => Claim::Subset(v.doc.g.max(a, b), z),
+    };
+    claims::ask(v, claim, None, opts)?.then(v, move |_, check| Ok(Asked::Done(Answer::Moving { check })))
 }
 
 /// The volume of a pair's intersection (its tape) in its region,

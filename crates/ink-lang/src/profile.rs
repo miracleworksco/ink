@@ -1226,6 +1226,14 @@ struct Span<'a> {
     mv: &'a walls::Moving,
 }
 
+/// A drafted leaf's scale: its slope is at most 1 across and `rate` per
+/// unit t along z (an upper bound, rounded up; t = (z - z0) / dz), so
+/// scaled by 1 / sqrt(1 + (rate / dz)^2) rounded down (interval::inv_norm_down)
+/// it is at most 1 in real numbers, as its promise says.
+fn unit_scale(rate: f64, dz: f64) -> f64 {
+    ink_core::interval::inv_norm_down(&[1.0, if rate == 0.0 { 0.0 } else { (rate / dz).next_up() }])
+}
+
 /// A drafted profile whose field has no bound on its rate somewhere.
 fn unbounded(sp: &Span) -> String {
     format!(
@@ -1480,14 +1488,12 @@ impl Doc {
         }
         let bad = |d: &mut Doc, m: String| d.err_hint(e, m, Some(usage.into()));
         let Some((d, z0, z1)) = draft else {
-            if pts.iter().all(|p| p[3] == 0.0) {
-                let pts: Vec<[f64; 3]> = pts.iter().map(|p| [p[0], p[1], p[2]]).collect();
-                let t = polygon(&pts).map_err(|m| bad(self, m))?;
-                let f = self.lower_profile(&t, None).map_err(|m| bad(self, m))?;
-                return Ok(Value::Field(f, None));
-            }
-            let t = Walls::new(&pts, &vec![0.0; pts.len()]).and_then(|w| polygon(&w.solve(0.0)?.0)).map_err(|m| bad(self, m))?;
-            let f = self.lower_profile(&t, None).map_err(|m| bad(self, m))?;
+            let flat = if pts.iter().all(|p| p[3] == 0.0) {
+                Ok(pts.iter().map(|p| [p[0], p[1], p[2]]).collect())
+            } else {
+                Walls::new(&pts, &vec![0.0; pts.len()]).and_then(|w| Ok(w.solve(0.0)?.0))
+            };
+            let f = flat.and_then(|q| self.flat_polygon(&q)).map_err(|m| bad(self, m))?;
             return Ok(Value::Field(f, None));
         };
         let angles: Vec<f64> = match self.eval(d, env)? {
@@ -1558,8 +1564,7 @@ impl Doc {
         // down, as a line turning fast near where a construction changes
         // does its piece's), cut to the heights past that end.
         for (h, past) in [(d.pieces[0].held[0], -1.0), (d.pieces[last].held[1], 1.0)] {
-            if let Ok(t) = w.solve(h).and_then(|(q, _)| polygon(&q)) {
-                let end = self.lower_profile(&t, None).map_err(|m| bad(self, m))?;
+            if let Ok(end) = w.solve(h).and_then(|(q, _)| self.flat_polygon(&q)) {
                 let cut = self.ramp(past * h, -past, z);
                 fs.push(self.g.max(end, cut));
             }
@@ -1593,7 +1598,7 @@ impl Doc {
     /// the turn's part of the rate 1.
     fn curved_line(&mut self, line: Normal, sp: &Span) -> Result<NodeId, String> {
         use curve::{Ex, padd, pcross, pdot, pnorm, pscale, psub, xdiv};
-        use ink_core::interval::I;
+        use ink_core::interval::{I, add_up, mul_up};
         let pt = |i: usize| sp.mv.pts[i].clone();
         let centre = |e: usize| sp.mv.circles[e].0.clone();
         // Its normal, and the points on it it may be read about (c).
@@ -1645,8 +1650,8 @@ impl Doc {
             if n0.iter().all(|v| v.is_finite()) && least > 0.0 && side / least * reach * (1.0 + 1e-9) <= 100.0 * sp.mv.eps() {
                 // n0 . p - o(t), o = n0 . c = o0 + o1 t: a plane.
                 let (o0, o1) = (n0[0] * cx.0 + n0[1] * cy.0, n0[0] * cx.1 + n0[1] * cy.1);
-                let k = 1.0 / (o1 / dz).hypot(1.0);
-                return Ok(self.lin3([n0[0] * k, n0[1] * k, -o1 / dz * k, -(o0 - o1 * sp.z0 / dz) * k], [x, y, sp.zc]));
+                let s = o1 / dz;
+                return Ok(self.unit_plane([n0[0], n0[1], -s, -(o0 - s * sp.z0)], [x, y, sp.zc]));
             }
         }
         // Its turn (m x m' / |m|^2, per unit t).
@@ -1655,7 +1660,7 @@ impl Doc {
         let turn = most(&xdiv(&pcross(&m, &dm), &pdot(&m, &m)));
         // Over the box (within its diagonal of c), at its full slope across
         // it (|n| is 1, to rounding).
-        let reach = norm(sub(sp.hi, sp.lo));
+        let reach = ink_core::interval::norm([(sp.hi[0] - sp.lo[0]).next_up(), (sp.hi[1] - sp.lo[1]).next_up(), 0.0]);
         // Read about each c: in full over the box, or in full within rho of c
         // (1 / its turn per unit z) and saturated beyond: within rho its rate
         // is rho times its turn and how fast c moves across it, beyond at most
@@ -1664,15 +1669,18 @@ impl Doc {
             let dc = [Ex::d(&c[0]), Ex::d(&c[1])];
             let (across, speed) = most(&xdiv(&pdot(&m, &dc), &lm)).zip(most(&pnorm(&dc)))?;
             let w = turn?;
-            let boxed = ((w * reach + across) / dz).hypot(1.0);
+            let boxed = unit_scale(add_up(mul_up(w, reach), across), dz);
             let rho = if w > 0.0 { dz / w } else { f64::INFINITY };
-            let sat = ((w * rho + across.max(0.5 * (across + speed))) / dz).hypot(1.0);
+            let sat = unit_scale(add_up(mul_up(w, rho), across.max(0.5 * add_up(across, speed))), dz);
             Some((boxed, rho, sat))
         };
+        // The first with the largest scale: of points alike, a line's middle
+        // (cs[0]), about which its formula rounds least along it (max_by
+        // would keep the last, an end).
         let (c, (boxed, rho, sat)) =
-            cs.iter().filter_map(|c| read(c).map(|v| (c.clone(), v))).min_by(|a, b| a.1.0.min(a.1.2).total_cmp(&b.1.0.min(b.1.2))).ok_or_else(|| unbounded(sp))?;
-        let boxed = Some(boxed).filter(|&l| ok(l));
-        let sat = Some((rho, sat)).filter(|&(r, l)| ok(r) && ok(l));
+            cs.iter().filter_map(|c| read(c).map(|v| (c.clone(), v))).min_by(|a, b| b.1.0.max(b.1.2).total_cmp(&a.1.0.max(a.1.2))).ok_or_else(|| unbounded(sp))?;
+        let boxed = Some(boxed).filter(|&k| ok(k));
+        let sat = Some((rho, sat)).filter(|&(r, k)| ok(r) && ok(k));
         // n . (p - c), p clamped to the box or not.
         let (nx, ny) = (self.lower_ex(&n[0], t, &mut memo), self.lower_ex(&n[1], t, &mut memo));
         let (cx, cy) = (self.lower_ex(&c[0], t, &mut memo), self.lower_ex(&c[1], t, &mut memo));
@@ -1682,12 +1690,14 @@ impl Doc {
             (d.g.add(ax, ay), dx, dy)
         };
         match (boxed, sat) {
-            (Some(l), s) if s.is_none_or(|s| l <= s.1) => {
+            (Some(k), s) if s.is_none_or(|s| k >= s.1) => {
                 let (f, _, _) = across(self, sp.xc, sp.yc);
-                let k = self.g.constant(1.0 / l);
-                Ok(self.g.mul(f, k))
+                let k = self.g.constant(k);
+                let f = self.g.mul(f, k);
+                let one = self.g.constant(1.0);
+                Ok(self.g.lipschitz(f, one))
             }
-            (_, Some((rho, l))) => {
+            (_, Some((rho, k))) => {
                 let (f, dx, dy) = across(self, x, y);
                 let (sx, sy) = (self.g.un(UnOp::Square, dx), self.g.un(UnOp::Square, dy));
                 let q = self.g.add(sx, sy);
@@ -1697,7 +1707,7 @@ impl Doc {
                 let far = self.g.max(r, kr);
                 let w = self.g.bin(BinOp::Div, kr, far);
                 let f = self.g.mul(f, w);
-                let k = self.g.constant(1.0 / l);
+                let k = self.g.constant(k);
                 let f = self.g.mul(f, k);
                 let one = self.g.constant(1.0);
                 Ok(self.g.lipschitz(f, one))
@@ -1739,11 +1749,25 @@ impl Doc {
         let d = self.g.un(UnOp::Sqrt, q);
         let mut f = self.g.sub(d, rr);
         if rate != 0.0 {
-            let s = self.g.constant(1.0 / (rate / dz).hypot(1.0));
+            let s = self.g.constant(unit_scale(rate, dz));
             f = self.g.mul(f, s);
         }
         let one = self.g.constant(1.0);
         Ok(self.g.lipschitz(f, one))
+    }
+
+    /// k (a x + b y + c z + d), k = 1 / |(a, b, c)| rounded down (at most 1):
+    /// at most 1-Lipschitz in real numbers, its coefficients as given (each
+    /// scaled alone, |(a, b, c)| could round above 1; a draft's plane by
+    /// 1 / hypot(1, s) read 1 + 2^-53).
+    fn unit_plane(&mut self, v: [f64; 4], at: [NodeId; 3]) -> NodeId {
+        let f = self.lin3(v, at);
+        let k = ink_core::interval::inv_norm_down(&v[..3]).min(1.0);
+        if k == 1.0 {
+            return f;
+        }
+        let k = self.g.constant(k);
+        self.g.mul(k, f)
     }
 
     /// a x + b y + c z + d (c z left out where c is 0).
@@ -1792,7 +1816,14 @@ impl Doc {
         match a {
             &T::Lin(a0, b0, c0, line) => {
                 let Some(sp) = sp.filter(|_| line.is_some()) else {
-                    return Ok(self.lin3([a0, b0, 0.0, c0], [x, y, x]));
+                    // Square to an axis: v - c, as the exact construction
+                    // writes it (one value for every piece on that line).
+                    for (v, (p, q)) in [(x, (a0, b0)), (y, (b0, a0))] {
+                        if q == 0.0 && p.abs() == 1.0 {
+                            return Ok(self.axis_face(v, -c0 * p, p > 0.0));
+                        }
+                    }
+                    return Ok(self.unit_plane([a0, b0, 0.0, c0], [x, y, x]));
                 };
                 let line = line.expect("a drafted line is the loop's");
                 if let Normal::Line(i, j) = line
@@ -1800,8 +1831,8 @@ impl Doc {
                 {
                     // n . p = k + s z, its normal the leaf's way round.
                     let (n, k, s) = sp.mv.planes[w].expect("a line wall");
-                    let (sg, h) = ((a0 * n[0] + b0 * n[1]).signum(), 1.0 / s.hypot(1.0));
-                    return Ok(self.lin3([sg * n[0] * h, sg * n[1] * h, -sg * s * h, -sg * k * h], [x, y, sp.zc]));
+                    let sg = (a0 * n[0] + b0 * n[1]).signum();
+                    return Ok(self.unit_plane([sg * n[0], sg * n[1], -sg * s, -sg * k], [x, y, sp.zc]));
                 }
                 self.curved_line(line, sp)
             }
@@ -1849,6 +1880,7 @@ impl Doc {
 }
 
 mod curve;
+mod exact;
 mod walls;
 
 #[cfg(test)]

@@ -213,21 +213,33 @@ fn a_drafted_polygon_s_box_holds_its_moving_wall() {
     assert!(v["out"] != "holds", "{v:?}");
 }
 
+/// A straight, undrafted polygon is its drawn corners exactly: a corner
+/// 5e-7 below the line through its neighbours in a 1414 mm square is kept,
+/// so a point 2.5e-7 inside reads inside at accuracy 0 (polygon's allowance
+/// merged it into that line, and the point read outside), and one as far
+/// outside, outside.
 #[test]
-#[ignore = "a polygon's allowance is not yet in its answers' accuracy"]
+fn a_straight_polygon_is_its_drawn_corners() {
+    let defs = "(def f (polygon (vec (vec 0 0) (vec 500 -0.0000005) (vec 1000 0) (vec 1000 1000) (vec 0 1000))))";
+    let (pin, pout) = ("(probe 500 -2.4999999999999999e-07 0.5)", "(probe 500 -7.5e-07 0.5)");
+    let (i, o) = (format!("(subset {pin} f)"), format!("(disjoint {pout} f)"));
+    let v = drafted_verdicts("straight-exact", defs, &[("in", &i), ("out", &o)]).unwrap();
+    assert_eq!((v["in"].as_str(), v["out"].as_str()), ("holds", "holds"), "{v:?}");
+}
+
+#[test]
+#[ignore = "a drafted polygon's allowance is not yet in its answers' accuracy"]
 fn a_polygon_s_allowance_is_in_its_answers() {
-    // A corner 5e-7 below the line through its neighbours,
-    // within polygon's allowance (1e-7 of its 1414 mm diagonal), is merged
-    // into that line; the point 2.5e-7 inside the specified profile read
-    // outside at accuracy 0, drafted and not. Within the allowance it is
-    // unknown (neither holds nor fails), until an accuracy carries it.
-    let pts = "(vec (vec 0 0) (vec 500 -0.0000005) (vec 1000 0) (vec 1000 1000) (vec 0 1000))";
-    for defs in [format!("(def f (polygon {pts} 0 0 1))"), format!("(def f (polygon {pts}))")] {
-        let p = "(probe 500 -2.4999999999999999e-07 0.5)";
-        let (i, o) = (format!("(subset {p} f)"), format!("(disjoint {p} f)"));
-        let v = drafted_verdicts("allowance-corner", &defs, &[("in", &i), ("out", &o)]).unwrap();
-        assert!(v["in"] != "fails" && v["out"] != "holds", "{defs}: {v:?}");
-    }
+    // Drafted, a corner 5e-7 below the line through its neighbours, within
+    // polygon's allowance (1e-7 of its 1414 mm diagonal), is merged into
+    // that line; the point 2.5e-7 inside the specified profile read outside
+    // at accuracy 0. Within the allowance it is unknown (neither holds nor
+    // fails), until an accuracy carries it or the construction is exact.
+    let defs = "(def f (polygon (vec (vec 0 0) (vec 500 -0.0000005) (vec 1000 0) (vec 1000 1000) (vec 0 1000)) 0 0 1))";
+    let p = "(probe 500 -2.4999999999999999e-07 0.5)";
+    let (i, o) = (format!("(subset {p} f)"), format!("(disjoint {p} f)"));
+    let v = drafted_verdicts("allowance-corner", defs, &[("in", &i), ("out", &o)]).unwrap();
+    assert!(v["in"] != "fails" && v["out"] != "holds", "{defs}: {v:?}");
 }
 
 /// A promise is taken only for its constants as computed for the query:

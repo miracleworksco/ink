@@ -27,8 +27,7 @@ use cli::*;
 /// (`make_meshes`), and `ink mesh`'s answer.
 pub mod meshes {
     pub use crate::cli::queries::{
-        Budget, MeshHow, Meshed, Plan, Quality, REPORTED, SEEN, drawn, finest_drawn, glb_attrs, looks, make_meshes, mesh_answer, motion, paint_tapes, plan_meshes, reported,
-        span_times, tape_of,
+        Budget, MeshHow, Meshed, Plan, Quality, REPORTED, SEEN, drawn, glb_attrs, looks, make_meshes, mesh_answer, motion, paint_tapes, plan_meshes, reported, span_times, tape_of,
     };
     pub use crate::cli::session::{CliView, Session, union_bounds};
 }

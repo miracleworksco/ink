@@ -306,7 +306,7 @@ impl Doc {
             }
             Src::Surface(md, t) => {
                 let sign = crate::eval::eval_points_par(t, &ctx, &pts);
-                pts.par_iter().zip(&sign).map(|(p, s)| md.distance(*p).abs() * if *s < 0.0 { -1.0 } else { 1.0 }).collect()
+                pts.par_iter().zip(&sign).map(|(p, s)| md.distance(*p).abs() * if ink_core::sign::inside(*s) { -1.0 } else { 1.0 }).collect()
             }
         };
         // A grid keeps f32s: a finite sample past their range would be

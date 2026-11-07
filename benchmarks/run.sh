@@ -8,12 +8,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # A run takes several GB: where systemd runs user scopes it is capped at
-# 16 GB (a run over it is killed, not the machine's other work), and where
-# flock is, runs that share the lock file go one at a time. Neither is
-# needed.
+# 16 GB (a run over it is killed, not the machine's other work), inside the
+# systemd slice INK_SLICE when given (the catalog watch's,
+# scripts/catalog-watch.sh, where no cap is no run), and where flock is, runs
+# that share the lock file go one at a time.
 run=()
-if command -v systemd-run >/dev/null && systemd-run --user --scope -q true 2>/dev/null; then
-  run=(systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0)
+cap=(systemd-run --user --scope -q ${INK_SLICE:+--slice=$INK_SLICE} -p MemoryMax=16G -p MemorySwapMax=0)
+if command -v systemd-run >/dev/null && "${cap[@]}" true 2>/dev/null; then
+  run=("${cap[@]}")
+elif [ -n "${INK_SLICE:-}" ]; then
+  echo "benchmarks/run.sh: FAILED: no memory-capped scope in $INK_SLICE" >&2; exit 1
 fi
 lock="${XDG_CACHE_HOME:-$HOME/.cache}/ink-heavy.lock"
 if command -v flock >/dev/null && mkdir -p "$(dirname "$lock")" 2>/dev/null; then

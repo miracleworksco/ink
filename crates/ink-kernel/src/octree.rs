@@ -132,13 +132,33 @@ where
     descend_inner(tape, ctx, grid, cell, leaf, pad, on_leaf, on_full)
 }
 
+/// `descend_padded` with no full cells kept, which stops going down once
+/// `go` says so (a limit on the leaves reached).
+pub fn descend_while<R, FL>(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, leaf: i64, pad: f64, go: &(dyn Fn() -> bool + Sync), on_leaf: &FL) -> Vec<R>
+where
+    R: Send,
+    FL: Fn(&Arc<Tape>, Cell) -> Option<R> + Sync,
+{
+    descend_go(tape, ctx, grid, cell, leaf, pad, go, on_leaf, &|_: &Arc<Tape>, _| None)
+}
+
 fn descend_inner<R, FL, FF>(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, leaf: i64, pad: f64, on_leaf: &FL, on_full: &FF) -> Vec<R>
 where
     R: Send,
     FL: Fn(&Arc<Tape>, Cell) -> Option<R> + Sync,
     FF: Fn(&Arc<Tape>, Cell) -> Option<R> + Sync,
 {
-    if !grid.meets(cell) {
+    descend_go(tape, ctx, grid, cell, leaf, pad, &|| true, on_leaf, on_full)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn descend_go<R, FL, FF>(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, leaf: i64, pad: f64, go: &(dyn Fn() -> bool + Sync), on_leaf: &FL, on_full: &FF) -> Vec<R>
+where
+    R: Send,
+    FL: Fn(&Arc<Tape>, Cell) -> Option<R> + Sync,
+    FF: Fn(&Arc<Tape>, Cell) -> Option<R> + Sync,
+{
+    if !grid.meets(cell) || !go() {
         return Vec::new();
     }
     let mut ch = vec![BOTH; tape.len()];
@@ -148,20 +168,20 @@ where
         b = b.map(|i| I::new(i.lo - g, i.hi + g));
     }
     let r = eval_interval(tape, ctx, b, Some(&mut ch));
-    // The shape is empty where f > 0 on the whole cell; cells whose minimum
-    // is exactly 0 are kept: they may hold surface (f == 0) that meshing
-    // needs.
-    if r.lo > 0.0 {
+    // Skipped where no surface meets the closed cell: one whose minimum is
+    // exactly 0 may hold surface on a face, which meshing and the
+    // optimizers' samples need.
+    if r.clear_of_surface() {
         return Vec::new();
     }
-    if r.hi < 0.0 {
+    if r.all_inside() {
         return on_full(tape, cell).into_iter().collect();
     }
     let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
     if cell.size <= leaf {
         return on_leaf(&sub, cell).into_iter().collect();
     }
-    let parts: Vec<Vec<R>> = cell.children().par_iter().map(|k| descend_inner(&sub, ctx, grid, *k, leaf, pad, on_leaf, on_full)).collect();
+    let parts: Vec<Vec<R>> = cell.children().par_iter().map(|k| descend_go(&sub, ctx, grid, *k, leaf, pad, go, on_leaf, on_full)).collect();
     parts.into_iter().flatten().collect()
 }
 

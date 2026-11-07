@@ -300,6 +300,51 @@ fn a_face_of_no_thickness_or_a_gap_that_thins_to_nothing_is_not_drawn_finer() {
 }
 
 #[test]
+fn a_toothed_belt_looped_round_a_large_box_is_drawn_whole() {
+    // A 0.63 mm back with 0.75 mm teeth, looped 300 mm across: by its box
+    // its res is 1.41, where its back falls between samples (it was drawn
+    // in 21 pieces, none reported). By its surface's area it is one piece.
+    let s = Scratch::new("glb-belt");
+    let belt = s.model(
+        "belt.ink",
+        "(import \"std\")\n(def back (subtract (cylinder-z 150 6) (cylinder-z 149.37 7)))\n\
+         (body belt (shape (min back (repeat-polar (move (box 0.75 1.2 6) 148.995 0 0) 471))))\n\
+         (body block (shape (box 400 400 20)))\n(assembly root (instance a belt (at (move 0 0 30))) (instance b block))\n",
+    );
+    let d = ink(["mesh", &belt, "--out", &s.path("belt.glb")]);
+    let o = d["objects"].as_array().unwrap().iter().find(|o| o["target"] == "root/a").unwrap();
+    assert!(o["shells"] == 1, "{}", pretty(o));
+}
+
+#[test]
+fn a_film_thinner_than_the_budget_affords_is_reported_and_its_glb_stays_within_the_budget() {
+    // A 0.02 mm film over a block, one body: drawing it takes res 0.02,
+    // which the budget cannot afford (making it finer and finer reached 8
+    // GB in 6 s). The GLB samples within the budget and says where the film
+    // may be.
+    let s = Scratch::new("glb-film");
+    let film = s.model("film.ink", "(import \"std\")\n(body b (shape (min (box 30 30 30) (move (box 40 40 0.02) 0 0 40))))\n");
+    let d = ink(["mesh", &film, "--out", &s.path("film.glb")]);
+    let o = &d["objects"][0];
+    let u = &o["unresolved"];
+    let warned = d["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("could not rule out material"));
+    assert!(f(o, "uniform_triangles") < 4.6e6 && f(u, "undecided") > 0.0 && warned, "{}", pretty(&d));
+}
+
+#[test]
+fn a_res_finer_than_the_budget_pays_for_is_refused_and_reported() {
+    // A ball 0.2 across beside a field whose bounds cannot prove it
+    // positive, at --res 0.0001: every brick of its box would be sampled,
+    // its search sized for that res (it reached 5.4 GB). Made where its
+    // grid fits the budget, its search a quarter as large each time.
+    let s = Scratch::new("glb-refused");
+    let m = s.model("loose.ink", "(import \"std\")\n(body b (shape (min (sphere 0.1) (max (box 1 1 1) (+ 0.000001 (- (* 2 x) (+ x x)))))))\n");
+    let d = ink(["mesh", &m, "--res", "0.0001", "--out", &s.path("loose.glb")]);
+    let u = &d["objects"][0]["unresolved"];
+    assert!(f(u, "refused") == 0.0001 && f(&d["objects"][0], "res") > 0.001 && !u["regions"].as_array().unwrap().is_empty(), "{}", pretty(&d["objects"][0]));
+}
+
+#[test]
 fn a_parts_mesh_made_in_one_model_is_found_in_another_and_progress_says_so() {
     let s = Scratch::new("glb-progress");
     s.model("ring.ink", "(import \"std\")\n(def band (subtract (cylinder-z 8 4) (cylinder-z 6 5)))\n(body ring (shape (min band (tag spoke (box 14 1 2)))))\n");

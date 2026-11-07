@@ -16,9 +16,10 @@ const FINEST: f64 = 1e-6;
 const RELATIVE: f64 = 1e-9;
 
 /// Why `claim` (its fields `roots`, to accuracy `tol`, at `res`) is
-/// outside ink's range, if it is.
-pub(crate) fn outside(v: &mut ModelView, claim: &Claim, roots: &[u32], tol: f64, res: Option<f64>) -> Option<String> {
-    let scope = scope(v);
+/// outside ink's range over `scope`, if it is: the view's (`scope`), or a
+/// motion's with what solves on t set ranged (motion::scope_over), or one
+/// moment of it.
+pub(crate) fn outside(v: &mut ModelView, claim: &Claim, roots: &[u32], tol: f64, res: Option<f64>, scope: Ctx) -> Option<String> {
     if let Some(why) = numbers(&v.doc, &scope, roots) {
         return Some(why);
     }
@@ -33,7 +34,7 @@ pub(crate) fn outside(v: &mut ModelView, claim: &Claim, roots: &[u32], tol: f64,
         Claim::Value(..) => {}
         _ => {
             for r in searched(v, claim, roots) {
-                let reach = if v.motion.is_some() { v.at_point(scope.clone(), |v| v.reach(r)) } else { v.reach(r) };
+                let reach = if scope != v.ctx { v.at_point(scope.clone(), |v| v.reach(r)) } else { v.reach(r) };
                 far = reach.lo.iter().chain(&reach.hi).fold(far, |m, c| m.max(c.abs()));
             }
             let length = v.doc.accuracy_quantity(claim) == Some(crate::units::Quantity::Length);
@@ -62,10 +63,7 @@ fn searched(v: &mut ModelView, claim: &Claim, roots: &[u32]) -> Vec<u32> {
         Claim::Empty(f) | Claim::Range(f) => vec![f],
         Claim::Clearance(a, b, d) if d > 0.0 => vec![a, b],
         Claim::Disjoint(a, b) | Claim::Overlaps(a, b) | Claim::Clearance(a, b, _) => vec![g.max(a, b)],
-        Claim::Subset(a, b) => {
-            let nb = g.neg(b);
-            vec![g.max(a, nb)]
-        }
+        Claim::Subset(a, b) => vec![crate::claims::subset_reach(a, b)],
         Claim::Touches(a, b) => vec![g.max(a, b), a, b],
         Claim::Integral { ref parts, .. } => parts.iter().map(|p| p.0).collect(),
         Claim::Mean { ref parts, .. } => parts.iter().map(|p| p.0).collect(),

@@ -24,11 +24,10 @@
 ; Pass criteria (ink assert over the file's t-span, one claim per call):
 ;   - proven: grashof, rocker-range-lo/hi (88.9 / 129.6), transmission-min
 ;     (> 40), transmission-tight (> 41.3), transmission-from-placements
-;     (> 41.3), loop-closes-x/y, crank-clears-rocker, coupler-clears-ground;
-;   - holds numerically (measured at steps: subset and overlaps claims, and
-;     shapes turned by rotate-z of t, not placed by an instance):
-;     pin-a-seated, pin-d-seated, pin-c-engaged, rel-pin-b-seated,
-;     rel-pin-c-seated, rel-joint-b-disjoint, rel-joint-c-disjoint;
+;     (> 41.3), loop-closes-x/y, crank-clears-rocker, coupler-clears-ground,
+;     every pin seated, pin-c-engaged, joint-c-clearance (the coupler
+;     searched turning about the rocker's pin, its drift off it charged),
+;     and the rel- claims;
 ;   - disproven: the three value controls, control-joint-c-clearance-disproven,
 ;     control-rel-joint-c-clearance-disproven;
 ;   - tools/32-solved.ink at t = 0, 0.11611, 0.25, 0.5, 0.66387, 0.75:

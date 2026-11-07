@@ -200,6 +200,23 @@ pub fn carried(g: &Graph, root: NodeId, centre: [f64; 2], drive: Option<Var>) ->
     Carried { invariant, coupling: a.coupling.map(|c| c.1) }
 }
 
+/// The centres `root`'s parts are written about, on each axis (x - c and
+/// y - c, a bare x or y about 0), ascending: where `carried` may find
+/// parts every turn about a vertical axis leaves unchanged.
+pub fn centres(g: &Graph, root: NodeId) -> [Vec<f64>; 2] {
+    let mut out = [vec![0.0], vec![0.0]];
+    for id in value_nodes(g, root) {
+        if let Some((i, c)) = about(g, id) {
+            out[i].push(c);
+        }
+    }
+    for c in &mut out {
+        c.sort_by(f64::total_cmp);
+        c.dedup();
+    }
+    out
+}
+
 /// x - c or y - c (x + -c ...): the axis (0 or 1) and c.
 fn about(g: &Graph, id: NodeId) -> Option<(usize, f64)> {
     let axis = |v: NodeId| match g.nodes[v as usize] {
@@ -251,11 +268,13 @@ fn fixed(g: &Graph, id: NodeId) -> bool {
 }
 
 /// A factor of a coefficient: a constant's magnitude (its bits) or an
-/// invariant node, or (`true`) its reciprocal under the value rules (0 at 0).
+/// invariant node, or (`true`) its reciprocal under the value rules (0 at 0);
+/// or pi / 180 exactly (UnOp::Rad; `true`: 180 / pi, UnOp::Deg).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Factor {
     Num(u64, bool),
     Node(NodeId, bool),
+    Pi180(bool),
 }
 
 /// A real coefficient as written: its sign times the product of its
@@ -417,6 +436,20 @@ impl Analysis<'_> {
                 (UnOp::Neg, Class::Phase(p)) => Class::Phase(p.scaled(I::point(-1.0))),
                 (UnOp::Square, Class::Lin(l)) => Class::Squares(Order::Every, vec![(false, l)]),
                 (UnOp::Cos | UnOp::Sin, Class::Phase(p)) => self.periodic(a, p),
+                // An exact scaling, one factor for every form it scales.
+                (UnOp::Rad | UnOp::Deg, Class::Lin(l)) => {
+                    let f = Factor::Pi180(op == UnOp::Deg);
+                    let times = |c: Option<Coef>| {
+                        c.map(|mut c| {
+                            c.factors.push(f);
+                            c.factors.sort_unstable();
+                            c
+                        })
+                    };
+                    Class::Lin(Lin { a: times(l.a), b: times(l.b), order: l.order })
+                }
+                (UnOp::Rad, Class::Phase(p)) => Class::Phase(p.scaled(interval::RAD)),
+                (UnOp::Deg, Class::Phase(p)) => Class::Phase(p.scaled(interval::DEG)),
                 _ => Class::Inv(NONE),
             },
             Node::Bin(op, a, b) => self.bin(op, a, b),
@@ -463,7 +496,10 @@ impl Analysis<'_> {
             BinOp::Atan2 => match (ca, cb) {
                 (Class::Lin(v), Class::Lin(u)) if u.pairs(&v) => {
                     let with = v.a == neg_coef(&u.b) && v.b == u.a;
-                    let fixed = [&u.a, &u.b].into_iter().flatten().all(|c| c.factors.iter().all(|f| matches!(f, Factor::Num(x, _) if f64::from_bits(*x) != 0.0)));
+                    let fixed = [&u.a, &u.b]
+                        .into_iter()
+                        .flatten()
+                        .all(|c| c.factors.iter().all(|f| matches!(f, Factor::Num(x, _) if f64::from_bits(*x) != 0.0) || matches!(f, Factor::Pi180(_))));
                     Class::Phase(Phase { k: I::point(if with { 1.0 } else { -1.0 }), drives: Vec::new(), order: u.order.gcd(v.order), fixed })
                 }
                 _ => Class::Inv(NONE),

@@ -31,9 +31,8 @@
     (at (rot-z (* (/ 180 pi) coupler-angle)) (move (* crank (cos crank-angle)) (* crank (sin crank-angle)) 3)))
   (instance rocker rocker-link (at (rot-z (* (/ 180 pi) rocker-angle)) (move ground 0 0))))
 
-; The coupler's far end meets the rocker's tip, closing the loop: an
-; estimate measured at moments over the turn, since a solve on t is found
-; at each moment, not over a range of them.
+; The coupler's far end meets the rocker's tip, closing the loop over the
+; whole turn: the solved angles are enclosed over each piece of it.
 (def coupler-end (vec (+ (* crank (cos crank-angle)) (* coupler (cos coupler-angle)))
                       (+ (* crank (sin crank-angle)) (* coupler (sin coupler-angle)))))
 (def rocker-tip (vec (+ ground (* rocker (cos rocker-angle))) (* rocker (sin rocker-angle))))

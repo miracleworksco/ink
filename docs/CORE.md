@@ -1,7 +1,7 @@
 # ink
 
-ink is an implicit geometry kernel for AI agents. A shape is a function
-f(x, y, z): negative inside, positive outside, zero on the surface.
+ink is an implicit geometry kernel for AI agents. A shape is where a
+function f(x, y, z) is negative; its surface is where f changes sign.
 Operations are arithmetic on these functions, so they cannot fail. Every
 spatial question becomes one: is this field ever negative, and where?
 
@@ -83,10 +83,10 @@ ink-core's interval arithmetic widens them by
 (crates/ink-core/src/interval.rs).
 
 Answers are about each shape as ink builds it: exactly its formula, except
-`polygon`. Each simplification in building one (merging nearly straight
+a `polygon` with arcs, rounds or drafts (one of straight edges is exactly
+its corners). Each simplification in building one (merging nearly straight
 corners, say) stays within a ten-millionth of its size of the drawn
-corners (10 nm on a 100 mm part), but merges add up: 8,192 nearly
-straight segments drifted 12 times that.
+corners (10 nm on a 100 mm part), but merges add up.
 
 ### Range
 
@@ -159,6 +159,7 @@ every client needs it, and it can be specified exactly.
 (- a b) (/ a b) (pow a b) (atan2 y x)
 (neg a) (abs a) (sqrt a) (square a) (exp a) (ln a)
 (sin a) (cos a) (tan a) (floor a)
+(deg->rad a) (rad->deg a)  degrees in radians and back, pi exact
 (emax a b ...)           Euclidean max: exact where the gradients are orthogonal
 (select c a b)           a where c < 0, else b
 (warp e fx fy fz [ft])   e with x, y, z (and t) replaced

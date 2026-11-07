@@ -26,6 +26,7 @@ fn std_shapes_show_their_turns() {
 (body twelve-eight (shape (min (repeat-polar (move (box 2 1 4) 10 0 0) 12) (repeat-polar (move (box 2 1 4) 12 0 0) 8))))
 (body six (shape (repeat-polar (move (sphere 1) 5 0 0) 6)))
 (body bolt-circle (shape (subtract (cylinder-z 20 5) (pattern-polar (move (cylinder-z 2 10) 15 0 0) 6))))
+(body round-in-radians (shape (- (+ (square (deg->rad x)) (square (deg->rad y))) 1)))
 "#;
     let want = [
         ("g7", Order::Of(7)),
@@ -40,6 +41,9 @@ fn std_shapes_show_their_turns() {
         ("six", Order::Of(6)),
         // Copies at float angles are not exactly symmetric in reals.
         ("bolt-circle", Order::Of(1)),
+        // x and y scaled alike by deg->rad's exact pi / 180 (Of(1) when
+        // the scaling was not a factor).
+        ("round-in-radians", Order::Every),
     ];
     let got = orders(src);
     for (name, o) in want {

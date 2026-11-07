@@ -9,16 +9,19 @@
 use ink_core::V3;
 use ink_core::eval::Ctx;
 use ink_core::tape::Tape;
-use ink_kernel::mesh::{Mesh, Unresolved, mesh_checked};
+use ink_kernel::mesh::{Limit, Mesh, Unresolved, mesh_checked};
 use ink_kernel::octree::Local;
 use std::sync::Arc;
 
 /// How a viewing mesh is made: sampled at `res`, simplified to `tol` (else
 /// `tol_per_res` of res), keeping triangles short along x for a strip bent
-/// round arcs as tight as `bend`.
+/// round arcs as tight as `bend`; sampled, and what it leaves out searched
+/// for, within `limit` (ink_kernel::mesh::mesh_checked: where its grid
+/// would take more bricks, it is made at twice the res, until it does not).
 #[derive(Clone, Copy, Debug)]
 pub struct How {
     pub res: f64,
+    pub limit: Limit,
     pub tol: Option<f64>,
     pub tol_per_res: f64,
     pub bend: Option<f64>,
@@ -97,104 +100,19 @@ const AREA_SAMPLES: f64 = 1000.0;
 /// The finest `surface` samples one: cells across its box's longest side.
 const AREA_CELLS: f64 = 2048.0;
 
-/// A shape's surface, as a view mesh of it is judged by (`surface`).
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct Surface {
-    /// Its area, all of it: what a mesh of it samples, about two triangles
-    /// per res squared.
-    pub area: f64,
-    /// Points where it bounds material (the field changes sign across
-    /// them), each with its unit outward normal and the area it stands
-    /// for. A face of no thickness (where a subtract leaves one) bounds
-    /// none: no res draws it.
-    pub bounds: Vec<(V3, V3, f64)>,
-}
-
-/// How far a mesh lies from a surface's boundary points (`Surface::off`).
-#[derive(Clone, Copy, Debug)]
-pub struct Off {
-    /// Their area-weighted mean distance from it: infinite where it has no
-    /// triangles, 0 where the surface bounds no material.
-    pub mean: f64,
-    /// The thickest the material is at those farther than its res from it
-    /// (0: none): a res under that draws them.
-    pub thickest: f64,
-}
-
-impl Surface {
-    /// How far `mesh`, sampled at res `h`, lies from the surface's
-    /// boundary points, and how thick the material it leaves out is (the
-    /// field `tape`'s).
-    pub fn off(&self, mesh: &Mesh, h: f64, tape: &Tape, ctx: &Ctx) -> Off {
-        use rayon::prelude::*;
-        let area: f64 = self.bounds.iter().map(|b| b.2).sum();
-        if area <= 0.0 {
-            return Off { mean: 0.0, thickest: 0.0 };
-        }
-        let tris: Vec<[V3; 3]> = mesh.tris.iter().map(|t| t.map(|i| mesh.verts[i as usize])).collect();
-        let near = crate::stl::MeshDistance::new(&tris);
-        let d: Vec<f64> = match near.triangles() {
-            0 => vec![f64::INFINITY; self.bounds.len()],
-            _ => self.bounds.par_iter().map(|b| near.distance(b.0).abs()).collect(),
-        };
-        let mean = d.iter().zip(&self.bounds).map(|(d, b)| d * b.2).sum::<f64>() / area;
-        let far: Vec<(V3, V3)> = d.iter().zip(&self.bounds).filter(|(d, _)| **d > h).map(|(_, b)| (b.0, b.1)).collect();
-        Off { mean, thickest: thickest(tape, ctx, &far, h) }
-    }
-}
-
-/// Samples a cell across, either way, on a line through the material.
-const ACROSS: i32 = 16;
-
-/// The thickest the material is behind boundary points (point, outward
-/// normal): at each, its shortest crossing along the normal and the three
-/// axes from a point just inside, from where the field crosses zero either
-/// side (between samples a sixteenth of `h` apart, up to `h` away), as the
-/// mesher measures material it leaves out (ink_kernel::mesh::Unresolved).
-fn thickest(tape: &Tape, ctx: &Ctx, pts: &[(V3, V3)], h: f64) -> f64 {
-    let step = h / ACROSS as f64;
-    let n = 2 * ACROSS as usize + 1;
-    let mut line = Vec::with_capacity(4 * n * pts.len());
-    for (p, u) in pts {
-        let q: V3 = std::array::from_fn(|a| p[a] - 1e-3 * h * u[a]);
-        for u in [*u, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
-            line.extend((-ACROSS..=ACROSS).map(|i| std::array::from_fn(|a| q[a] + step * i as f64 * u[a])));
-        }
-    }
-    let mut v = Vec::new();
-    ink_core::eval::eval_points(tape, ctx, &line, &mut v);
-    let inside = |f: f64| f < 0.0;
-    let across = |f: &[f64]| {
-        // The run of samples inside through the middle, and how far past
-        // each end of it the field crosses zero.
-        let (mut lo, mut hi) = (ACROSS as usize, ACROSS as usize);
-        if !inside(f[lo]) {
-            return 0.0;
-        }
-        while lo > 0 && inside(f[lo - 1]) {
-            lo -= 1;
-        }
-        while hi + 1 < f.len() && inside(f[hi + 1]) {
-            hi += 1;
-        }
-        let past = |a: usize, b: Option<usize>| b.map_or(0.0, |b| f[a] / (f[a] - f[b]));
-        step * ((hi - lo) as f64 + past(lo, lo.checked_sub(1)) + past(hi, (hi + 1 < f.len()).then_some(hi + 1)))
-    };
-    v.chunks(4 * n).map(|f| f.chunks(n).map(across).fold(f64::INFINITY, f64::min)).fold(0.0, f64::max)
-}
-
-/// A shape's `Surface` in `lo..hi` (which holds its material): one point
-/// per cell it crosses (ink_kernel::feature::surface), on it, with the area
-/// of its tangent plane in the cell, from 16 cells across, finer by the
-/// square root of the points wanted over those found (they go as the
-/// square of the cells across where the surface is resolved, more slowly
-/// where it is thinner than a cell: a long extrusion's profile, a belt),
-/// until about AREA_SAMPLES, up to AREA_CELLS across. Its area is a
-/// sample: a belt's runs read 44 to 82 k mm2 frame to frame against 50 k
-/// drawn, and a surface folded within a cell (a slotted extrusion's
-/// profile, a sheet's two sides) counts once there, a half to a third of
-/// it. Empty where none is found. Cached.
-pub fn surface(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3) -> Surface {
+/// The area of a shape's surface in `lo..hi` (which holds its material),
+/// all of it: what a mesh of it samples, about two triangles per res
+/// squared. From one point per cell it crosses
+/// (ink_kernel::feature::surface) with the area of its tangent plane in
+/// the cell, from 16 cells across, finer by the square root of the points
+/// wanted over those found (they go as the square of the cells across
+/// where the surface is resolved, more slowly where it is thinner than a
+/// cell: a long extrusion's profile, a belt), until about AREA_SAMPLES, up
+/// to AREA_CELLS across. A sample: a belt's runs read 44 to 82 k mm2 frame
+/// to frame against 50 k drawn, and a surface folded within a cell (a
+/// slotted extrusion's profile, a sheet's two sides) counts once there, a
+/// half to a third of it. 0 where none is found. Cached.
+pub fn surface(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3) -> f64 {
     ink_kernel::cache::memo_region(
         "seen surface",
         &[&**tape],
@@ -204,19 +122,10 @@ pub fn surface(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3) -> Surface {
         |ctx| {
             let mut cells: f64 = 16.0;
             loop {
-                let (found, h) = ink_kernel::feature::surface(tape, ctx, lo, hi, cells);
+                let (found, _) = ink_kernel::feature::surface(tape, ctx, lo, hi, cells);
                 let n = found.len() as f64;
                 if n >= AREA_SAMPLES / 2.0 || cells >= AREA_CELLS {
-                    // At most twice AREA_SAMPLES kept, each standing for those
-                    // skipped; of them, those with material on one side only.
-                    let every = found.len().div_ceil(2 * AREA_SAMPLES as usize).max(1);
-                    let kept: Vec<(V3, V3, f64)> = found.chunks(every).map(|c| (c[0].0, c[0].1, c.iter().map(|p| p.2).sum::<f64>())).collect();
-                    let e = 1e-3 * h;
-                    let probes: Vec<V3> = kept.iter().flat_map(|(p, u, _)| [-e, e].map(|s| std::array::from_fn(|a| p[a] + s * u[a]))).collect();
-                    let mut v = Vec::new();
-                    ink_core::eval::eval_points(tape, ctx, &probes, &mut v);
-                    let bounds = kept.into_iter().zip(v.chunks(2)).filter(|(_, f)| (f[0] < 0.0) != (f[1] < 0.0)).map(|(b, _)| b).collect();
-                    return Surface { area: found.iter().map(|p| p.2).sum::<f64>(), bounds };
+                    return found.iter().map(|p| p.2).sum::<f64>();
                 }
                 cells = (cells * (AREA_SAMPLES / n.max(1.0)).sqrt()).min(AREA_CELLS);
             }
@@ -227,7 +136,7 @@ pub fn surface(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3) -> Surface {
 fn key<'a>(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &'a Ctx, lo: V3, hi: V3, how: How) -> (Option<u128>, std::borrow::Cow<'a, Ctx>) {
     let tapes: Vec<&Tape> = std::iter::once(&**tape).chain(paint.iter().map(|t| &**t)).collect();
     ink_kernel::cache::ask_region("seen mesh", &tapes, ctx, (lo, hi), |fp| {
-        fp.f64(how.res).f64(how.tol.unwrap_or(-1.0)).f64(how.tol_per_res);
+        fp.f64(how.res).f64(how.limit.bricks as f64).f64(how.limit.search).f64(how.tol.unwrap_or(-1.0)).f64(how.tol_per_res);
         fp.f64(how.bend.unwrap_or(-1.0));
     })
 }
@@ -248,8 +157,18 @@ fn make(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &Ctx, lo: V3, hi: V3, how: H
 /// `make`, and the points its paint was read at and the instructions that
 /// cost (`Paint::reads`; the second is the mesh's `paint_work`).
 fn made(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &Ctx, lo: V3, hi: V3, how: How) -> (Viewed, [usize; 2]) {
-    let h = how.res;
-    let (fine, unresolved) = mesh_checked(tape, ctx, lo, hi, h);
+    // Coarser, its grid samples a quarter as much where it sees a surface,
+    // and so may its search.
+    let (mut h, mut limit) = (how.res, how.limit);
+    let (fine, mut unresolved) = loop {
+        match mesh_checked(tape, ctx, lo, hi, h, limit) {
+            Some(m) => break m,
+            None => (h, limit.search) = (2.0 * h, 0.25 * limit.search),
+        }
+    };
+    if h > how.res {
+        unresolved.refused = how.res;
+    }
     let tol = how.tol.unwrap_or(how.tol_per_res * h);
     let uniform_triangles = fine.tris.len();
     // The field near the surface, a tape per block of 8 cells.
@@ -266,7 +185,7 @@ fn made(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &Ctx, lo: V3, hi: V3, how: H
         (fine, 0.0)
     };
     let m = cut_paint(m, &paint, h);
-    let normals = corner_normals(&m, &|p: &[V3]| local.grads(p));
+    let normals = corner_normals(&m, &|p: &[V3]| local.grads(p), &creased(&local, ctx, &m.verts, tol.max(h * f64::EPSILON)));
     let paint_at = under(&m.verts);
     let reads = paint.reads.get();
     let v = Viewed { verts: m.verts, tris: m.tris, normals, paint_at, res: h, tol, uniform_triangles, paint_work: reads[1], moved, unresolved, cached: false };
@@ -709,18 +628,33 @@ fn cut_paint(mut m: Mesh, paint: &Paint, res: f64) -> Mesh {
     m
 }
 
-/// Corners within this angle of their vertex's normal are on a smooth
-/// surface there (cos 20 degrees): the triangles around a vertex of a mesh
-/// simplified to tol differ by far less on a smooth surface, and the
-/// sides of an edge by more.
-const SMOOTH_COS: f64 = 0.94;
+/// Whether the shape may crease or corner within `r` of each point: over
+/// the box `r` round it, the field's gradient may turn abruptly
+/// (Tape::may_crease, from its block's tape, `local`): two branches meet
+/// there whose gradients point apart. Elsewhere its normal turns smoothly
+/// there. A vertex of a mesh simplified to tol lies within tol of the
+/// surface it stands for: of a crease it was placed on, too.
+fn creased(local: &Local, ctx: &Ctx, pts: &[V3], r: f64) -> Vec<bool> {
+    use ink_core::interval::I;
+    use rayon::prelude::*;
+    pts.par_iter()
+        .map(|p| {
+            let b: [I; 3] = std::array::from_fn(|a| I::new(p[a] - r, p[a] + r));
+            let tape = local.tape_over(&b);
+            let mut ch = vec![ink_core::tape::BOTH; tape.len()];
+            ink_core::eval::eval_interval(&tape, ctx, b, Some(&mut ch));
+            tape.may_crease(&ch, &ink_core::eval::eval_interval_grad_every(&tape, ctx, b))
+        })
+        .collect()
+}
 
 /// The field's unit normal at each triangle's corners: at the vertex where
-/// the surface is smooth, so shading is continuous across triangles; else
-/// (the vertex is on an edge or corner, where the gradient takes one side)
-/// a quarter of the way in from the corner to the triangle's centre, the
-/// side the triangle lies on. Where the field has no gradient, the face's.
-fn corner_normals(m: &Mesh, grads: &dyn Fn(&[V3]) -> Vec<[f64; 4]>) -> Vec<[f32; 3]> {
+/// the shape is smooth (`creased`), so shading is continuous across
+/// triangles; else (the vertex is on a crease or corner, where the
+/// gradient takes one side) a quarter of the way in from the corner to the
+/// triangle's centre, the side the triangle lies on. Where the field has
+/// no gradient, the face's.
+fn corner_normals(m: &Mesh, grads: &dyn Fn(&[V3]) -> Vec<[f64; 4]>, creased: &[bool]) -> Vec<[f32; 3]> {
     let inner: Vec<V3> = m
         .tris
         .iter()
@@ -746,10 +680,8 @@ fn corner_normals(m: &Mesh, grads: &dyn Fn(&[V3]) -> Vec<[f64; 4]>) -> Vec<[f32;
             let (at_corner, vertex) = (&at_corner, &vertex);
             (0..3).map(move |c| {
                 let own = unit(at_corner[3 * f + c]).or(face);
-                let n = match (vertex[t[c] as usize], own) {
-                    (Some(v), Some(o)) if ink_core::v3::dot(v, o) >= SMOOTH_COS => Some(v),
-                    (v, o) => o.or(v),
-                };
+                let v = vertex[t[c] as usize];
+                let n = if creased[t[c] as usize] { own.or(v) } else { v.or(own) };
                 n.map_or([0.0, 0.0, 1.0], |n| n.map(|x| x as f32))
             })
         })
@@ -781,7 +713,7 @@ mod tests {
         // Every corner normal is its face's axis exactly, also at the
         // vertices on the cube's edges and corners (where the field's
         // gradient there would take one side).
-        let how = How { res: 0.2, tol: None, tol_per_res: 0.25, bend: None };
+        let how = How { res: 0.2, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
         let v = make(&cube(), &[], &Ctx::new(0.0, vec![]), [-1.2; 3], [1.2; 3], how);
         assert_eq!(v.normals.len(), 3 * v.tris.len());
         for (f, t) in v.tris.iter().enumerate() {
@@ -790,6 +722,121 @@ mod tests {
             for n in &v.normals[3 * f..3 * f + 3] {
                 let want = c[axis].signum() as f32;
                 assert!((n[axis] - want).abs() < 1e-5 && n.iter().map(|x| x * x).sum::<f32>() > 0.999, "{n:?} at {c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shading_turns_at_every_crease_however_shallow_and_nowhere_else() {
+        // A 24-sided prism: its sides meet at 15 degrees. Each corner of a
+        // side's triangles takes the normal of a side it is on: at a vertex
+        // on a crease, the side its triangle lies on (one side's gradient
+        // there would shade the next side 15 degrees off); elsewhere, the
+        // vertex's side or (a triangle simplified across a crease, within
+        // tol of both sides) its triangle's.
+        let mut g = Graph::new();
+        let [x, y, z] = [Var::X, Var::Y, Var::Z].map(|v| g.var(v));
+        let step = std::f64::consts::TAU / 24.0;
+        let sides: Vec<_> = (0..24)
+            .map(|k| {
+                let a = (k as f64 + 0.5) * step;
+                let (c, s) = (g.constant(a.cos()), g.constant(a.sin()));
+                let (cx, sy) = (g.mul(c, x), g.mul(s, y));
+                g.add(cx, sy)
+            })
+            .collect();
+        let r = sides.into_iter().reduce(|a, b| g.max(a, b)).unwrap();
+        let nz = g.neg(z);
+        let az = g.max(z, nz);
+        let (one, half) = (g.constant(1.0), g.constant(0.5));
+        let (r, az) = (g.sub(r, one), g.sub(az, half));
+        let f = g.max(r, az);
+        let how = How { res: 0.05, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
+        let v = make(&Arc::new(Tape::new(&g, f)), &[], &Ctx::new(0.0, vec![]), [-1.2; 3], [1.2; 3], how);
+        // The side a point is on, and whether it is on a crease.
+        let side = |p: V3| {
+            let s = p[1].atan2(p[0]) / step;
+            (s.floor() as i64, (s - s.round()).abs() < 1e-6)
+        };
+        let mut checked = 0;
+        for (f, t) in v.tris.iter().enumerate() {
+            let p = t.map(|i| v.verts[i as usize]);
+            let c: V3 = std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k]) / 3.0);
+            if c[2].abs() > 0.45 {
+                continue;
+            }
+            for (n, q) in v.normals[3 * f..3 * f + 3].iter().zip(p) {
+                let inner = side(std::array::from_fn(|a| q[a] + 0.25 * (c[a] - q[a]))).0;
+                let on = |k: i64| {
+                    let a = (k as f64 + 0.5) * step;
+                    n[0] as f64 * a.cos() + n[1] as f64 * a.sin() > 0.99999
+                };
+                let ok = match side(q) {
+                    (k, false) => on(k) || on(inner),
+                    _ => on(inner),
+                };
+                assert!(ok, "{n:?} at {q:?}, its triangle on side {inner}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "{checked}");
+        // A ball: smooth, so each vertex has one normal, its own.
+        let mut g = Graph::new();
+        let [x, y, z] = [Var::X, Var::Y, Var::Z].map(|v| g.var(v));
+        let (xx, yy, zz) = (g.mul(x, x), g.mul(y, y), g.mul(z, z));
+        let (s, one) = (g.add(xx, yy), g.constant(1.0));
+        let s = g.add(s, zz);
+        let s = g.un(ink_core::graph::UnOp::Sqrt, s);
+        let f = g.sub(s, one);
+        let v = make(&Arc::new(Tape::new(&g, f)), &[], &Ctx::new(0.0, vec![]), [-1.2; 3], [1.2; 3], how);
+        let mut at: std::collections::HashMap<u32, [f32; 3]> = Default::default();
+        for (f, t) in v.tris.iter().enumerate() {
+            for (c, &i) in t.iter().enumerate() {
+                assert_eq!(*at.entry(i).or_insert(v.normals[3 * f + c]), v.normals[3 * f + c], "vertex {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_abs_creases_shading_and_a_min_of_one_surface_twice_does_not() {
+        // An octahedron, |x| + |y| + |z| - 1: its faces meet where an abs
+        // turns, at 109 degrees; each corner takes its face's normal.
+        let mut g = Graph::new();
+        let axes = [Var::X, Var::Y, Var::Z].map(|v| g.var(v));
+        let a = axes.map(|a| g.un(ink_core::graph::UnOp::Abs, a));
+        let (xy, one) = (g.add(a[0], a[1]), g.constant(1.0));
+        let xyz = g.add(xy, a[2]);
+        let f = g.sub(xyz, one);
+        let how = How { res: 0.1, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
+        let v = make(&Arc::new(Tape::new(&g, f)), &[], &Ctx::new(0.0, vec![]), [-1.2; 3], [1.2; 3], how);
+        for (fi, t) in v.tris.iter().enumerate() {
+            let p = t.map(|i| v.verts[i as usize]);
+            let c: V3 = std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k]) / 3.0);
+            if c.iter().any(|x| x.abs() < 0.04) {
+                continue;
+            }
+            for (n, q) in v.normals[3 * fi..3 * fi + 3].iter().zip(p) {
+                let inner: V3 = std::array::from_fn(|k| q[k] + 0.25 * (c[k] - q[k]));
+                let dot: f64 = n.iter().zip(inner).map(|(n, x)| *n as f64 * x.signum() / 3f64.sqrt()).sum();
+                assert!(dot > 0.99, "{n:?} at {q:?}");
+            }
+        }
+        // A ball as min(f, 2 f): the min never decides, but both sides'
+        // normals are one: each vertex has one normal.
+        let mut g = Graph::new();
+        let [x, y, z] = [Var::X, Var::Y, Var::Z].map(|v| g.var(v));
+        let (xx, yy, zz) = (g.mul(x, x), g.mul(y, y), g.mul(z, z));
+        let (s, one, two) = (g.add(xx, yy), g.constant(1.0), g.constant(2.0));
+        let s = g.add(s, zz);
+        let s = g.un(ink_core::graph::UnOp::Sqrt, s);
+        let f = g.sub(s, one);
+        let twice = g.mul(f, two);
+        let f = g.min(f, twice);
+        let v = make(&Arc::new(Tape::new(&g, f)), &[], &Ctx::new(0.0, vec![]), [-1.2; 3], [1.2; 3], how);
+        let mut at: std::collections::HashMap<u32, [f32; 3]> = Default::default();
+        for (f, t) in v.tris.iter().enumerate() {
+            for (c, &i) in t.iter().enumerate() {
+                assert_eq!(*at.entry(i).or_insert(v.normals[3 * f + c]), v.normals[3 * f + c], "vertex {i}");
             }
         }
     }
@@ -812,7 +859,7 @@ mod tests {
         let s = g.max(s, zero);
         let s = g.min(s, one);
         let paint = vec![Arc::new(Tape::new(&g, s))];
-        let how = How { res: 0.1, tol: None, tol_per_res: 0.25, bend: None };
+        let how = How { res: 0.1, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
         let ctx = Ctx::new(0.0, vec![]);
         let v = make(&tape, &paint, &ctx, [-1.2; 3], [1.2; 3], how);
         let p = |q: V3| ink_core::eval::eval_point(&paint[0], &ctx, q);
@@ -850,7 +897,7 @@ mod tests {
         let s = g.max(s, zero);
         let s = g.min(s, one);
         let paint = vec![Arc::new(Tape::new(&g, s))];
-        let how = How { res: 0.2, tol: None, tol_per_res: 0.25, bend: None };
+        let how = How { res: 0.2, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
         let ctx = Ctx::new(0.0, vec![]);
         let v = make(&tape, &paint, &ctx, [-1.2; 3], [1.2; 3], how);
         let p = |q: V3| ink_core::eval::eval_point(&paint[0], &ctx, q);
@@ -907,7 +954,7 @@ mod tests {
         let shape = balls.iter().copied().reduce(|a, b| g.min(a, b)).unwrap();
         let tape = Arc::new(Tape::new(&g, shape));
         let paint: Vec<Arc<Tape>> = channels.iter().map(|&c| Arc::new(Tape::new(&g, c))).collect();
-        let how = How { res: 0.1, tol: None, tol_per_res: 0.25, bend: None };
+        let how = How { res: 0.1, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
         let (v, [read, work]) = made(&tape, &paint, &Ctx::new(0.0, vec![]), [-6.8, -6.8, -0.8], [6.8, 6.8, 0.8], how);
         let per_value = work as f64 / read as f64;
         assert!(per_value < paint[0].len() as f64 / 4.0, "{per_value} instructions a paint value, of the paint's {}", paint[0].len());
@@ -945,7 +992,7 @@ mod tests {
         let s = g.max(s, zero);
         let s = g.min(s, one);
         let (tape, block, paint) = (Arc::new(Tape::new(&g, body)), Tape::new(&g, block), vec![Arc::new(Tape::new(&g, s))]);
-        let how = How { res: 0.1, tol: None, tol_per_res: 0.0, bend: None };
+        let how = How { res: 0.1, limit: Limit::GRID, tol: None, tol_per_res: 0.0, bend: None };
         let ctx = Ctx::new(0.0, vec![]);
         let v = make(&tape, &paint, &ctx, [-1.2, -1.2, -1.2], [1.7, 1.2, 1.2], how);
         let on_block = v.verts.iter().zip(&v.paint_at).filter(|(q, _)| ink_core::eval::eval_point(&block, &ctx, **q).abs() < 0.02 && q[0] > 1.05);
@@ -994,7 +1041,7 @@ mod tests {
         let s = g.max(s, zero);
         let s = g.min(s, one);
         let (tape, paint) = (Arc::new(Tape::new(&g, body)), vec![Arc::new(Tape::new(&g, s))]);
-        let how = How { res: 2.0, tol: None, tol_per_res: 0.0, bend: None };
+        let how = How { res: 2.0, limit: Limit::GRID, tol: None, tol_per_res: 0.0, bend: None };
         let ctx = Ctx::new(0.0, vec![]);
         let v = make(&tape, &paint, &ctx, [-22.0, -22.0, -4.0], [22.0, 22.0, 4.0], how);
         let mut faces = [0, 0];

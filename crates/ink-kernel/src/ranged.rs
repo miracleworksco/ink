@@ -86,18 +86,36 @@ impl Proof {
 /// `opts.floor()`, or to `opts.res` where finer, in one search: the
 /// question asked is the one answered. Pure: proofs can run in parallel.
 pub fn prove(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, opts: &ProofOptions) -> Proof {
-    let p: Proof = crate::cache::memo_region("prove", &[tape], ctx, (lo, hi), |fp| opts.fingerprint(fp), |c| prove_now(tape, c, lo, hi, opts));
+    prove_except(tape, None, ctx, lo, hi, opts)
+}
+
+/// `prove`, of "inside a and not inside b" where `except` is given (`tape`
+/// max(a, -b): query::Except).
+pub fn prove_except(tape: &Arc<Tape>, except: Option<&query::Except>, ctx: &Ctx, lo: V3, hi: V3, opts: &ProofOptions) -> Proof {
+    let tapes = asked(tape, except);
+    let p: Proof = crate::cache::memo_region("prove", &tapes, ctx, (lo, hi), |fp| opts.fingerprint(fp), |c| prove_now(tape, except, c, lo, hi, opts));
     Proof { verdict: query::at_moment(p.verdict, ctx, &[tape]), ..p }
 }
 
-/// `prove`'s key in the answer cache (None: not cached).
-pub fn prove_key(tape: &Tape, ctx: &Ctx, lo: V3, hi: V3, opts: &ProofOptions) -> Option<u128> {
-    crate::cache::ask_region("prove", &[tape], ctx, (lo, hi), |fp| opts.fingerprint(fp)).0
+/// The tapes a question reads, for its key.
+fn asked<'a>(tape: &'a Tape, except: Option<&'a query::Except>) -> Vec<&'a Tape> {
+    std::iter::once(tape).chain(except.into_iter().flat_map(|e| [&*e.a, &*e.b])).collect()
 }
 
-fn prove_now(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, opts: &ProofOptions) -> Proof {
+/// `prove_except`'s key in the answer cache (None: not cached).
+pub fn prove_key(tape: &Tape, except: Option<&query::Except>, ctx: &Ctx, lo: V3, hi: V3, opts: &ProofOptions) -> Option<u128> {
+    crate::cache::ask_region("prove", &asked(tape, except), ctx, (lo, hi), |fp| opts.fingerprint(fp)).0
+}
+
+fn prove_now(tape: &Arc<Tape>, except: Option<&query::Except>, ctx: &Ctx, lo: V3, hi: V3, opts: &ProofOptions) -> Proof {
     let tape = &query::focus(tape, ctx, lo, hi);
-    query::prove_empty(tape, ctx, lo, hi, opts.res, opts.floor(), opts.tol)
+    match except {
+        None => query::prove_empty(tape, ctx, lo, hi, opts.res, opts.floor(), opts.tol),
+        Some(e) => {
+            let e = query::Except { a: query::focus(&e.a, ctx, lo, hi), b: query::focus(&e.b, ctx, lo, hi) };
+            query::prove_empty_except(tape, &e, ctx, lo, hi, opts.res, opts.floor(), opts.tol)
+        }
+    }
 }
 
 /// A comparison against a bound: `value cmp bound`.

@@ -137,8 +137,10 @@ fn pair_json(p: &Pair, rows: &Rows) -> J {
     if !p.whole && matches!(p.answer, Answer::Unsolved(_)) {
         r["unbounded"] = json!(true);
     }
+    // A moving pair's claim says what it read inexactly as decided (a
+    // solve on t ranged with t is certified there).
     let mut f = json!({});
-    inexact_fields(&mut f, &p.inexact, names);
+    inexact_fields(&mut f, if let Answer::Moving { check } = &p.answer { &check.inexact } else { &p.inexact }, names);
     f["pair"] = json!(p.items);
     if !p.zones.is_empty() {
         f["contact_zones"] = J::Array(p.zones.iter().map(|&z| rows.zones[z].clone()).collect());
