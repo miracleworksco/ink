@@ -244,3 +244,32 @@ fn a_promise_is_not_taken_where_its_params_overflow() {
         assert_eq!(s["gap"], "unknown", "--param {p}");
     }
 }
+
+/// A value over ranged params left unknown says where its proof stopped
+/// (the refinement limit: each ranged param halved 32 times) and where its
+/// hunt for a violation did (its cap), never that no halving decides it:
+/// narrower ranges prove it. It read "stays undecided however finely
+/// halved".
+#[test]
+fn a_value_left_unknown_says_where_its_proof_and_its_hunt_stopped() {
+    let s = Scratch::new("value-limits");
+    let model = |name: &str, default: &str, tol: &str| {
+        s.model(
+            name,
+            &format!(
+                "(import \"std\")\n(param p {default} (tol {tol}))\n(param q {default} (tol {tol}))\n\
+(assert near (value (max (+ (- p q) 1e-11) (+ (- q p) 1e-11)) > 0) (accuracy 1e-15))\n"
+            ),
+        )
+    };
+    let d = s.ink(["assert", &model("wide.ink", "0.5", "-0.5 0.5")]).ok();
+    let a = &d["asserts"][0];
+    let hint = a["hint"].as_str().unwrap_or("");
+    assert_eq!(verdict(a), "unknown", "{}", pretty(a));
+    assert!(hint.contains("refinement limit (32 halvings of each ranged param)") && !hint.contains("however finely"), "{hint}");
+    assert!(a["hunt"]["cells"].as_u64().is_some_and(|n| n > 0) && a["hunt"]["stopped_by"] == "cap", "{}", pretty(a));
+    assert!(hint.contains("without finding a certified violation, stopped at its cap"), "{hint}");
+    // Ranges as narrow as the 32 halvings reach prove it.
+    let d = s.ink(["assert", &model("narrow.ink", "0", "0 2.3283064365386963e-10")]).ok();
+    assert_eq!(verdict(&d["asserts"][0]), "holds", "{}", pretty(&d));
+}

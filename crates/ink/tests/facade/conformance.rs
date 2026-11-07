@@ -29,7 +29,7 @@ fn tapes(cases: &J, expressions: &[String]) -> HashMap<String, Tape> {
         src.push_str(&format!("\n(def conformance_{i} {e})"));
     }
     let doc = ink::load_str(&src, "conformance", Path::new(ROOT)).unwrap();
-    let Value::Field(sampled) = doc.def("sampled").unwrap() else { panic!("sampled must be a field") };
+    let Value::Field(sampled, _) = doc.def("sampled").unwrap() else { panic!("sampled must be a field") };
     let fixture = Tape::new(&doc.g, *sampled);
     let g = &fixture.grids[0];
     let expected = &cases["grid"];
@@ -44,7 +44,7 @@ fn tapes(cases: &J, expressions: &[String]) -> HashMap<String, Tape> {
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let Value::Field(f) = doc.def(&format!("conformance_{i}")).unwrap() else { panic!("{e} is not a field") };
+            let Value::Field(f, _) = doc.def(&format!("conformance_{i}")).unwrap() else { panic!("{e} is not a field") };
             (e.clone(), Tape::new(&doc.g, *f))
         })
         .collect()

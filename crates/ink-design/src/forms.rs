@@ -59,7 +59,7 @@ impl Package for Design {
     fn metrics(&self) -> &'static [(&'static str, &'static str)] {
         &[
             ("min-thickness", "the thinnest wall of a shape (mm), by rays from surface samples: (min-thickness part > t); of (air-around part m), the narrowest gap"),
-            ("cavities", "how many enclosed voids a shape has (air no path leads out of), from its mesh: (cavities part < 1)"),
+            ("cavities", "how many enclosed voids a shape has (air no path leads out of), by proof: (cavities part < 1)"),
         ]
     }
 
@@ -69,6 +69,10 @@ impl Package for Design {
 
     fn shape_metrics(&self) -> &'static [&'static str] {
         &["min-thickness", "cavities"]
+    }
+
+    fn exclusions(&self) -> &'static [(&'static str, &'static str)] {
+        &[("undecided-cells", "voids a count's finest cells could not rule out")]
     }
 
     fn shape_metric(&self, v: &mut crate::lang::view::ModelView, metric: &str, f: NodeId, res: Option<f64>) -> R<Measured> {

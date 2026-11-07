@@ -4,7 +4,7 @@
 use crate::{Optimize, Optimized, Trace};
 use ink_lang::InkError;
 use ink_lang::claims::progress;
-use ink_lang::command::{Args, Command, ParamArgs, extend, form_named, n, param_args, param_name, solved};
+use ink_lang::command::{Args, Command, extend, form_named, n, param_args, param_name, solved};
 use ink_lang::view::ModelView;
 use serde_json::{Value as J, json};
 
@@ -41,7 +41,11 @@ fn cmd_optimize(s: &mut ModelView, a: &Args) -> Result<J, InkError> {
         return Err(InkError::msg(format!("--param {k}: '{k}' is (ranged {lo} {hi}), a range of the question: optimize verifies its design over every value of it")));
     }
     let o = crate::run_optimize(s, &name, budget, a)?;
-    let mut out = optimized_json(&o, &o.answer_params, &replay(&o, &given, a.get("t")));
+    let names: Vec<String> = o.vary.iter().map(|v| v.0.clone()).collect();
+    let mut out = optimized_json(&o, &o.answer_params, &crate::driver::Replay::of(a)?.apply(&names, &o.design));
+    if !o.failed.is_empty() {
+        out["failed_designs"] = crate::driver::failed_json(&names, &o.failed);
+    }
     // Gradient (the method of moving asymptotes) where every derivative the
     // run needs is exact at the start design, else derivative-free (bounded
     // Nelder-Mead with a constraint penalty).
@@ -62,23 +66,6 @@ fn cmd_optimize(s: &mut ModelView, a: &Args) -> Result<J, InkError> {
     out["accuracy"] = J::Null;
     extend(&mut out, context);
     Ok(out)
-}
-
-/// `apply`: the options that ask ink assert of the design returned what
-/// its verification asked (command::claim_scope): each param's value as
-/// the run gave it (a pin, name=v:v, kept a pin: its tolerance dropped),
-/// the varied ones' at the design, exactly; and the run's moment, --t.
-fn replay(o: &Optimized, given: &ParamArgs, t: Option<&str>) -> String {
-    let pin = |k: &str| given.pinned.iter().any(|p| p == k);
-    let value = |k: &str, x: f64| if pin(k) { format!("{k}={x}:{x}") } else { format!("{k}={x}") };
-    let fixed = given.values.iter().filter(|(k, _)| !o.vary.iter().any(|v| v.0 == *k)).map(|(k, x)| value(k, *x));
-    let varied = o.vary.iter().zip(&o.design).map(|(v, x)| value(&v.0, *x));
-    let flag: Vec<String> = fixed.chain(varied).collect();
-    let mut apply = format!("--param {}", flag.join(","));
-    if let Some(t) = t {
-        apply += &format!(" --t {t}");
-    }
-    apply
 }
 
 /// The answer: each requirement with the search's measure of it

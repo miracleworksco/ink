@@ -150,8 +150,7 @@ fn pair_json(p: &Pair, rows: &Rows) -> J {
         f["relations"] = J::Array(kinds);
     }
     extend(&mut r, f);
-    // A claim's hint offers (accuracy x), which interfere does not take:
-    // a pair is checked finer by a claim of its own.
+    // A claim's hint offers (accuracy x): interfere's is --accuracy.
     if let Some(h) = r["hint"].as_str().filter(|h| h.contains(ASK_FINER)) {
         r["hint"] = json!(h.replace(ASK_FINER, PAIR_FINER));
     }
@@ -159,7 +158,7 @@ fn pair_json(p: &Pair, rows: &Rows) -> J {
 }
 
 /// What a pair's hint says instead of a claim's (answer::ASK_FINER).
-const PAIR_FINER: &str = "interfere's accuracy is fixed. To look finer, claim the pair: (assert NAME (disjoint a b) (accuracy x)) with a smaller x";
+const PAIR_FINER: &str = "A smaller --accuracy looks finer";
 
 pub(crate) fn cmd_interfere(s: &mut Session, a: &Args) -> Result<J, InkError> {
     // What the target places, resolved once (Doc::target): a definition
@@ -173,7 +172,13 @@ pub(crate) fn cmd_interfere(s: &mut Session, a: &Args) -> Result<J, InkError> {
         None => interfere::default_items(s)?,
     };
     let res = a.cell("res")?;
-    let plan = interfere::plan(s, all, target.as_ref(), res)?;
+    let accuracy = match a.f64("accuracy")? {
+        Some(x) if !(x > 0.0 && x.is_finite()) => return Err(InkError::msg(format!("--accuracy expects a depth above 0, got '{}'", a.get("accuracy").unwrap_or_default()))),
+        // As a claim's (accuracy x) is: a number past ink's range is refused.
+        Some(x) if ink::graph::wild(x) => return Err(InkError::msg(format!("--accuracy {x:e} is outside ink's range (0, or 1e-100 to 1e100 in size)"))),
+        x => x,
+    };
+    let plan = interfere::plan(s, all, target.as_ref(), res, accuracy)?;
     let names = param_names(s);
     let rows = Rows {
         names: &names,
@@ -183,7 +188,7 @@ pub(crate) fn cmd_interfere(s: &mut Session, a: &Args) -> Result<J, InkError> {
     };
     // The answer's fields besides its pairs, reported first: a run stopped
     // before its answer (ink mcp) gives them with the pairs done.
-    let mut out = json!({"accuracy": n(interfere::ACCURACY), "accuracy_why": interfere::WHY, "pairs_apart_by_bounding_boxes": plan.apart});
+    let mut out = json!({"accuracy": n(plan.accuracy), "pairs_apart_by_bounding_boxes": plan.apart});
     if !plan.unsolved_items.is_empty() {
         out["unsolved_items"] = J::Array(plan.unsolved_items.iter().map(|(it, e)| json!({"item": it, "unavailable": e.message})).collect());
     }
@@ -287,7 +292,7 @@ mod tests {
             );
             let doc = ink::load_str(&src, "attained", Path::new(".")).unwrap();
             let field = |name: &str| match doc.def(name).unwrap() {
-                Value::Field(f) => *f,
+                Value::Field(f, _) => *f,
                 _ => panic!("{name}"),
             };
             let (a, b) = (field("a"), field("b"));

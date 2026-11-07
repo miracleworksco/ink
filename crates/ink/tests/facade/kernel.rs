@@ -30,7 +30,7 @@ fn published_mass_derives_density_at_the_defaults_and_the_moment() {
     let items = d.items("root").unwrap();
     // The claim reads the density: provided at every context (Doc::want).
     for (w, time) in [(20.0, 0.0), (20.0, 5.0), (40.0, 5.0)] {
-        let ctx = d.ctx(&[("w".into(), w)], time).unwrap();
+        let ctx = d.ctx(&[("w".into(), w.into())], time).unwrap();
         for it in &items {
             let (rho, why) = ink::materials::mass_density(&mut d, &format!("'{}'", it.label), &it.attrs, None).unwrap().unwrap();
             assert!(why.starts_with("published mass of 'b' over its volume") && why.contains("centroid"), "{why}");
@@ -48,8 +48,21 @@ fn published_mass_derives_density_at_the_defaults_and_the_moment() {
     }
     // A mass over what has no bounded volume, or lighter than what its
     // bodies with their own density weigh, is refused where it is weighed,
-    // and by check (ModelView::weigh_all), not at load.
+    // and by check (ModelView::mass_refusals), not at load. Check finds it
+    // without measuring the volume the density shares (most of a small
+    // part's check): a mass it does not refuse is left unmeasured, and one
+    // whose own-density bodies could weigh it (their density's bound over
+    // their box) is measured there to decide.
     for (src, why) in [
+        ("(body b (shape (box 10 10 10)) (attr mass 199))", ""),
+        // A box with no point inside (the field touches 0 at the origin
+        // alone): no volume, which bounds alone do not show.
+        ("(body h (shape (max (box 10 10 10) (abs x) (abs y) (abs z)))) (assembly root (attr mass 199) (instance h h))", "positive finite volume"),
+        (
+            "(body s (shape (box 20 20 20)) (attr density 7.85g/cm3)) (body c (shape (move (box 5 5 5) 0 0 20)))
+                         (assembly root (attr mass 70g) (instance s s) (instance c c))",
+            "",
+        ),
         ("(body b (shape x) (attr mass 199))", "needs bounded bodies"),
         (
             "(body s (shape (box 20 20 20)) (attr density 7.85g/cm3)) (body c (shape (move (box 5 5 5) 0 0 20)))
@@ -59,8 +72,14 @@ fn published_mass_derives_density_at_the_defaults_and_the_moment() {
     ] {
         let d = doc(src);
         let ctx = d.ctx(&[], 0.0).unwrap();
-        let failed = ink::view::ModelView::new(d, ctx).weigh_all();
-        assert!(failed.len() == 1 && failed[0].1.message.contains(why), "{failed:?}");
+        let mut v = ink::view::ModelView::new(d, ctx);
+        let failed = v.mass_refusals();
+        let density = v.doc.published.last().unwrap().0;
+        if why.is_empty() {
+            assert!(failed.is_empty() && v.doc.unmeasured_param(density), "{src}: {failed:?}");
+        } else {
+            assert!(failed.len() == 1 && failed[0].1.message.contains(why), "{failed:?}");
+        }
     }
 }
 
@@ -111,28 +130,39 @@ fn numerical_claims_cover_only_the_scope_their_methods_evaluate() {
     assert!(r.asserts[0].check.status == Status::Fails && r.asserts[0].check.accuracy.is_none(), "{:?}", r.asserts[0]);
 }
 
-/// Enclosed voids are counted from the mesh `ink components` makes, and
-/// only where it says something: a sealed void behind a skin thinner than
-/// the first mesh's cells is counted (the mesh is made again finer where
-/// it leaves material out; at box / 160 it read 0), and the count is
-/// unknown where the mesh still misses a gap thinner than its cells (a
-/// 0.2 mm slit into the void, about a cell centre at (res 1): read as 1
-/// void, it closed over), where the mesh is not closed (a bearing's balls
-/// seated in its races' grooves: shells read as voids), over a
-/// ranged param, and on a shape not proven bounded.
+/// Enclosed voids are counted by proof, never from samples: a void sealed
+/// by a skin a fifth of the first mesh's cells thick is found however
+/// steep its field (the mesh read 0 voids for `(* 30 skinned)`, its corner
+/// values past its distance test) and wherever the skin falls between cell
+/// centres (`big`: the mesh read 0); the count is exact where it decides
+/// (two voids; none once the hole is left open; none past a 0.2 mm slit at
+/// (res 1)); and it is bounds where cells cannot part two airs: a hole
+/// flush with the void's ceiling (f = 0 across its mouth) and a bearing's
+/// balls seated in its races' grooves (surfaces that touch) are unknown,
+/// as a count over a ranged param and of a shape not proven bounded are.
 #[test]
-fn cavities_are_counted_only_where_the_mesh_resolves_them() {
+fn cavities_are_counted_by_proof() {
     use ink::claims::{ClaimOptions, Status, run_asserts};
     use ink::view::ModelView;
     let d = doc("(param wall 3 (tol 0 0.5))
         (def outer (move (box 100 100 100) 0 0 50))
-        (def skinned (min (subtract outer (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101))
-                            (extrude-z (circle-2d 6) 98.5 98.8)))
+        (def opened (subtract outer (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 96 101)))
+        (def flush (subtract outer (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101)))
+        (def skinned (min opened (extrude-z (circle-2d 6) 98.5 98.8)))
+        (def big (min (subtract (move (box 200 200 200) 0 0 100) (move (box 190 190 190) 0 0 100) (extrude-z (circle-2d 10) 190 201))
+                        (extrude-z (circle-2d 12) 196 196.3)))
+        (def two (subtract (box 20 20 20) (move (box 6 16 16) -4 0 0) (move (box 6 16 16) 4 0 0)))
         (def slit (subtract (box 20 20 20) (box 12 12 12) (move (box 0.2 4 20) 0.5 0 10)))
         (assert sealed-behind-skin (cavities skinned < 1))
+        (assert steep-empties (cavities (* 30 skinned) < 1))
+        (assert skin-between-centres (cavities big < 1))
+        (assert left-open (cavities opened < 1))
+        (assert two-voids (cavities two < 3))
+        (assert not-one (cavities two < 2))
         (assert slit-at-res-1 (cavities slit < 1) (res 1))
+        (assert flush-mouth (cavities flush < 1))
         (def races (subtract (extrude-z (ring-2d 7 13) -2 2) (extrude-z (ring-2d 9.5 10.5) -3 3) (torus-z 10 2)))
-        (assert open-mesh (cavities (min races (pattern-polar (move (sphere 2) 10 0 0) 8)) < 1))
+        (assert seated-balls (cavities (min races (pattern-polar (move (sphere 2) 10 0 0) 8)) < 1))
         (assert ranged (cavities (subtract (box 20 20 20) (box (* 2 wall) 4 4)) < 1))
         (assert unbounded (cavities (subtract (- z) (sphere 2)) < 1))");
     let ctx = d.ctx(&[], 0.0).unwrap();
@@ -140,12 +170,37 @@ fn cavities_are_counted_only_where_the_mesh_resolves_them() {
     let spans = v.declared_spans().unwrap();
     v.set_param_spans(&spans).unwrap();
     let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
-    let own: Vec<&ink::claims::AssertResult> = r.asserts.iter().collect();
-    let s: Vec<Status> = own.iter().map(|a| a.check.status).collect();
-    assert_eq!(s, [Status::Fails, Status::Unknown, Status::Unknown, Status::Unknown, Status::Unknown], "{:?}", own.iter().map(|a| (&a.name, a.check.status)).collect::<Vec<_>>());
-    assert!(own[..3].iter().all(|a| a.check.accuracy.is_none()));
-    let ink::claims::Evidence::Metric { measured, .. } = &own[2].check.evidence else { panic!("{:?}", own[2]) };
-    assert!(measured.value.as_ref().is_err_and(|e| e.contains("open or non-manifold")), "{measured:?}");
+    let s: Vec<(&str, Status)> = r.asserts.iter().map(|a| (a.name.as_str(), a.check.status)).collect();
+    use Status::{Fails, Holds, Unknown};
+    let want = [Fails, Fails, Fails, Holds, Holds, Fails, Holds, Unknown, Unknown, Unknown, Unknown];
+    assert_eq!(s.iter().map(|x| x.1).collect::<Vec<_>>(), want, "{s:?}");
+    // A count proven is an exact answer, not an estimate.
+    assert!(r.asserts[..7].iter().all(|a| a.check.accuracy.is_some()) && r.asserts[4].check.holds_guaranteed(), "{:?}", r.asserts[4].check);
+    let ink::claims::Evidence::Metric { measured, .. } = &r.asserts[7].check.evidence else { panic!("{:?}", r.asserts[7]) };
+    assert!(measured.value == Ok(0.0) && measured.excluded.iter().any(|e| e.key == "undecided-cells" && e.value >= 1.0), "{measured:?}");
+}
+
+/// A void count is the one search's (crate::search): what it answers is a
+/// function of the question, not of the threads, where it runs out of its
+/// budget too (a hole flush with the void's ceiling, f = 0 across its
+/// mouth, halves to the budget), and says so: the budget, not the res, is
+/// what stopped it, with the cells it left and what to do.
+#[test]
+fn a_void_count_is_the_same_on_any_threads_and_says_its_budget_stopped_it() {
+    use ink::view::ModelView;
+    let d = doc("(def flush (subtract (move (box 100 100 100) 0 0 50) (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101)))");
+    let ink::lang::Value::Field(f, _) = *d.def("flush").unwrap() else { panic!("a field") };
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let mut v = ModelView::new(d, ctx);
+    let (lo, hi, _) = v.bounds(f).unwrap();
+    let (tape, ctx) = (v.clipped(f), v.ctx.clone());
+    let h = ink::query::max_extent(lo, hi) / ink::view::COMPONENT_CELLS;
+    let count = |threads: usize| rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| ink::voids::voids(&tape, &ctx, lo, hi, h));
+    let (one, all) = (count(1), count(8));
+    assert_eq!(format!("{one:?}"), format!("{all:?}"));
+    assert!(one.count().is_none() && one.ended == Some(ink::query::Ended::Limit) && one.undecided.is_some_and(|(a, b)| a >= one.finest && b > a), "{one:?}");
+    let (what, decide) = one.why_undecided().unwrap();
+    assert!(what.contains("budget") && decide.contains("a finer res will not help"), "{what} / {decide}");
 }
 
 /// What a view learned of a field holds for the scope it learned it over:
@@ -180,7 +235,7 @@ fn a_box_over_a_motion_is_not_a_moments_found_before() {
 fn a_mass_is_settled_only_by_a_halving_that_shows_it() {
     for (src, mass) in [("(+ .00001 (select (max (- (abs x) .15) (- (abs y) 40) (- (abs z) 40)) .01 0))", 29.2), ("(select (- (abs x) .15) .001 0)", 3.0)] {
         let (mut v, f) = view_of(&format!("(def f (box 100 100 100)) (def rho {src})"));
-        let ink::lang::Value::Field(rho) = *v.doc.def("rho").unwrap() else { panic!("rho is a field") };
+        let ink::lang::Value::Field(rho, _) = *v.doc.def("rho").unwrap() else { panic!("rho is a field") };
         let m = v.moments(f, Some(rho), None).unwrap();
         assert!(m.coarse.is_some() && (!m.settled || (m.sums[0] / mass - 1.0).abs() <= 0.05), "{src}: {m:?}");
         assert!(m.settled || m.unsettled().is_some());
@@ -191,7 +246,7 @@ fn a_mass_is_settled_only_by_a_halving_that_shows_it() {
 fn view_of(src: &str) -> (ink::view::ModelView, u32) {
     let d = doc(src);
     let f = match d.def("f").unwrap() {
-        ink::lang::Value::Field(f) => *f,
+        ink::lang::Value::Field(f, _) => *f,
         _ => panic!("f is a field"),
     };
     let ctx = d.ctx(&[], 0.0).unwrap();
@@ -232,7 +287,7 @@ fn a_views_answers_are_kept_by_the_scope_they_were_found_over() {
     assert!(before < 1.2 && after >= 11.0 && width(&mut v, f) == before, "{before} {after}");
     let (mut v, f) = view_of("(param p 0) (def f (box 2 2 2)) (def rho (+ 1 (* 9 p)))");
     let rho = match v.doc.def("rho").unwrap() {
-        ink::lang::Value::Field(f) => *f,
+        ink::lang::Value::Field(f, _) => *f,
         _ => panic!("rho is a field"),
     };
     let weigh = |v: &mut ink::view::ModelView| v.moments(f, Some(rho), Some(0.5)).unwrap().sums[0];
@@ -316,7 +371,7 @@ fn checks_report_what_fails_where_it_is_built() {
     std::fs::write(dir.join("lib.ink"), "(import \"std\") (param r 0.5) (def ball (check (value r <= 1) (sphere r))) (body b (shape (move ball 5 0 0)))").unwrap();
     std::fs::write(dir.join("main.ink"), "(import \"lib.ink\" as L) (body mine (shape (move L.ball 3 0 0)))").unwrap();
     let load = |f: &str, r: f64| {
-        let params = [(if f == "lib.ink" { "r" } else { "L.r" }.to_string(), r)];
+        let params = [(if f == "lib.ink" { "r" } else { "L.r" }.to_string(), r.into())];
         let d = ink::load_str_with(&std::fs::read_to_string(dir.join(f)).unwrap(), f, &dir, &params).unwrap();
         let ctx = d.ctx(&params, 0.0).unwrap();
         let v = ink::view::ModelView::new(d, ctx);
@@ -330,7 +385,7 @@ fn checks_report_what_fails_where_it_is_built() {
 
 fn tape_of(src: &str) -> (Doc, Tape) {
     let d = doc(&format!("(def f {src})"));
-    let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
     let t = Tape::new(&d.g, f);
     (d, t)
 }
@@ -541,7 +596,7 @@ fn scope_bounds_are_sound_and_first_order_in_params() {
     let mut rng = Lcg(29);
     for src in &fields {
         let d = doc(&format!("(param p 0) (param q 0) (def f {src})"));
-        let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+        let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
         let tape = Tape::new(&d.g, f);
         let (kp, kq) = (d.param_index("p").unwrap() as u32, d.param_index("q").unwrap() as u32);
         for _ in 0..150 {
@@ -622,7 +677,7 @@ fn a_rate_along_an_input_nothing_moves_along_is_zero_beside_an_unbounded_one() {
     // (which would send a search to halve p's band to its finest before
     // space, and leave a pin turning in a toleranced bore undecided).
     let d = doc("(param p 8) (param q 0) (def f (- (sqrt (+ (square (- (* (cos q) y) (* (sin q) z))) (square (+ (* (sin q) y) (* (cos q) z))))) (/ p 2)))");
-    let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
     let tape = Tape::new(&d.g, f);
     let (kp, kq) = (d.param_index("p").unwrap() as u32, d.param_index("q").unwrap() as u32);
     let mut params = vec![0.0; d.params.len()];
@@ -646,7 +701,7 @@ fn inputs_past_the_first_eight_stay_ranged() {
     let sum = format!("(+ t {})", names.join(" "));
     for src in [sum.clone(), format!("(max (+ x {sum}) (- 1 x))")] {
         let d = doc(&format!("{params} (def f {src})"));
-        let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+        let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
         let tape = Tape::new(&d.g, f);
         let ks: Vec<usize> = names.iter().map(|n| d.param_index(n).unwrap()).collect();
         let ctx = Ctx { t_span: Some((-1.0, 1.0)), p_spans: ParamSpans::new(ks.iter().map(|&k| (k as u32, (-1.0, 1.0)))), ..Ctx::new(0.0, vec![0.0; d.params.len()]) };
@@ -677,7 +732,7 @@ fn faces_one_param_moves_together_are_bounded_tight() {
     // rate (1/2 (-1) + 1/2 (1) = 0), so the touching cells are bounded
     // within rounding of 0 wherever the contact lies in the band.
     let d = doc("(param a 10) (def blocks (max (move (box a 10 10) (/ a 2) 0 0) (move (box 10 10 10) (+ a 5) 0 0)))");
-    let ink::lang::Value::Field(f) = d.def("blocks").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("blocks").unwrap().clone() else { panic!() };
     let tape = Tape::new(&d.g, f);
     let k = d.param_index("a").unwrap() as u32;
     let ctx = Ctx { p_spans: ParamSpans::new([(k, (9.9, 10.1))]), ..Ctx::new(0.0, vec![10.0]) };
@@ -690,7 +745,7 @@ fn faces_one_param_moves_together_are_bounded_tight() {
     // Block a alone, near its left face: plain bounds 0.1 off, first order
     // within rounding of the cell's own spread.
     let d = doc("(param a 10) (def block (move (box a 10 10) (/ a 2) 0 0))");
-    let ink::lang::Value::Field(f) = d.def("block").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("block").unwrap().clone() else { panic!() };
     let tape = Tape::new(&d.g, f);
     let b = [I::new(-0.06, -0.02), I::new(1.0, 1.04), I::new(-2.0, -1.96)];
     let (plain, r) = (eval_interval(&tape, &ctx, b, None), eval_interval_scope(&tape, &ctx, b, None));
@@ -1041,7 +1096,7 @@ fn mass_integrates_graded_density() {
     let mut d = doc("(body b (shape (box 10 10 10)) (attr density (+ 1 (/ z 10))))");
     let (tape, ctx) = clipped(&mut d, "b");
     let it = d.items("b").unwrap().remove(0);
-    let ink::lang::Value::Field(g) = d.placed_attrs(&it)[0].1 else { panic!() };
+    let ink::lang::Value::Field(g, _) = d.placed_attrs(&it)[0].1 else { panic!() };
     let gt = Tape::new(&d.g, g);
     let r = query::sums(&tape, &[Some(&gt)], true, &ctx, [-5.0; 3], [5.0; 3], 0.1).sums[0];
     assert!((r - 1000.0).abs() < 1.0, "{r}");
@@ -1102,7 +1157,7 @@ fn named_constructions_are_placed_with_their_instance() {
         Path::new(ROOT),
     )
     .unwrap();
-    let ink::lang::Value::Field(f) = d.def("peg-world").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("peg-world").unwrap().clone() else { panic!() };
     let t = Tape::new(&d.g, f);
     let ctx = Ctx::new(0.0, vec![]);
     // The peg's axis moves from (3, 0) to (20, 3) (a quarter turn, then 20 in x).
@@ -1126,7 +1181,7 @@ fn shape_of_is_kept_by_what_it_reads() {
         Path::new(ROOT),
     )
     .unwrap();
-    let ink::lang::Value::Field(f) = d.def("plate-not-peg").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("plate-not-peg").unwrap().clone() else { panic!() };
     let t = Tape::new(&d.g, f);
     let ctx = Ctx::new(0.0, vec![]);
     assert!(eval_point(&t, &ctx, [16.0, -4.0, 0.0]) < 0.0, "the plate away from the peg");
@@ -1159,7 +1214,7 @@ fn namespaced_imports_keep_files_apart() {
     let mut d = d;
     assert_eq!(d.items("a.root/bracket").unwrap().len(), 1);
     assert!(d.params.iter().any(|p| p.name == "a.size") && d.params.iter().any(|p| p.name == "b.size"));
-    let ink::lang::Value::Field(k) = d.def("k").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(k, _) = d.def("k").unwrap().clone() else { panic!() };
     let ctx = Ctx::new(0.0, vec![10.0, 10.0]);
     assert!((eval_point(&Tape::new(&d.g, k), &ctx, [2.9, 0.0, 0.0]) + 0.1).abs() < 1e-9, "the let's own size (6) is used");
 }
@@ -1210,12 +1265,12 @@ fn namespaced_imports_preserve_language_heads() {
     .unwrap();
     let mut d = ink::load_str(r#"(import "part.ink" as p)"#, "t", &dir).unwrap_or_else(|e| panic!("{e:?}"));
     assert!(d.body("p.part").is_some() && d.assembly("p.root").is_some());
-    let ink::lang::Value::Field(f) = d.def("p.f").unwrap() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("p.f").unwrap() else { panic!() };
     let ctx = Ctx::new(0.0, vec![3.0]);
     assert_eq!(eval_point(&Tape::new(&d.g, *f), &ctx, [4.0, 0.0, 0.0]), -1.0);
     // p.shifted is a local call; p.p.shifted is the nested p's. An
     // already-qualified value such as p.shift must keep its own binding.
-    let ink::lang::Value::Field(g) = d.def("p.g").unwrap() else { panic!() };
+    let ink::lang::Value::Field(g, _) = d.def("p.g").unwrap() else { panic!() };
     assert_eq!(eval_point(&Tape::new(&d.g, *g), &ctx, [40.0, 0.0, 0.0]), -1.0);
     assert_eq!(d.items("p.root").unwrap().len(), 1);
     let ink::lang::Value::Frame(frame) = d.def("p.datum").unwrap() else { panic!() };
@@ -1302,7 +1357,7 @@ fn namespaced_parts_keep_their_families() {
     .unwrap_or_else(|e| panic!("{e:?}"));
     assert!(d.def("b.in.size").is_some(), "nested namespaces nest");
     assert!(d.def("a.ball").is_some(), "a construction tagged in the family resolves from the part");
-    let ink::lang::Value::Field(f) = d.def("both").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("both").unwrap().clone() else { panic!() };
     let ctx = Ctx::new(0.0, vec![]);
     let t = Tape::new(&d.g, f);
     assert!((eval_point(&t, &ctx, [0.0, 0.0, 0.0]) + 2.0).abs() < 1e-9, "a's paint is a sphere");
@@ -1318,7 +1373,7 @@ fn namespaced_parts_keep_their_families() {
 #[test]
 fn a_top_level_for_reads_the_names_before_it() {
     let num = |d: &Doc, name: &str| match d.def(name) {
-        Some(ink::lang::Value::Field(f)) => d.g.as_const(*f).unwrap_or_else(|| panic!("{name} is no number")),
+        Some(ink::lang::Value::Field(f, _)) => d.g.as_const(*f).unwrap_or_else(|| panic!("{name} is no number")),
         _ => panic!("no def {name}"),
     };
     let d = doc("(def n 3) (for i (range n) (def v-$i (* 10 i)))
@@ -1359,7 +1414,7 @@ fn names_resolve_where_they_are_written() {
     std::fs::write(dir.join("b.ink"), "(import \"a.ink\")").unwrap();
     let at = |src: &str, p: [f64; 3]| {
         let d = ink::load_str(src, "t", &dir).unwrap_or_else(|e| panic!("{e:?}"));
-        let ink::lang::Value::Field(f) = d.def("v").unwrap().clone() else { panic!() };
+        let ink::lang::Value::Field(f, _) = d.def("v").unwrap().clone() else { panic!() };
         eval_point(&Tape::new(&d.g, f), &Ctx::new(0.0, d.params.iter().map(|p| p.default).collect()), p)
     };
     // The importer's own box (a corner-anchored one), defined after the
@@ -1428,7 +1483,7 @@ fn rest_arguments_make_combinators_variadic() {
     }
     let d = doc("(fn count (a rest ...) (+ a (len rest))) (def n (count 1 2 3 4)) (def m (count 1)) (def k ((lambda (xs ...) (len xs))))");
     for (name, v) in [("n", 4.0), ("m", 1.0), ("k", 0.0)] {
-        let ink::lang::Value::Field(f) = d.def(name).unwrap().clone() else { panic!() };
+        let ink::lang::Value::Field(f, _) = d.def(name).unwrap().clone() else { panic!() };
         assert_eq!(d.g.as_const(f), Some(v), "{name}");
     }
     let err = |src: &str| ink::load_str(&format!("(import \"std\")\n{src}"), "t", Path::new(ROOT)).err().unwrap_or_else(|| panic!("{src} loads")).message;
@@ -1590,7 +1645,7 @@ fn undefined_cases_are_reported_with_their_construction() {
     // Values follow the core rules (x / 0 = 0, sqrt of a negative is 0), and
     // every undefined case the evaluation passes through is reported.
     let d = doc("(def f (+ (tag ratio (/ y x)) (tag log (ln (- 1 (square z)))) (sqrt (- 1 (square z)))))");
-    let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
     let t = Tape::new(&d.g, f);
     let ctx = Ctx::new(0.0, vec![]);
     assert_eq!(eval_point(&t, &ctx, [0.0, 3.0, 0.0]), 1.0);
@@ -1611,14 +1666,14 @@ fn an_undefined_case_in_constants_is_reported_where_a_value_depends_on_it() {
     // segment (0): discarded, so its distance is a circle's, unreported.
     let d = doc("(def c (- (segment-distance-at here2 (vec 1 0) (vec 1 0)) 1))");
     assert!(d.load_warnings.is_empty(), "{:?}", d.load_warnings);
-    let ink::lang::Value::Field(f) = d.def("c").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("c").unwrap().clone() else { panic!() };
     let (t, ctx) = (Tape::new(&d.g, f), Ctx::new(0.0, vec![]));
     assert_eq!(eval_point(&t, &ctx, [1.0, 2.0, 0.0]), 1.0);
     assert!(undefined_cases(&t, &ctx, &[[1.0, 2.0, 0.0], [5.0, 0.0, 0.0]]).is_empty());
     // One a value depends on: in a field, at its samples; in a number used
     // at load time, at its line.
     let d = doc("(def f (+ (sphere 1) (ln -1)))\n(for i (range (/ 3 0)) (def k i))");
-    let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
     let u = undefined_cases(&Tape::new(&d.g, f), &Ctx::new(0.0, vec![]), &[[0.0; 3]]);
     assert_eq!(u.iter().map(|u| u.what).collect::<Vec<_>>(), ["ln of a negative"]);
     assert!(d.load_warnings.len() == 1 && d.load_warnings[0].starts_with("test:3: division by zero"), "{:?}", d.load_warnings);
@@ -1681,14 +1736,14 @@ fn every_path_takes_one_derivative() {
     }
     let d = doc(&src);
     let tape = |d: &Doc, name: &str| {
-        let ink::lang::Value::Field(f) = d.def(name).unwrap().clone() else { panic!("{name}") };
+        let ink::lang::Value::Field(f, _) = d.def(name).unwrap().clone() else { panic!("{name}") };
         Tape::new(&d.g, f)
     };
     let mut rng = Lcg(5);
     let mut pts: Vec<[f64; 3]> = vec![[0.0; 3], [1e-307, 0.0, 0.0], [-1.5e-308, 2e-308, 5e-324], [1.0, 1.0, 1.0], [0.0, 0.25, -0.5], [2.7e-162, 0.0, 0.0]];
     pts.extend((0..60).map(|_| [rng.range(-3.0, 3.0), rng.range(-3.0, 3.0), rng.range(-3.0, 3.0)]));
     for (t, p) in [(0.25, 5e-324), (-0.5, 0.75), (1e-310, 1e300)] {
-        let ctx = d.ctx(&[("p".into(), p)], t).unwrap();
+        let ctx = d.ctx(&[("p".into(), p.into())], t).unwrap();
         for (i, f) in fields.iter().enumerate() {
             let tf = tape(&d, &format!("f{i}"));
             let dv: Vec<Tape> = vars.iter().map(|v| tape(&d, &format!("f{i}{v}"))).collect();
@@ -1711,7 +1766,7 @@ fn every_path_takes_one_derivative() {
     // The repros: the tie's slope is 0 (its halves round to 0), and the read
     // warped by 1e308 x has the finite slope 1e308 (its partial, about 1,
     // times the rate).
-    let ctx = d.ctx(&[("p".into(), 5e-324)], 0.0).unwrap();
+    let ctx = d.ctx(&[("p".into(), 5e-324.into())], 0.0).unwrap();
     assert_eq!(eval_point(&tape(&d, "f5x"), &ctx, [0.0; 3]), 0.0);
     let slope = eval_grads(&tape(&d, "f0"), &ctx, &[[1e-307, 0.0, 0.0]])[0][1];
     assert!(slope.is_finite() && (0.99e308..1.01e308).contains(&slope), "{slope}");
@@ -2064,7 +2119,7 @@ fn extents_find_material_anywhere_and_say_when_they_cannot() {
     // sectors settle (a box turned about three axes): each member by its
     // own cover; neither cover alone settles the union.
     let d = doc("(def u (min (max (slab-z 1 2) (- 1 y) (- y 2) (- (abs (* z x)) 5)) (move (rotate-z (rotate-y (rotate-x (box 10 20 30) 30) 40) 50) 40 0 0)))");
-    let Some(ink::lang::Value::Field(u)) = d.def("u") else { panic!() };
+    let Some(ink::lang::Value::Field(u, _)) = d.def("u") else { panic!() };
     let ctx = d.ctx(&[], 0.0).unwrap();
     match query::extent(&Arc::new(Tape::new(&d.g, *u)), &ctx, window) {
         query::Extent::Bounded(lo, hi) => assert!(lo[0] <= -5.0 && hi[0] >= 5.0, "{lo:?} {hi:?}"),
@@ -2073,13 +2128,13 @@ fn extents_find_material_anywhere_and_say_when_they_cannot() {
     // A union that shares its members (min of f and a tagged f, 40 deep):
     // each member is taken once, not 2^40 times.
     let d = doc("(fn dup (f i) (min f (tag alias f)))\n(def u (fold dup (sphere 1) (range 40)))");
-    let Some(ink::lang::Value::Field(u)) = d.def("u") else { panic!() };
+    let Some(ink::lang::Value::Field(u, _)) = d.def("u") else { panic!() };
     let ctx = d.ctx(&[], 0.0).unwrap();
     assert!(matches!(query::extent(&Arc::new(Tape::new(&d.g, *u)), &ctx, window), query::Extent::Bounded(..)));
     // The cover starts from the window itself, however small (a radius
     // floor would leave a gap between the window and the sectors).
     let d = doc("(def ball (move (sphere 1e-8) 5e-7 0 0))");
-    let Some(ink::lang::Value::Field(ball)) = d.def("ball") else { panic!() };
+    let Some(ink::lang::Value::Field(ball, _)) = d.def("ball") else { panic!() };
     let ctx = d.ctx(&[], 0.0).unwrap();
     for window in [([-1e-9; 3], [1e-9; 3]), ([-1e-9, -1.0, -1.0], [1e-9, 1.0, 1.0])] {
         match query::extent(&Arc::new(Tape::new(&d.g, *ball)), &ctx, window) {
@@ -2102,7 +2157,7 @@ fn an_intersections_extent_is_its_cheapest_decided_members() {
     let row: Vec<String> = (0..24).map(|k| format!("(move (sphere 1) {} 0 0)", 10 * k)).collect();
     for r in 1..=8 {
         let d = doc(&format!("(def f (max (min {}) (+ (sphere 1) {r}) x))", row.join(" ")));
-        let Some(ink::lang::Value::Field(f)) = d.def("f") else { panic!() };
+        let Some(ink::lang::Value::Field(f, _)) = d.def("f") else { panic!() };
         let ctx = d.ctx(&[], 0.0).unwrap();
         assert_eq!(query::extent(&Arc::new(Tape::new(&d.g, *f)), &ctx, window), query::Extent::Empty, "ball grown {r}");
     }
@@ -2379,7 +2434,7 @@ fn clearance_pairs_prove_thin_margins_with_coarse_cells() {
     // needs about sqrt(margin x radius).
     let d = doc("(def plate (subtract (box 40 40 10) (cylinder-z 5.5 100))) (def pin (cylinder-z 5 30))");
     let t = |n: &str| {
-        let ink::lang::Value::Field(f) = d.def(n).unwrap().clone() else { panic!() };
+        let ink::lang::Value::Field(f, _) = d.def(n).unwrap().clone() else { panic!() };
         Arc::new(Tape::new(&d.g, f))
     };
     let ctx = Ctx::new(0.0, vec![]);
@@ -2478,7 +2533,7 @@ fn first_order_bounds_take_a_seam_as_a_choice() {
     let mut rng = Lcg(31);
     for (src, b, sp, st, within, bounded) in cases {
         let d = doc(&format!("(param p 0) (def f {src})"));
-        let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+        let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
         let tape = Tape::new(&d.g, f);
         let kp = d.param_index("p").unwrap() as u32;
         let mut params = vec![0.0; d.params.len()];
@@ -2522,7 +2577,7 @@ fn first_order_bounds_take_a_seam_as_a_choice() {
 #[test]
 fn a_part_turned_through_a_ranged_whole_turn_has_a_bounded_reach() {
     let d = doc("(param u 0)\n(def f (rotate-z (move (cylinder-z 3 10) 15 0 0) (* 360 u)))");
-    let ink::lang::Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+    let ink::lang::Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
     let k = d.params.iter().position(|p| p.name == "u").unwrap() as u32;
     let ctx = Ctx { p_spans: ParamSpans::new([(k, (0.0, 1.0))]), ..Ctx::new(0.0, vec![0.0]) };
     let r = d.reach(f, &ctx);

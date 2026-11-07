@@ -56,6 +56,7 @@ pub mod roots;
 mod services;
 pub mod sexp;
 pub mod units;
+pub use units::Given;
 pub mod validity;
 /// A loaded model and what analysis has learned of it.
 pub mod view;
@@ -97,7 +98,9 @@ pub struct Reach {
 
 #[derive(Clone, Debug)]
 pub enum Value {
-    Field(NodeId),
+    /// A number expression, and the number written with a unit its
+    /// quantity was said by, if any (units::Said).
+    Field(NodeId, Option<Rc<units::Said>>),
     /// A point (`probe`): three numbers, constants and params. Claims read
     /// it as a point (its sign in a shape, exactly); `place` puts it at a
     /// frame (R p + T, forward); it is no field, and no warp moves it.
@@ -178,7 +181,8 @@ impl Scope {
 /// function's key; `objects`: each body's and assembly's name in the
 /// document (`p.plate` for `plate` in a file imported as p: Doc::resolve).
 /// `ahead`: where it defines each value, and `declared` every name its
-/// forms declare (top_names: bodies and assemblies too).
+/// forms declare (top_names: bodies and assemblies too). `given`: the
+/// values its import gave its params (ImportValue).
 struct SourceFile {
     name: Rc<str>,
     path: String,
@@ -188,11 +192,39 @@ struct SourceFile {
     objects: HashMap<String, String>,
     ahead: HashMap<String, u32>,
     declared: HashSet<String>,
+    given: Vec<ImportValue>,
 }
 
 impl SourceFile {
     fn new(name: Rc<str>, path: String, ns: Option<String>, dir: std::path::PathBuf) -> SourceFile {
-        SourceFile { name, path, ns, dir, bindings: HashMap::new(), objects: HashMap::new(), ahead: HashMap::new(), declared: HashSet::new() }
+        SourceFile { name, path, ns, dir, bindings: HashMap::new(), objects: HashMap::new(), ahead: HashMap::new(), declared: HashSet::new(), given: Vec::new() }
+    }
+}
+
+/// A value an import gives a param of its file, `(import "a.ink" (base-t
+/// 3.2 [(tol lo hi)]))`: the param's default for the whole load, as if
+/// written there, and its band where it gives one; where it is written,
+/// and the units its value and band ends are said in, each where
+/// (ImportValue::fits).
+#[derive(Clone)]
+struct ImportValue {
+    name: String,
+    value: f64,
+    said: Option<Rc<units::Said>>,
+    tol: Option<(f64, f64)>,
+    file: Rc<str>,
+    line: u32,
+    units: Vec<(Rc<units::Said>, u32, u32)>,
+}
+
+impl ImportValue {
+    /// Refused, at the import, where its value or band is said in a unit
+    /// of another quantity than `q`, its param's (`what`).
+    fn fits(&self, q: Quantity, what: &str) -> R<()> {
+        match self.units.iter().find_map(|(s, line, col)| Some((s.misfit(q, what)?, *line, *col))) {
+            Some((message, line, col)) => Err(InkError { message, file: self.file.to_string(), line, col, hint: None, called_from: Vec::new() }),
+            None => Ok(()),
+        }
     }
 }
 
@@ -227,11 +259,21 @@ impl Data {
     }
 }
 
+/// What value `v`'s quantities were said by (units::Said): a field's, or
+/// a vec's fields'.
+fn said(v: &Value) -> Vec<&units::Said> {
+    match v {
+        Value::Field(_, Some(s)) => vec![s],
+        Value::Vec(items) => items.iter().flat_map(said).collect(),
+        _ => Vec::new(),
+    }
+}
+
 impl Value {
     /// What it is, for messages ("field", "frame").
     pub fn kind(&self) -> &'static str {
         match self {
-            Value::Field(_) => "field",
+            Value::Field(..) => "field",
             Value::Point(..) => "point",
             Value::Str(_) => "string",
             Value::Vec(_) => "vec",
@@ -247,7 +289,7 @@ impl Value {
     /// `closures` (a promise's inputs treat a function as code).
     pub(crate) fn fields_into(&self, out: &mut Vec<NodeId>, closures: bool) {
         match self {
-            Value::Field(f) => out.push(*f),
+            Value::Field(f, _) => out.push(*f),
             Value::Point(p) => out.extend(p),
             Value::Vec(items) => items.iter().for_each(|x| x.fields_into(out, closures)),
             Value::Fn(Callable::Closure(c)) if closures => c.env.iter().for_each(|(_, x)| x.fields_into(out, closures)),
@@ -386,6 +428,10 @@ pub struct Body {
     pub attrs: Attrs,
     /// Declared frames, in the body's own coordinates.
     pub frames: Vec<(String, Xf)>,
+    /// Marks, curves drawn on the part (a sheet's bend lines): each its
+    /// name and a field pair (g, r), the curve where g = 0 inside r < 0,
+    /// in the body's own coordinates.
+    pub marks: Vec<(String, NodeId, NodeId)>,
     /// The file that defines it (as named to the loader, or an import's
     /// path): where it is written, or, built with arguments, where they
     /// were passed.
@@ -884,8 +930,13 @@ pub struct Doc {
     /// item's own body and placement are its instance's and links'.
     pub placed: HashMap<NodeId, Placed>,
     /// Each file imported, by path and namespace ("std", a path, "PATH as
-    /// ns"): run once.
-    imported: HashSet<String>,
+    /// ns"): run once, where it was first imported ("b.ink:2").
+    imported: HashMap<String, String>,
+    /// The values the next file run takes (SourceFile::given).
+    giving: Vec<ImportValue>,
+    /// Each param an import set (ImportValue), by index: its written
+    /// default and where the import is ("b.ink:4").
+    pub set_at: HashMap<usize, (f64, String)>,
     /// Files whose run under a namespace defined values and functions
     /// alone (a part family's file: its tables and its functions), reading
     /// nothing that differs by namespace (`varies`), by path: the file and
@@ -942,10 +993,9 @@ pub struct Doc {
     bound: Option<NodeId>,
     /// Warnings found while loading (undefined cases in constants).
     pub load_warnings: Vec<String>,
-    /// The unit each def or param (by its key) was written in, where its
-    /// expression says one (units::written): a slot taking a known
-    /// quantity checks a name by it.
-    name_units: HashMap<String, &'static units::Unit>,
+    /// What each param's quantity was said by, by index, where its value
+    /// was (units::Said): a slot taking a known quantity checks it.
+    param_said: HashMap<usize, Rc<units::Said>>,
     /// Conditions builders stated (`check`), which `ink check` reports
     /// where they fail.
     pub checks: Vec<check::Check>,
@@ -987,7 +1037,7 @@ pub struct Doc {
     /// How many imports deep the file being run is (0: the file given).
     import_depth: usize,
     /// Parameter values used for load-time computations such as (bounds f).
-    overrides: Vec<(String, f64)>,
+    overrides: Vec<(String, Given)>,
     /// Params whose values were consumed while loading (load-time numbers,
     /// sampled or solved fields, measurements, claim bounds): field
     /// derivatives do not see them.
@@ -1051,7 +1101,7 @@ pub struct Reload {
     registry: &'static Registry,
     origin: Origin,
     /// The param overrides it was loaded with.
-    pub overrides: Vec<(String, f64)>,
+    pub overrides: Vec<(String, Given)>,
 }
 
 impl Reload {
@@ -1186,6 +1236,7 @@ const SPECIAL: &[&str] = &[
     "error",
     "profile-reach",
     "polygon",
+    "revolve-z",
     "probe",
     "relation",
     "ranged",
@@ -1213,6 +1264,7 @@ const FORM_FUNCTIONS: &[&str] = &[
     "bounds",
     "profile-reach",
     "polygon",
+    "revolve-z",
     "probe",
     "ranged",
 ];
@@ -1454,7 +1506,9 @@ impl Doc {
             t_span: None,
             file_spans: HashMap::new(),
             placed: HashMap::new(),
-            imported: HashSet::new(),
+            imported: HashMap::new(),
+            giving: Vec::new(),
+            set_at: HashMap::new(),
             libraries: HashMap::new(),
             varies: 0,
             json: HashMap::new(),
@@ -1462,7 +1516,7 @@ impl Doc {
             files_read: Vec::new(),
             ns: None,
             load_warnings: Vec::new(),
-            name_units: HashMap::new(),
+            param_said: HashMap::new(),
             checks: Vec::new(),
             checks_seen: HashSet::new(),
             calls: Vec::new(),
@@ -1510,7 +1564,7 @@ impl Doc {
     /// overrides applied to load-time computations (parameters stay
     /// symbolic in fields, so derivatives still work). The standard
     /// distribution's loaders (`ink::load_file`) pass `ink::registry()`.
-    pub fn load_file_in(registry: &'static Registry, path: &Path, overrides: &[(String, f64)]) -> R<Doc> {
+    pub fn load_file_in(registry: &'static Registry, path: &Path, overrides: &[(String, Given)]) -> R<Doc> {
         Self::load_file_reads(registry, path, overrides).map_err(|(e, _)| e)
     }
 
@@ -1518,7 +1572,7 @@ impl Doc {
     /// failing (`files_read`, the file it could not read among them): a
     /// failed load rests on those as a load rests on its `files_read`, so
     /// it fails the same way while each reads as it did.
-    pub fn load_file_reads(registry: &'static Registry, path: &Path, overrides: &[(String, f64)]) -> Result<Doc, (InkError, Vec<(std::path::PathBuf, Option<u128>)>)> {
+    pub fn load_file_reads(registry: &'static Registry, path: &Path, overrides: &[(String, Given)]) -> Result<Doc, (InkError, Vec<(std::path::PathBuf, Option<u128>)>)> {
         let src = std::fs::read_to_string(path).map_err(|e| (InkError::msg(format!("cannot read {}: {e}", shown(path))), vec![(path.to_path_buf(), None)]))?;
         let base = path.parent().unwrap_or(Path::new("."));
         Self::load_named(registry, &src, &shown(path), path, base, overrides)
@@ -1575,7 +1629,7 @@ impl Doc {
     }
 
     /// Load source text with the packages of `registry`.
-    pub fn load_str_in(registry: &'static Registry, src: &str, name: &str, base: &Path, overrides: &[(String, f64)]) -> R<Doc> {
+    pub fn load_str_in(registry: &'static Registry, src: &str, name: &str, base: &Path, overrides: &[(String, Given)]) -> R<Doc> {
         Self::load_named(registry, src, name, Path::new(name), base, overrides).map_err(|(e, _)| e)
     }
 
@@ -1587,7 +1641,7 @@ impl Doc {
         name: &str,
         path: &Path,
         base: &Path,
-        overrides: &[(String, f64)],
+        overrides: &[(String, Given)],
     ) -> Result<Doc, (InkError, Vec<(std::path::PathBuf, Option<u128>)>)> {
         let origin = Origin { src: src.to_string(), name: name.to_string(), path: path.to_path_buf(), base: base.to_path_buf() };
         Self::load_origin(registry, origin, overrides, None)
@@ -1620,7 +1674,7 @@ impl Doc {
     fn load_origin(
         registry: &'static Registry,
         origin: Origin,
-        overrides: &[(String, f64)],
+        overrides: &[(String, Given)],
         coordinates_of: Option<(String, bool)>,
     ) -> Result<Doc, (InkError, Vec<(std::path::PathBuf, Option<u128>)>)> {
         let mut d = Doc::empty(registry);
@@ -1707,7 +1761,7 @@ impl Doc {
         let mut params: Vec<f64> = self.params.iter().map(|p| p.default).collect();
         for (k, v) in &self.overrides {
             if let Some(i) = self.params.iter().position(|p| p.name == *k) {
-                params[i] = *v;
+                params[i] = v.value;
             }
         }
         params
@@ -1751,7 +1805,9 @@ impl Doc {
             0
         } else {
             let path = path.canonicalize().map_or(path.display().to_string(), |p| p.display().to_string());
-            self.files.push(SourceFile::new(Rc::from(name), path, ns.map(str::to_string), base.to_path_buf()));
+            let mut f = SourceFile::new(Rc::from(name), path, ns.map(str::to_string), base.to_path_buf());
+            f.given = std::mem::take(&mut self.giving);
+            self.files.push(f);
             self.files.len() as u32 - 1
         };
         self.read(name, (name != "std").then_some(path), src.as_bytes());
@@ -1952,7 +2008,7 @@ impl Doc {
 
     /// The (ranged lo hi) a value is, if it is one itself.
     fn ranged_of(&self, v: &Value) -> Option<(usize, (f64, f64))> {
-        let &Value::Field(f) = v else { return None };
+        let &Value::Field(f, _) = v else { return None };
         let graph::Node::Var(Var::Param(k)) = self.g.nodes[f as usize] else { return None };
         self.ranged.iter().find(|r| r.0 == k as usize).copied()
     }
@@ -1999,19 +2055,122 @@ impl Doc {
                 .map(|&(f, line)| (format!("{}:{line}", self.files[f as usize].name), f)),
         };
         if let Some((at_, f)) = already {
-            // An imported param: what to do instead of giving it a new default.
+            // An imported param: given at its import.
             let hint = if f != self.scope.file && self.params.iter().any(|p| p.name == name) {
-                format!(
-                    "a param is defined once, so a file cannot give an imported one a new default. Set it for a command (--param {name}=V); \
-                     where the imported file makes it its body's or root's argument, pass it in an instance; or copy the file \
-                     (docs/IR.md, Top-level forms)"
-                )
+                format!("an importer gives an imported param its value at the import, (import \"{}\" ({name} V))", self.files[f as usize].name)
             } else {
                 "names are immutable; pick a new name".into()
             };
             return Err(self.err_hint(at, format!("'{name}' is already defined, at {at_}"), Some(hint)));
         }
         Ok(())
+    }
+
+    /// Expression `e` as a number known at load time, with what says its
+    /// quantity (units::Said); `none`: the error where it is no number.
+    fn constant(&mut self, e: &Sexp, none: &str) -> R<(f64, Option<Rc<units::Said>>)> {
+        let v = self.eval(e, &mut Vec::new())?;
+        let said = if let Value::Field(_, s) = &v { s.clone() } else { None };
+        let f = self.as_field(v, e)?;
+        let x = self.g.as_const(f).ok_or_else(|| self.err(e, none))?;
+        Ok((x, said))
+    }
+
+    /// A param's `(tol lo hi)`: deviations from a value said by `said`;
+    /// with the units its ends are said in, each where.
+    fn tol(&mut self, t: &Sexp, said: Option<&units::Said>, usage: &str) -> R<((f64, f64), Vec<(Rc<units::Said>, u32, u32)>)> {
+        let Some([_, lo, hi]) = t.list().filter(|l| l.first().and_then(|h| h.sym()) == Some("tol")) else {
+            return Err(self.err_hint(t, "expected (tol lo hi)", Some(usage.into())));
+        };
+        let mut units = Vec::new();
+        let mut num = |d: &mut Doc, e: &Sexp| -> R<f64> {
+            let v = d.eval(e, &mut Vec::new())?;
+            d.fits_change(&v, e, "a tolerance's deviation")?;
+            if let Some(s) = said {
+                d.fits(&v, e, s.unit.quantity, "a tolerance's deviation")?;
+            }
+            if let Value::Field(_, Some(s)) = &v {
+                units.push((s.clone(), e.line, e.col));
+            }
+            let f = d.as_field(v, e)?;
+            d.g.as_const(f).filter(|x| x.is_finite()).ok_or_else(|| d.err(e, "a tolerance's ends must be constant finite numbers"))
+        };
+        let (lo, hi) = (num(self, lo)?, num(self, hi)?);
+        if lo > hi {
+            return Err(self.err_hint(t, format!("tol needs lo <= hi, got {lo} > {hi}"), Some(usage.into())));
+        }
+        Ok(((lo, hi), units))
+    }
+
+    /// An import's values, `(name value [(tol lo hi)])` each, read in the
+    /// importer's names, with the clause each is written in.
+    fn import_values(&mut self, values: &[Sexp], usage: &str) -> R<Vec<(ImportValue, Sexp)>> {
+        let mut given: Vec<(ImportValue, Sexp)> = Vec::new();
+        for c in values {
+            let Some([name, value, tol @ ..]) = c.list().filter(|l| l.len() <= 3) else {
+                return Err(self.err_hint(c, "expected (name value [(tol lo hi)]): a value for a param of the imported file", Some(usage.into())));
+            };
+            let n = self.name_of(name)?;
+            if given.iter().any(|(g, _)| g.name == n) {
+                return Err(self.err(name, format!("'{n}' is given twice")));
+            }
+            let (x, said) = self.constant(value, "an import's value is a constant number, as a param default is")?;
+            let (tol, mut units) = match tol.first() {
+                Some(t) => self.tol(t, said.as_deref(), usage).map(|(b, u)| (Some(b), u))?,
+                None => (None, Vec::new()),
+            };
+            units.extend(said.clone().map(|s| (s, value.line, value.col)));
+            given.push((ImportValue { name: n, value: x, said, tol, file: self.file.clone(), line: value.line, units }, c.clone()));
+        }
+        Ok(given)
+    }
+
+    /// Import value `g` (clause `at`) sets a param written in file `i`
+    /// (imported as `path`): refused where it names no `(param ...)` of
+    /// that file, or, where the file was already run (first imported at
+    /// `first`), where that run gave the param another value.
+    fn import_sets(&self, i: usize, g: &ImportValue, at: &Sexp, path: &str, first: Option<&str>) -> R<()> {
+        let (f, n) = (&self.files[i], &g.name);
+        let own = |key: &String| self.origin.get(key).is_some_and(|o| o.0 as usize == i);
+        let Some(key) = f.bindings.get(n) else {
+            let params = f.bindings.iter().filter(|(_, k)| self.param_keys.contains_key(*k) && own(k)).map(|(n, _)| n.as_str());
+            return Err(self.err_hint(at, format!("{} has no param '{n}'", f.name), closest(n, params)));
+        };
+        let not = |what: &str| Err(self.err(at, format!("'{n}' is {what}: an import sets params")));
+        let k = match self.param_keys.get(key) {
+            Some(_) if !own(key) => {
+                let from = self.origin.get(key).map_or("another file", |o| &*self.files[o.0 as usize].name);
+                return Err(self.err(at, format!("{n} is {from}'s: import {from} with it, before {}", f.name)));
+            }
+            Some(&k) => k,
+            None if self.ranged_named(&f.ns.as_ref().map_or(n.clone(), |ns| format!("{ns}.{n}"))).is_some() => return not("a (ranged ...), a range of the question"),
+            None if self.fns.contains_key(key) => return not("a fn, not a param"),
+            None => return not("a def, not a param"),
+        };
+        let p = &self.params[k];
+        let Some(first) = first else {
+            // Not set by its param form: a package form's (a solve's unknown).
+            return if self.set_at.contains_key(&k) { Ok(()) } else { not("made by a package form, not by (param ...)") };
+        };
+        if let Some(s) = self.param_said.get(&k) {
+            g.fits(s.unit.quantity, &format!("{}'s {n}", f.name))?;
+        }
+        let asked = &at.list().expect("a clause")[1];
+        let copy = format!("import a second copy under a namespace, (import \"{path}\" as NS ({n} {asked}))");
+        let unit = self.param_said.get(&k).map_or("", |s| s.unit.quantity.unit());
+        match self.set_at.get(&k) {
+            Some(_) if p.default == g.value && g.tol.is_none_or(|t| p.tol == Some(t)) => Ok(()),
+            Some((_, by)) => Err(self.err_hint(
+                at,
+                format!("{}'s {n} is already {}{unit}, set by {by}; this import asks {asked}", f.name, p.default),
+                Some(format!("one load gives a file's param one value: {copy}")),
+            )),
+            None => Err(self.err_hint(
+                at,
+                format!("{} was read at {first} with {n} {}{unit}", f.name, p.default),
+                Some(format!("give the value at {}'s first import ({first}), or {copy}", f.name)),
+            )),
+        }
     }
 
     fn std_name(name: &str) -> bool {
@@ -2138,41 +2297,31 @@ impl Doc {
         match head {
             "import" => {
                 let usage = "usage: (import \"std\"), (import \"path.ink\") or (import \"path.ink\" as ns): with a namespace \
-                             its names read ns.name";
+                             its names read ns.name; then (name value [(tol lo hi)]) ... sets the file's params";
                 // A plain import inside a namespaced file joins its namespace,
                 // so a part's family stays out of the importer's names.
                 // `as`: the namespace its names read under here (`as`), and
                 // under in the document (`ns`: this file's, then it).
-                let (target, ns, as_) = match args {
-                    [t] => (t, self.ns.clone(), None),
-                    [t, a, n] if a.sym() == Some("as") => {
+                let (target, ns, as_, values) = match args {
+                    [t, a, n, values @ ..] if a.sym() == Some("as") => {
                         let at = n;
                         let n = self.name_of(n)?;
                         self.check_param_name(at, &n, "the namespace")?;
-                        (t, Some(self.public(&n)), Some(n))
+                        (t, Some(self.public(&n)), Some(n), values)
                     }
-                    [_, a, _, v, ..] if a.sym() == Some("as") => {
-                        return Err(self.err_hint(
-                            v,
-                            "an import gives no values",
-                            Some(
-                                "a part is sized by its arguments: its body or assembly takes the size, (body (rail (length length)) ...), \
-                         and an instance passes another, (instance r (p.rail 470))"
-                                    .into(),
-                            ),
-                        ));
-                    }
-                    _ => return Err(self.err_hint(form, "bad import", Some(usage.into()))),
+                    [t, values @ ..] => (t, self.ns.clone(), None, values),
+                    [] => return Err(self.err_hint(form, "bad import", Some(usage.into()))),
                 };
                 let SK::Str(p) = &target.k else { return Err(self.err(target, "import path must be a string")) };
                 if p == "std" {
                     if args.len() > 1 {
-                        return Err(self.err(target, "std is not imported under a namespace (your names shadow its names)"));
+                        return Err(self.err(target, "std is imported as it is, (import \"std\"): your names shadow its names"));
                     }
-                    if self.imported.insert("std".into()) {
+                    if self.imported.insert("std".into(), String::new()).is_none() {
                         self.run_source_as(STD_SRC, "std", Path::new("std"), base, None)?;
                     }
                 } else {
+                    let given = self.import_values(values, usage)?;
                     let (path, absent) = import_path(base, p);
                     self.files_read.extend(absent.into_iter().map(|f| (f, None)));
                     let canon = path.canonicalize().unwrap_or(path.clone()).display().to_string();
@@ -2185,7 +2334,11 @@ impl Doc {
                         ));
                     }
                     let key = ns.as_ref().map_or(canon.clone(), |n| format!("{canon} as {n}"));
-                    if self.imported.insert(key) && !self.library_under(&canon, ns.as_deref(), &path) {
+                    let first = self.imported.get(&key).cloned();
+                    if first.is_none() {
+                        self.imported.insert(key, format!("{}:{}", self.file, form.line));
+                    }
+                    if first.is_none() && !self.library_under(&canon, ns.as_deref(), &path) {
                         let src = std::fs::read_to_string(&path).inspect_err(|_| self.files_read.push((path.clone(), None))).map_err(|e| {
                             let dirs = import_dirs();
                             let hint = std::iter::once(path.clone()).chain(dirs.iter().map(|d| d.join(p))).find_map(|f| sibling(&f, p)).or_else(|| {
@@ -2198,6 +2351,7 @@ impl Doc {
                         let dir = path.parent().unwrap_or(base).to_path_buf();
                         self.import_depth += 1;
                         let (before, varied) = (self.made(), self.varies);
+                        self.giving = given.iter().map(|(v, _)| v.clone()).collect();
                         self.run_source_as(&src, &shown(&path), &path, &dir, ns.as_deref())?;
                         self.import_depth -= 1;
                         // A run that made only values and functions, of
@@ -2219,6 +2373,9 @@ impl Doc {
                     // The file sees the names of what it imports (Scope),
                     // under its namespace here (`as`).
                     if let Some(i) = self.files.iter().rposition(|f| f.path == canon && f.ns == ns) {
+                        for (v, at) in &given {
+                            self.import_sets(i, v, at, p, first.as_deref())?;
+                        }
                         let named = |n: &String| as_.as_ref().map_or(n.clone(), |a| format!("{a}.{n}"));
                         let bindings: Vec<(String, String)> = self.files[i].bindings.iter().map(|(n, k)| (named(n), k.clone())).collect();
                         let objects: Vec<(String, String)> = self.files[i].objects.iter().map(|(n, o)| (named(n), o.clone())).collect();
@@ -2248,30 +2405,20 @@ impl Doc {
                 self.check_param_name(name, &n, "the param")?;
                 self.check_new_value_name(name, &n)?;
                 let (w, n) = (n.clone(), self.public(&n));
-                let tol = match tol {
-                    None => None,
-                    Some(t) => {
-                        let Some([_, lo, hi]) = t.list().filter(|l| l.first().and_then(|h| h.sym()) == Some("tol")) else {
-                            return Err(self.err_hint(t, "expected (tol lo hi)", Some(usage.into())));
-                        };
-                        let num = |d: &mut Doc, e: &Sexp| -> R<f64> {
-                            d.fits_change(e, "a tolerance's deviation", &Vec::new())?;
-                            let f = d.field(e, &mut Vec::new())?;
-                            d.g.as_const(f).filter(|x| x.is_finite()).ok_or_else(|| d.err(e, "a tolerance's ends must be constant finite numbers"))
-                        };
-                        let (lo, hi) = (num(self, lo)?, num(self, hi)?);
-                        if lo > hi {
-                            return Err(self.err_hint(t, format!("tol needs lo <= hi, got {lo} > {hi}"), Some(usage.into())));
-                        }
-                        Some((lo, hi))
+                let (mut v, mut said) = self.constant(default, "param default must be a constant number")?;
+                let mut tol = tol.map(|t| self.tol(t, said.as_deref(), usage).map(|(b, _)| b)).transpose()?;
+                // Its import's value (ImportValue), in the quantity written
+                // here, else in its own.
+                if let Some(g) = self.files[self.scope.file as usize].given.iter().find(|g| g.name == w).cloned() {
+                    if let Some(s) = said.as_ref().or(g.said.as_ref()) {
+                        g.fits(s.unit.quantity, &format!("{}'s {w}", self.file))?;
                     }
-                };
-                let v = self.field(default, &mut Vec::new())?;
-                let v = self.g.as_const(v).ok_or_else(|| self.err(default, "param default must be a constant number"))?;
-                let unit = self.unit_written(default);
+                    self.set_at.insert(self.params.len(), (v, format!("{}:{}", g.file, g.line)));
+                    (v, said, tol) = (g.value, g.said.or(said), g.tol.or(tol));
+                }
                 let key = self.defined(&w, name.line);
-                if let Some(u) = unit {
-                    self.name_units.insert(key.clone(), u);
+                if let Some(s) = self.param_given(&n, said, form)? {
+                    self.param_said.insert(self.params.len(), s);
                 }
                 self.param_keys.insert(key, self.params.len());
                 let p = Param { name: n, default: v, tol };
@@ -2297,20 +2444,22 @@ impl Doc {
                 // one --param reaches it by (Doc::ranged_named).
                 if let Some((k, _)) = self.ranged_of(&v).filter(|r| self.ranged[made..].contains(r)) {
                     self.params[k].name = n.clone();
+                    if let Value::Field(f, said) = v {
+                        let said = self.param_given(&n, said, e)?;
+                        self.param_said.remove(&k);
+                        self.param_said.extend(said.clone().map(|s| (k, s)));
+                        v = Value::Field(f, said);
+                    }
                 }
                 // Every def of a spatial field names a construction: its surface
                 // points report this name (see eval::provenance). Constants stay
                 // untagged so they keep folding.
-                if let Value::Field(f) = v
-                    && self.g.depends_on(f, |x| matches!(x, Var::X | Var::Y | Var::Z))
+                if let Value::Field(f, said) = &v
+                    && self.g.depends_on(*f, |x| matches!(x, Var::X | Var::Y | Var::Z))
                 {
-                    v = Value::Field(self.g.tag(&n, f));
+                    v = Value::Field(self.g.tag(&n, *f), said.clone());
                 }
-                let unit = self.unit_written(e);
                 let key = self.defined(&w, name.line);
-                if let Some(u) = unit {
-                    self.name_units.insert(key.clone(), u);
-                }
                 self.def_index.insert(key, self.defs.len());
                 if !self.origin.contains_key(&n) || self.scope.file != 0 {
                     self.def_index.insert(n.clone(), self.defs.len());
@@ -2358,9 +2507,11 @@ impl Doc {
             "t-span" => {
                 let usage = "usage: (t-span A B): claims that read t are checked at every moment from A to B";
                 let [a, b] = args else { return Err(self.err_hint(form, "wrong arguments", Some(usage.into()))) };
-                self.fits(a, Quantity::Time, "t-span", &Vec::new())?;
-                self.fits(b, Quantity::Time, "t-span", &Vec::new())?;
-                let (a, b) = (self.const_num(a, &mut Vec::new())?, self.const_num(b, &mut Vec::new())?);
+                let end = |d: &mut Doc, e: &Sexp| {
+                    let f = d.field_of(e, Quantity::Time, "t-span", &mut Vec::new())?;
+                    d.const_of(e, f)
+                };
+                let (a, b) = (end(self, a)?, end(self, b)?);
                 if !(a < b && a.is_finite() && b.is_finite()) {
                     return Err(self.err_hint(form, "a time span needs finite A < B", Some(usage.into())));
                 }
@@ -2519,10 +2670,11 @@ impl Doc {
 
     /// A body from its clauses (expanded): one shape, attributes, frames.
     fn body_clauses(&mut self, n: String, of: Option<String>, params: Vec<(String, String)>, clauses: &[Sexp], at: &Sexp) -> R<Body> {
-        let what = "body clauses are (shape expr), (attr key value) or (frame name F)";
+        let what = "body clauses are (shape expr), (attr key value), (frame name F) or (mark name (vec g r) ...)";
         let mut shape = None;
         let mut attrs: Vec<(String, Value)> = Vec::new();
         let mut frames = Vec::new();
+        let mut marks = Vec::new();
         for c in clauses {
             let parts = c.list().ok_or_else(|| self.err(c, what))?;
             match parts.first().and_then(|h| h.sym()) {
@@ -2539,23 +2691,24 @@ impl Doc {
                     if attrs.iter().any(|(a, _)| *a == k) {
                         return Err(self.err(c, format!("duplicate attr '{k}'")));
                     }
-                    if k == "density" {
-                        self.fits(v, Quantity::Density, "attr density", &self.arg_env())?;
+                    let e = v;
+                    let v = self.eval(e, &mut self.arg_env())?;
+                    let q = match k.as_str() {
+                        "density" => Some(Quantity::Density),
+                        "mass" => Some(Quantity::Mass),
+                        "spin-inertia" => Some(Quantity::Inertia),
+                        _ => None,
+                    };
+                    if let Some(q) = q {
+                        self.fits(&v, e, q, &format!("attr {k}"))?;
                     }
-                    if k == "mass" {
-                        self.fits(v, Quantity::Mass, "attr mass", &self.arg_env())?;
-                    }
-                    if k == "spin-inertia" {
-                        self.fits(v, Quantity::Inertia, "attr spin-inertia", &self.arg_env())?;
-                    }
-                    let v = self.eval(v, &mut self.arg_env())?;
                     // A look is read once, here: clients take look::Look,
                     // never the layout.
                     let v = look::read(&mut self.g, &k, v).map_err(|e| self.err(c, format!("attr {k}: {e}")))?;
                     // A density is g/mm^3: a number in another unit is
                     // refused here, not read a million times off.
                     let density = match (k.as_str(), &v) {
-                        ("density", Value::Field(f)) => materials::density_field_error(&self.g, *f),
+                        ("density", Value::Field(f, _)) => materials::density_field_error(&self.g, *f),
                         ("material", Value::Data(d)) => materials::material_density_error(d.value()),
                         _ => None,
                     };
@@ -2587,6 +2740,7 @@ impl Doc {
                     attrs.push((k, v));
                 }
                 Some("frame") => frames.push(self.frame_clause(c, &frames)?),
+                Some("mark") => marks.extend(self.mark_clause(c, parts)?),
                 // A function's call is a shape written bare.
                 head => {
                     let shape = head.filter(|h| self.fns.contains_key(&*self.scoped(h))).map(|h| format!("write (shape ({h} ...))"));
@@ -2598,7 +2752,36 @@ impl Doc {
         // The body's name is a construction name too (provenance: faces of this body).
         let shape = self.g.tag(&n, shape);
         self.published_mass(at, &n, of.as_deref(), shape, &mut attrs)?;
-        Ok(Body { name: n, params, of, shape, attrs: Attrs::new(attrs), frames, file: self.file.clone() })
+        Ok(Body { name: n, params, of, shape, attrs: Attrs::new(attrs), frames, marks, file: self.file.clone() })
+    }
+
+    /// `(mark NAME CURVE ...)`: curves drawn on the part, each CURVE `(vec
+    /// g r)`, where field g is 0 inside field r < 0, or a vec of them.
+    fn mark_clause(&mut self, c: &Sexp, parts: &[Sexp]) -> R<Vec<(String, NodeId, NodeId)>> {
+        let usage = "usage: (mark NAME CURVE ...): curves drawn on the part (a sheet's bend lines: (mark bend (sheet-bend-lines S))), \
+                     each CURVE (vec g r), where field g is 0 inside field r < 0, or a vec of them (none: (vec)); `ink slice --out` writes them on layer NAME";
+        let [_, n, curves @ ..] = parts else { return Err(self.err_hint(c, "bad mark", Some(usage.into()))) };
+        let name = self.name_of(n)?;
+        let mut out = Vec::new();
+        fn add(v: &Value, out: &mut Vec<(NodeId, NodeId)>) -> bool {
+            let Value::Vec(l) = v else { return false };
+            match l.as_slice() {
+                [Value::Field(g, _), Value::Field(r, _)] => {
+                    out.push((*g, *r));
+                    true
+                }
+                l => l.iter().all(|x| add(x, out)),
+            }
+        }
+        for e in curves {
+            let v = self.eval(e, &mut self.arg_env())?;
+            let mut got = Vec::new();
+            if !add(&v, &mut got) {
+                return Err(self.err_hint(e, format!("a mark's curve is (vec g r), two fields, or a vec of them, not a {}", v.kind()), Some(usage.into())));
+            }
+            out.extend(got.into_iter().map(|(g, r)| (name.clone(), g, r)));
+        }
+        Ok(out)
     }
 
     /// What an instance named `iname` places for `(CHILD ARG ...)`: the
@@ -2617,7 +2800,7 @@ impl Doc {
         for a in args {
             let mut env = self.arg_env();
             let v = self.eval(a, &mut env)?;
-            if let Value::Field(f) = v
+            if let Value::Field(f, _) = v
                 && self.g.depends_on(f, |v| matches!(v, Var::X | Var::Y | Var::Z))
             {
                 return Err(self.err(a, "a body's or an assembly's arguments are values of params and t, not fields of x y z"));
@@ -2629,7 +2812,8 @@ impl Doc {
         let b = self.building.as_ref().unwrap();
         if self.coordinates_of.as_deref() == Some(b.asm.name.as_str()) && b.asm.of.is_none() && self.import_depth == 0 {
             for ((v, _), (p, _)) in vals.iter_mut().zip(&def.params) {
-                let Value::Field(f) = *v else { continue };
+                let Value::Field(f, ref said) = *v else { continue };
+                let said = said.clone();
                 let name = format!("{iname}.{p}");
                 let param = |d: &mut Doc, what: &str| {
                     d.params.push(Param { name: format!("{what}{name}"), default: 0.0, tol: None });
@@ -2668,11 +2852,11 @@ impl Doc {
                     let a = self.g.mul(half, a);
                     let ra = self.g.add(r, a);
                     let passed = self.g.add(e, ra);
-                    *v = Value::Field(passed);
+                    *v = Value::Field(passed, said);
                     self.coords.push(Coord { name, param: k, value: f, jet: Some((kr, ka)), passed });
                 } else {
                     let passed = if own.is_some() { f } else { self.g.add(f, e) };
-                    *v = Value::Field(passed);
+                    *v = Value::Field(passed, said);
                     self.coords.push(Coord { name, param: k, value: f, jet: None, passed });
                 }
             }
@@ -2775,10 +2959,11 @@ impl Doc {
                     if self.building.as_ref().unwrap().mass.iter().any(|m| m.0 == k) {
                         return Err(self.err(c, format!("duplicate attr '{k}'")));
                     }
+                    let e = v;
+                    let v = self.eval(e, &mut self.arg_env())?;
                     if k == "mass" {
-                        self.fits(v, Quantity::Mass, "attr mass", &self.arg_env())?;
+                        self.fits(&v, e, Quantity::Mass, "attr mass")?;
                     }
-                    let v = self.eval(v, &mut self.arg_env())?;
                     self.building.as_mut().unwrap().mass.push((k, v, c.clone()));
                 }
                 _ => return Err(self.err_hint(c, what, self.top_form_hint(c, "an assembly"))),
@@ -2871,12 +3056,12 @@ impl Doc {
             let (f, s) = (me.frame_of(p, None).map_err(|m| me.err(c, m))?, me.end_shape(p).map_err(|m| me.err(c, m))?);
             let Some(l) = l else { return Ok((Value::Frame(f), s)) };
             let (inv, at) = (me.inverse(l), me.compose(l, &f));
-            let Value::Field(s) = me.to_world(&Value::Field(s), &inv) else { unreachable!("a placed field is a field") };
+            let Value::Field(s, _) = me.to_world(&Value::Field(s, None), &inv) else { unreachable!("a placed field is a field") };
             Ok((Value::Frame(at), s))
         };
         let ((fa, sa), (fb, sb)) = (read(self, &pa, &la)?, read(self, &pb, &lb)?);
         let before: HashSet<usize> = self.materialized.borrow().keys().copied().collect();
-        let r = match self.call(&f, vec![fa, fb, Value::Field(sa), Value::Field(sb)], kind)? {
+        let r = match self.call(&f, vec![fa, fb, Value::Field(sa, None), Value::Field(sb, None)], kind)? {
             Value::Relation(r) => r,
             other => return Err(self.err_hint(kind, format!("KIND gave a {}, not a (relation ...)", other.kind()), Some(usage.into()))),
         };
@@ -2921,7 +3106,7 @@ impl Doc {
         let kind = Kind { name: r.kind.clone(), skipped: r.zone.as_ref().map(|z| z.0.clone()), claims, data: r.data.clone(), clauses: r.clauses.clone(), site };
         let back = |me: &mut Self, z: NodeId, l: &Option<Xf>| {
             let Some(l) = l else { return z };
-            let Value::Field(z) = me.to_world(&Value::Field(z), l) else { unreachable!("a placed field is a field") };
+            let Value::Field(z, _) = me.to_world(&Value::Field(z, None), l) else { unreachable!("a placed field is a field") };
             z
         };
         let zone = r.zone.as_ref().map(|z| z.1).map(|z| Zone { a: back(self, z.a, &la), b: z.b.map(|zb| back(self, zb, &lb)) });
@@ -3068,7 +3253,7 @@ impl Doc {
         // on its rate, each with the accuracy it states, (accuracy x).
         const BOUNDS: [&str; 2] = ["limits", "speed-limits"];
         let mut bounds: [Option<(NodeId, NodeId, String, String, Option<&Sexp>)>; 2] = [None, None];
-        let mut written: [Option<(&Sexp, &Sexp)>; 2] = [None, None];
+        let mut written: [Option<[(Value, &Sexp); 2]>; 2] = [None, None];
         // Packages' joint clauses, read once the motion is known.
         let mut owned: Vec<(&'static dyn ext::Package, &'static str, &Sexp)> = Vec::new();
         for x in rest {
@@ -3096,7 +3281,8 @@ impl Doc {
                     if bounds[slot].is_some() {
                         return Err(self.err(x, format!("one ({k} LO HI) per instance")));
                     }
-                    let (l, h) = (self.field(lo, &mut self.arg_env())?, self.field(hi, &mut self.arg_env())?);
+                    let (vl, vh) = (self.eval(lo, &mut self.arg_env())?, self.eval(hi, &mut self.arg_env())?);
+                    let (l, h) = (self.as_field(vl.clone(), lo)?, self.as_field(vh.clone(), hi)?);
                     let fixed = |v: Var| matches!(v, Var::X | Var::Y | Var::Z | Var::T);
                     if self.g.depends_on(l, fixed) || self.g.depends_on(h, fixed) {
                         return Err(self.err(x, format!("{k} are numbers or params, not fields of x y z or t")));
@@ -3107,7 +3293,7 @@ impl Doc {
                         return Err(self.err(x, format!("{k} {a} > {b}: write ({k} LO HI) with LO <= HI")));
                     }
                     bounds[slot] = Some((l, h, lo.to_string(), hi.to_string(), tol.first()));
-                    written[slot] = Some((lo, hi));
+                    written[slot] = Some([(vl, lo), (vh, hi)]);
                 }
                 (None, Some(h), _) if let Some((package, h)) = self.registry.joint_clause(h) => {
                     if owned.iter().any(|o| o.1 == h) {
@@ -3145,9 +3331,9 @@ impl Doc {
                     (_, false) => Some(Quantity::Speed),
                 };
                 quantities[k] = q;
-                for e in b.iter().flat_map(|(lo, hi)| [*lo, *hi]) {
+                for (v, e) in b.iter().flatten() {
                     if let Some(q) = q {
-                        self.fits(e, q, BOUNDS[k], &self.arg_env())?;
+                        self.fits(v, e, q, BOUNDS[k])?;
                     }
                 }
                 if let Some(t) = bounds[k].as_ref().and_then(|b| b.4) {
@@ -3492,7 +3678,7 @@ impl Doc {
                     at = doc.compose(&i.0, &at);
                     child = i.1;
                 }
-                let Value::Field(z) = doc.to_world(&Value::Field(f), &at) else { unreachable!() };
+                let Value::Field(z, _) = doc.to_world(&Value::Field(f, None), &at) else { unreachable!() };
                 z
             };
             let placed_zone = zone.map(|z| {
@@ -3513,8 +3699,8 @@ impl Doc {
     /// a study's): a number known at load time, above 0 and finite, as for
     /// `--res`.
     fn cell_size(&mut self, e: &Sexp, env: &mut Env) -> R<f64> {
-        self.fits(e, Quantity::Length, "res", env)?;
-        let h = self.const_num(e, env)?;
+        let f = self.field_of(e, Quantity::Length, "res", env)?;
+        let h = self.const_of(e, f)?;
         self.check_cell(e, h)
     }
 
@@ -3535,48 +3721,87 @@ impl Doc {
         }
     }
 
-    /// The unit a name (not one of `env`'s locals) was written in, if
-    /// a def or param written in one.
-    fn name_unit(&self, name: &str, env: &Env) -> Option<&'static units::Unit> {
-        if env.iter().any(|(k, _)| k == name) {
-            return None;
-        }
-        self.name_units.get(&*self.scoped(name)).copied()
-    }
-
-    /// The one unit a top-level expression `e` is written in, if it says
-    /// one.
-    fn unit_written(&self, e: &Sexp) -> Option<&'static units::Unit> {
-        let all = units::written(e, &|n| self.name_unit(n, &Vec::new()));
-        let u = all.first()?.1;
-        all.iter().all(|(_, v)| v.quantity == u.quantity).then_some(u)
-    }
-
-    /// Err where `e`, in a slot that takes quantity `q`, has a number in
-    /// another quantity's unit, or a name written in one (units::misfit).
-    fn fits(&self, e: &Sexp, q: Quantity, what: &str, env: &Env) -> R<()> {
-        match units::misfit(e, q, what, &|n| self.name_unit(n, env)) {
-            Some((at, m)) => Err(self.err(at, m)),
+    /// Err where value `v` of expression `e`, in a slot that takes
+    /// quantity `q` (`what`: the slot, for the message), was said in
+    /// another quantity's unit (units::Said), or a vec of it has one that was.
+    fn fits(&self, v: &Value, e: &Sexp, q: Quantity, what: &str) -> R<()> {
+        match said(v).into_iter().find_map(|s| s.misfit(q, what)) {
+            Some(m) => Err(self.err(e, m)),
             None => Ok(()),
         }
     }
 
-    /// `e` is a change of a quantity (an accuracy, a tolerance's
-    /// deviation): a unit with a zero of its own (degF, K) reads a point on
-    /// its scale (1degF is -17.2 degC), not a change, so it is refused.
-    fn fits_change(&self, e: &Sexp, what: &str, env: &Env) -> R<()> {
-        let zero = units::written(e, &|n| self.name_unit(n, env)).into_iter().find_map(|(at, u)| match u.scale {
-            units::Scale::Offset { factor, .. } => Some((at, u, factor)),
+    /// Value `v` of `e` is a change of a quantity (an accuracy, a
+    /// tolerance's deviation): a unit with a zero of its own (degF, K)
+    /// reads a point on its scale (1degF is -17.2 degC), not a change, so
+    /// it is refused.
+    fn fits_change(&self, v: &Value, e: &Sexp, what: &str) -> R<()> {
+        let zero = said(v).into_iter().find_map(|s| match s.unit.scale {
+            units::Scale::Offset { factor, .. } => Some((s, factor)),
             _ => None,
         });
         match zero {
-            Some((at, u, k)) => Err(self.err_hint(
-                at,
-                format!("{what} is a change, and {} reads a point on its scale", u.name),
-                Some(format!("write the change in {}: one of 1{} is {}{}", u.quantity.unit(), u.name, (k * 1e6).round() / 1e6, u.quantity.unit())),
+            Some((s, k)) => Err(self.err_hint(
+                e,
+                format!("{what} is a change, and {} reads a point on its scale (written {})", s.unit.name, s.cite()),
+                Some(format!("write the change in {}: one of 1{} is {}{}", s.unit.quantity.unit(), s.unit.name, (k * 1e6).round() / 1e6, s.unit.quantity.unit())),
             )),
             None => Ok(()),
         }
+    }
+
+    /// What param `name`'s value is said by: the unit `--param` gave it in
+    /// (`overrides`), which must be the quantity its default (`said`, at
+    /// `at`) was said in, else the default's.
+    fn param_given(&self, name: &str, said: Option<Rc<units::Said>>, at: &Sexp) -> R<Option<Rc<units::Said>>> {
+        let Some((_, Given { value, unit: Some(unit) })) = self.overrides.iter().find(|(k, _)| k == name) else { return Ok(said) };
+        let (v, unit) = (*value, *unit);
+        if let Some(s) = &said
+            && s.unit.quantity != unit.quantity
+        {
+            return Err(self.err(at, format!("--param {name}: {name} is {}, written {}, but {} is {}", s.unit.quantity.name(), s.cite(), unit.name, unit.quantity.name())));
+        }
+        Ok(Some(Rc::new(units::Said { unit, written: units::to(v, unit), file: std::sync::Arc::from(format!("--param {name}")), line: 0 })))
+    }
+
+    /// Expression `e` as a field where a slot takes quantity `q` (`what`:
+    /// the slot), its value checked as `fits` does.
+    fn field_of(&mut self, e: &Sexp, q: Quantity, what: &str, env: &mut Env) -> R<NodeId> {
+        let v = self.eval(e, env)?;
+        self.fits(&v, e, q, what)?;
+        self.as_field(v, e)
+    }
+
+    /// What a sum's value `(name ARGS)` is said by (units::Said): its
+    /// terms' one quantity, an error where they say two. Other ops carry
+    /// none (a product's units combine; a comparison is 1 or 0).
+    fn sum_said(&self, name: &str, args: &[Value], at: &Sexp) -> R<Option<Rc<units::Said>>> {
+        let terms = match name {
+            "+" | "-" | "neg" | "abs" | "min" | "max" => args,
+            "select" if args.len() == 3 => &args[1..],
+            _ => return Ok(None),
+        };
+        self.one_said(name, terms, at)
+    }
+
+    /// What values that are one quantity (a sum's terms, a range's ends)
+    /// are said by: the first said, an error at `at` where two say two
+    /// quantities (`what`: the form, for the message).
+    fn one_said(&self, what: &str, terms: &[Value], at: &Sexp) -> R<Option<Rc<units::Said>>> {
+        let mut said = terms.iter().filter_map(|v| if let Value::Field(_, Some(s)) = v { Some(s) } else { None });
+        let Some(first) = said.next() else { return Ok(None) };
+        let mut kept = first;
+        for s in said {
+            if s.unit.quantity != first.unit.quantity {
+                let m = format!("'{what}' takes values of one quantity, but {} is {} and {} is {}", first.cite(), first.unit.quantity.name(), s.cite(), s.unit.quantity.name());
+                return Err(self.err(at, m));
+            }
+            // Said in the unit units::kept keeps (degF over degC).
+            if units::kept(kept.unit, s.unit).is_ok_and(|u| !std::ptr::eq(u, kept.unit)) {
+                kept = s;
+            }
+        }
+        Ok(Some(kept.clone()))
     }
 
     fn check_cell(&self, e: &Sexp, h: f64) -> R<f64> {
@@ -3622,8 +3847,7 @@ impl Doc {
                         ));
                     }
                     // A constant: a claim's res is not a design parameter.
-                    self.fits(r, Quantity::Length, "res", &Vec::new())?;
-                    let f = self.field(r, &mut Vec::new())?;
+                    let f = self.field_of(r, Quantity::Length, "res", &mut Vec::new())?;
                     let h = self.g.as_const(f).ok_or_else(|| self.err(r, "expected a constant number"))?;
                     res = Some(self.check_cell(r, h)?);
                 }
@@ -3661,11 +3885,12 @@ impl Doc {
             }
             _ => return Err(self.err_hint(o, format!("expected (accuracy x), not {o}"), Some(HINT.into()))),
         };
+        let v = self.eval(x, env)?;
         if let Some(q) = q {
-            self.fits(x, q, "accuracy", env)?;
+            self.fits(&v, x, q, "accuracy")?;
         }
-        self.fits_change(x, "an accuracy", env)?;
-        let f = self.field(x, env)?;
+        self.fits_change(&v, x, "an accuracy")?;
+        let f = self.as_field(v, x)?;
         let t = self.g.as_const(f).ok_or_else(|| self.err(x, "expected a constant number"))?;
         if !(t > 0.0 && t.is_finite()) {
             return Err(self.err(x, format!("(accuracy x) expects an accuracy above 0 and finite, got {t}")));
@@ -3737,8 +3962,7 @@ impl Doc {
             }
             ("clearance", [p, q, d]) => {
                 let (p, q) = (self.field(p, env)?, self.field(q, env)?);
-                self.fits(d, Quantity::Length, "clearance", env)?;
-                let d = self.field(d, env)?;
+                let d = self.field_of(d, Quantity::Length, "clearance", env)?;
                 let d = self.claim_bound(d).ok_or_else(|| self.err(c, "clearance distance must be a number (constants and params), not a field"))?;
                 Claim::Clearance(p, q, d)
             }
@@ -3752,8 +3976,7 @@ impl Doc {
             ("volume", [f, op, v]) => {
                 let f = self.field(f, env)?;
                 let cmp = self.cmp_of(op)?;
-                self.fits(v, Quantity::Volume, "volume", env)?;
-                let v = self.field(v, env)?;
+                let v = self.field_of(v, Quantity::Volume, "volume", env)?;
                 let bound = self.claim_bound(v).ok_or_else(|| self.err(c, BOUND))?;
                 // The integral of 1 over the shape.
                 let one = self.g.constant(1.0);
@@ -3815,10 +4038,10 @@ impl Doc {
                 }
                 let metric = self.form_metric(m, of, env, "assert")?;
                 let cmp = self.cmp_of(op)?;
-                if let Some(q) = self.registry.metric_quantity(m) {
-                    self.fits(v, q, m, env)?;
-                }
-                let v = self.field(v, env)?;
+                let v = match self.registry.metric_quantity(m) {
+                    Some(q) => self.field_of(v, q, m, env)?,
+                    None => self.field(v, env)?,
+                };
                 let value = self.claim_bound(v).ok_or_else(|| self.err(c, BOUND))?;
                 Claim::Metric { metric, cmp, value, excluding }
             }
@@ -3903,11 +4126,11 @@ impl Doc {
     /// A field, or each of a vec of them (at least one).
     fn fields(&mut self, e: &Sexp, env: &mut Env) -> R<Vec<NodeId>> {
         match self.eval(e, env)? {
-            Value::Field(f) => Ok(vec![f]),
+            Value::Field(f, _) => Ok(vec![f]),
             Value::Vec(v) if !v.is_empty() => v
                 .into_iter()
                 .map(|x| match x {
-                    Value::Field(f) => Ok(f),
+                    Value::Field(f, _) => Ok(f),
                     other => Err(self.err(e, format!("expected fields, got a {} in the vec: {e}", other.kind()))),
                 })
                 .collect(),
@@ -4307,7 +4530,7 @@ impl Doc {
     pub fn to_world(&mut self, v: &Value, xf: &Xf) -> Value {
         let map = self.inverse_map(xf);
         let w = self.placed_value(v, xf, &map);
-        if let (Value::Field(local), Value::Field(world)) = (v, &w) {
+        if let (Value::Field(local, _), Value::Field(world, _)) = (v, &w) {
             self.record_placed(*world, *local, xf);
         }
         w
@@ -4387,7 +4610,7 @@ impl Doc {
 
     fn warp_value(&mut self, v: &Value, map: &[(Var, NodeId)]) -> Value {
         match v {
-            Value::Field(f) => Value::Field(self.g.subst(*f, map)),
+            Value::Field(f, said) => Value::Field(self.g.subst(*f, map), said.clone()),
             Value::Vec(items) => Value::Vec(items.iter().map(|i| self.warp_value(i, map)).collect()),
             other => other.clone(),
         }
@@ -4411,7 +4634,7 @@ impl Doc {
             }
             if let Some(v) = self.def(target) {
                 return match v {
-                    Value::Field(f) => Ok(vec![Item { label: target.into(), shape: *f, attrs: Attrs::default(), instance: None, links: Vec::new() }]),
+                    Value::Field(f, _) => Ok(vec![Item { label: target.into(), shape: *f, attrs: Attrs::default(), instance: None, links: Vec::new() }]),
                     other => Err(format!("def '{target}' is a {}, not a field", other.kind())),
                 };
             }
@@ -4530,7 +4753,7 @@ impl Doc {
     fn value_text(&self, v: &Value) -> String {
         match v {
             Value::Str(s) => s.clone(),
-            Value::Field(f) => self.load_value(*f).map_or_else(|| "(a field of x, y, z or t)".into(), |x| format!("{x}")),
+            Value::Field(f, _) => self.load_value(*f).map_or_else(|| "(a field of x, y, z or t)".into(), |x| format!("{x}")),
             Value::Vec(items) => format!("[{}]", items.iter().map(|x| self.value_text(x)).collect::<Vec<_>>().join(", ")),
             Value::Data(d) => d.value().to_string(),
             other => format!("(a {})", other.kind()),
@@ -4541,7 +4764,7 @@ impl Doc {
     pub fn placed_attrs(&mut self, it: &Item) -> Attrs {
         fn placed(doc: &mut Doc, v: &Value, it: &Item) -> Value {
             match v {
-                Value::Field(f) => Value::Field(doc.place(*f, it)),
+                Value::Field(f, said) => Value::Field(doc.place(*f, it), said.clone()),
                 Value::Vec(items) => Value::Vec(items.iter().map(|x| placed(doc, x, it)).collect()),
                 other => other.clone(),
             }
@@ -4663,7 +4886,7 @@ impl Doc {
     /// the first that fails, or a direction with no length there:
     /// Doc::check_conditions). Rates no shape reads are not needed there:
     /// what reads them refuses them itself (Doc::needed).
-    pub fn ctx(&self, overrides: &[(String, f64)], t: f64) -> Result<Ctx, String> {
+    pub fn ctx(&self, overrides: &[(String, Given)], t: f64) -> Result<Ctx, String> {
         let (ctx, failed) = self.ctx_at(overrides, t)?;
         match failed.iter().find(|(i, _)| self.needed(*i)) {
             Some((_, e)) => Err(e.message.clone()),
@@ -4746,7 +4969,7 @@ impl Doc {
     /// A claim's operand: a shape (Ok), or a point (Err: `probe`).
     fn shape_or_point(&mut self, e: &Sexp, env: &mut Env) -> R<Result<NodeId, [NodeId; 3]>> {
         match self.eval(e, env)? {
-            Value::Field(f) => Ok(Ok(f)),
+            Value::Field(f, _) => Ok(Ok(f)),
             Value::Point(p) => Ok(Err(p)),
             other => Err(self.err(e, format!("expected a shape (a field) or a point (probe), got a {}: {e}", other.kind()))),
         }
@@ -4766,8 +4989,14 @@ impl Doc {
     }
 
     fn field(&mut self, e: &Sexp, env: &mut Env) -> R<NodeId> {
-        match self.eval(e, env)? {
-            Value::Field(f) => Ok(f),
+        let v = self.eval(e, env)?;
+        self.as_field(v, e)
+    }
+
+    /// Value `v` of `e` as a field.
+    fn as_field(&self, v: Value, e: &Sexp) -> R<NodeId> {
+        match v {
+            Value::Field(f, _) => Ok(f),
             other => Err(self.err(e, format!("expected a field (number expression), got a {}: {e}", other.kind()))),
         }
     }
@@ -4784,7 +5013,7 @@ impl Doc {
         }
         let key = self.scoped(s);
         if let Some(i) = self.param_index(&key) {
-            return Ok(Value::Field(self.g.var(Var::Param(i as u32))));
+            return Ok(Value::Field(self.g.var(Var::Param(i as u32)), self.param_said.get(&i).cloned()));
         }
         if let Some(v) = self.def(&key) {
             return Ok(v.clone());
@@ -4832,7 +5061,7 @@ impl Doc {
                 return Err(self.err_hint(at, format!("unknown name '{s}'"), hint));
             }
         };
-        Ok(Value::Field(v))
+        Ok(Value::Field(v, None))
     }
 
     fn callable(&mut self, e: &Sexp, env: &mut Env) -> R<Callable> {
@@ -4851,6 +5080,11 @@ impl Doc {
 
     fn const_num(&mut self, e: &Sexp, env: &mut Env) -> R<f64> {
         let f = self.field(e, env)?;
+        self.const_of(e, f)
+    }
+
+    /// Field `f` of `e` as a number known at load time.
+    fn const_of(&mut self, e: &Sexp, f: NodeId) -> R<f64> {
         self.load_number(e, f)?.ok_or_else(|| self.err_hint(e, "expected a number known at load time", Some("constants and params work here; x, y, z and t do not".into())))
     }
 
@@ -4860,8 +5094,8 @@ impl Doc {
         use serde_json::Value as J;
         let at = |v: &J, place: &dyn Fn() -> Data, me: &mut Self| -> Result<Value, String> {
             Ok(match v {
-                J::Number(n) => Value::Field(me.g.constant(n.as_f64().ok_or("number out of range")?)),
-                J::Bool(b) => Value::Field(me.g.constant(if *b { 1.0 } else { 0.0 })),
+                J::Number(n) => Value::Field(me.g.constant(n.as_f64().ok_or("number out of range")?), None),
+                J::Bool(b) => Value::Field(me.g.constant(if *b { 1.0 } else { 0.0 }), None),
                 J::String(s) => Value::Str(s.clone()),
                 J::Array(_) | J::Object(_) => return me.json_value(&place()),
                 J::Null => return Err("null is not a value".into()),
@@ -4990,7 +5224,7 @@ impl Doc {
         }
         // A choice of frames is one of their numbers: a part that changes
         // hands (picked up at a moment) is placed by (select c F G).
-        if let (Some(Builtin::Select), [Value::Field(c), Value::Frame(a), Value::Frame(b)]) = (builtin(name), args.as_slice()) {
+        if let (Some(Builtin::Select), [Value::Field(c, _), Value::Frame(a), Value::Frame(b)]) = (builtin(name), args.as_slice()) {
             let mut pick = |p: NodeId, q: NodeId| self.g.select(*c, p, q);
             let r = std::array::from_fn(|i| std::array::from_fn(|k| pick(a.r[i][k], b.r[i][k])));
             return Ok(Value::Frame(Xf { r, t: std::array::from_fn(|i| pick(a.t[i], b.t[i])) }));
@@ -4998,7 +5232,7 @@ impl Doc {
         let mut fs = Vec::with_capacity(args.len());
         for v in &args {
             match v {
-                Value::Field(f) => fs.push(*f),
+                Value::Field(f, _) => fs.push(*f),
                 other => {
                     let frames = if name == "select" { ", or a number and two frames" } else { "" };
                     let got = match other {
@@ -5027,7 +5261,7 @@ impl Doc {
                     self.g.select(ab, zero, ne)
                 }
             };
-            return Ok(Value::Field(id));
+            return Ok(Value::Field(id, None));
         }
         let id = match builtin(name).expect("builtin") {
             Builtin::Un(op) => {
@@ -5055,17 +5289,25 @@ impl Doc {
                 self.g.select(fs[0], fs[1], fs[2])
             }
         };
-        Ok(Value::Field(id))
+        Ok(Value::Field(id, self.sum_said(name, &args, at)?))
     }
 
     fn eval(&mut self, e: &Sexp, env: &mut Env) -> R<Value> {
         let items = match &e.k {
-            SK::Num(v, _) if self.scope == Scope::STD => return Ok(Value::Field(self.g.own(*v))),
-            SK::Num(v, _) => {
-                if self.wild_written.is_none() && crate::graph::wild(*v) {
-                    self.wild_written = Some((*v, format!("{}:{}", self.file, e.line)));
-                }
-                return Ok(Value::Field(self.g.constant(*v)));
+            SK::Num(v, unit) => {
+                let f = if self.scope == Scope::STD {
+                    self.g.own(*v)
+                } else {
+                    if self.wild_written.is_none() && crate::graph::wild(*v) {
+                        self.wild_written = Some((*v, format!("{}:{}", self.file, e.line)));
+                    }
+                    self.g.constant(*v)
+                };
+                let said = unit.as_ref().map(|w| match w {
+                    sexp::Written::Here(unit, written) => Rc::new(units::Said { unit, written: *written, file: std::sync::Arc::from(&*self.file), line: e.line }),
+                    sexp::Written::From(s) => Rc::new((**s).clone()),
+                });
+                return Ok(Value::Field(f, said));
             }
             SK::Str(s) => return Ok(Value::Str(s.clone())),
             SK::Sym(s) => return self.lookup(s, e, env),
@@ -5106,11 +5348,11 @@ impl Doc {
             "unit" => {
                 let [v] = args else { return Err(self.err(e, "usage: (unit vec): the unit vector along a vec of fields")) };
                 let Value::Vec(items) = self.eval(v, env)? else { return Err(self.err(v, "unit expects a vec")) };
-                let fs = items.iter().map(|i| if let Value::Field(f) = i { Some(*f) } else { None }).collect::<Option<Vec<_>>>();
+                let fs = items.iter().map(|i| if let Value::Field(f, _) = i { Some(*f) } else { None }).collect::<Option<Vec<_>>>();
                 let fs = fs.filter(|f| !f.is_empty()).ok_or_else(|| self.err(v, "unit expects a vec of fields (numbers)"))?;
                 let hint = "(unit v) is v / |v|, which needs v nonzero (a path's tangent is zero between two equal points, and a sweep's first normal where `up` lies along its first segment); where it reads a param or t, keep it nonzero over their ranges";
                 let u = self.unit(&fs, e, &format!("the vector of {e}"), hint)?;
-                return Ok(Value::Vec(u.into_iter().map(Value::Field).collect()));
+                return Ok(Value::Vec(u.into_iter().map(|f| Value::Field(f, None)).collect()));
             }
             "lambda" | "map" | "reduce" | "fold" | "flatten" | "apply" | "range" | "len" | "concat" | "char-codes" | "slice" | "if" | "read-json" | "get" | "diff" => {
                 return self.eval_author(name, e, args, env);
@@ -5186,15 +5428,15 @@ impl Doc {
                     _ => return Err(self.err_hint(n, "tag name must be a name or string", Some(usage.into()))),
                 };
                 let f = self.field(f, env)?;
-                return Ok(Value::Field(if opaque { self.g.tag_opaque(&name, f) } else { self.g.tag(&name, f) }));
+                return Ok(Value::Field(if opaque { self.g.tag_opaque(&name, f) } else { self.g.tag(&name, f) }, None));
             }
             "lipschitz" => {
                 let [k, f] = args else { return Err(self.err(e, "usage: (lipschitz k field) promises |grad field| <= k in x y z (exact distance: 1); proofs trust it")) };
                 let (k, f) = (self.field(k, env)?, self.field(f, env)?);
                 if self.reads_moving_input(&[k, f], env) {
-                    return Ok(Value::Field(f));
+                    return Ok(Value::Field(f, None));
                 }
-                return Ok(Value::Field(self.g.lipschitz(f, k)));
+                return Ok(Value::Field(self.g.lipschitz(f, k), None));
             }
             "attr-of" => {
                 let usage = "usage: (attr-of PATH NAME): the attribute NAME of the body placed at PATH (or the body PATH), as the body writes it: a record, string or number";
@@ -5228,7 +5470,7 @@ impl Doc {
                 return match materials::required(&mut self.g, &label, &attrs, &k) {
                     Ok(f) => {
                         self.want(&[f]);
-                        Ok(Value::Field(f))
+                        Ok(Value::Field(f, None))
                     }
                     Err(m) => Err(self.err_hint(e, m.message, m.hint)),
                 };
@@ -5239,16 +5481,17 @@ impl Doc {
             "ranged" => {
                 let usage = "usage: (ranged lo hi [at]): a new variable, which every claim reading it ranges over [lo, hi] (a range of the question: \
                              how far a tool is withdrawn, how far a view looks), and no run pins (--nominal, --param); at (lo if not given) where nothing ranges (eval, mesh, view)";
-                let ([lo, hi] | [lo, hi, _]) = args else { return Err(self.err_hint(e, "bad ranged", Some(usage.into()))) };
-                let mut end = |x: &Sexp| -> R<f64> {
-                    let f = self.field(x, env)?;
-                    self.g.as_const(f).filter(|v| v.is_finite()).ok_or_else(|| self.err_hint(x, "a range's ends are constant finite numbers", Some(usage.into())))
+                if !(2..=3).contains(&args.len()) {
+                    return Err(self.err_hint(e, "bad ranged", Some(usage.into())));
+                }
+                let ends = args.iter().map(|x| self.eval(x, env)).collect::<R<Vec<_>>>()?;
+                let said = self.one_said("ranged", &ends, e)?;
+                let end = |i: usize| -> R<f64> {
+                    let f = self.as_field(ends[i].clone(), &args[i])?;
+                    self.g.as_const(f).filter(|v| v.is_finite()).ok_or_else(|| self.err_hint(&args[i], "a range's ends are constant finite numbers", Some(usage.into())))
                 };
-                let (lo, hi) = (end(lo)?, end(hi)?);
-                let at = match args.get(2) {
-                    Some(x) => end(x)?,
-                    None => lo,
-                };
+                let (lo, hi) = (end(0)?, end(1)?);
+                let at = if args.len() == 3 { end(2)? } else { lo };
                 if !(lo <= at && at <= hi) {
                     return Err(self.err_hint(e, format!("(ranged {lo} {hi} {at}) needs lo <= at <= hi"), Some(usage.into())));
                 }
@@ -5256,9 +5499,15 @@ impl Doc {
                 // no declared name has a space (a def that is one renames it).
                 let base = &self.form_name;
                 let name = (0..).map(|i| format!("{base} {i}")).find(|n| !self.ranged.iter().any(|r| self.params[r.0].name == *n)).unwrap();
+                // A value given it by that name (--param "b 0=2mm") says
+                // its unit as one given a declared param does.
+                let said = self.param_given(&name, said, e)?;
                 self.params.push(Param { name, default: at, tol: None });
                 self.ranged.push((self.params.len() - 1, (lo, hi)));
-                return Ok(Value::Field(self.g.var(Var::Param(self.params.len() as u32 - 1))));
+                if let Some(s) = said.clone() {
+                    self.param_said.insert(self.params.len() - 1, s);
+                }
+                return Ok(Value::Field(self.g.var(Var::Param(self.params.len() as u32 - 1)), said));
             }
             "error" => {
                 let usage = "usage: (error \"text\" [VALUE ...]): a load error saying text and the values after it (strings as written, numbers, records), where it is evaluated (a library refusing an input no part has)";
@@ -5287,6 +5536,7 @@ impl Doc {
             }
             "relation" => return self.eval_relation(e, args, env),
             "polygon" => return self.eval_polygon(e, args, env),
+            "revolve-z" => return self.eval_revolve(e, args, env),
             "study-field" => return self.eval_result(e, args, env),
             "at" => return Ok(Value::Frame(self.eval_at(args, env)?)),
             "axes" => return Ok(Value::Frame(self.eval_axes(e, args, env)?)),
@@ -5329,7 +5579,7 @@ impl Doc {
                     && except.is_none()
                     && let Some(&f) = self.shape_of.get(&path)
                 {
-                    return Ok(Value::Field(f));
+                    return Ok(Value::Field(f, None));
                 }
                 // What it was made from (a body's shape, placements): what
                 // reads it rests on that too.
@@ -5393,7 +5643,7 @@ impl Doc {
                 if part.is_none() && except.is_none() {
                     self.shape_of.insert(path, f);
                 }
-                return Ok(Value::Field(f));
+                return Ok(Value::Field(f, None));
             }
             _ => {}
         }
@@ -5452,10 +5702,10 @@ impl Doc {
             Some(format!("'{name}' is a top-level form, written only at a file's top level (`ink spec --section \"Top-level forms\"`){here}"))
         } else if let Some(axis) = name.strip_prefix("rot-").filter(|a| ["x", "y", "z"].contains(a)) {
             Some(format!("'{name}' is a placement step, written inside (at ...); a shape turns by std's (rotate-{axis} f deg)"))
-        } else if !self.imported.contains("std") && in_std(name) {
+        } else if !self.imported.contains_key("std") && in_std(name) {
             Some(format!("'{name}' is in the standard library: add (import \"std\")"))
         } else {
-            unknown_function_hint(name, &names, self.imported.contains("std"))
+            unknown_function_hint(name, &names, self.imported.contains_key("std"))
         };
         Err(self.err_hint(head, format!("unknown function '{name}'"), hint))
     }
@@ -5605,7 +5855,7 @@ mod tests {
         d.provided.borrow_mut().clear();
         let second = d.g.var(Var::Param(2));
         assert_eq!(d.load_eval(second), 12.0);
-        d.overrides = vec![("p0".into(), 5.0)];
+        d.overrides = vec![("p0".into(), 5.0.into())];
         assert_eq!(d.load_eval(second), 20.0);
         assert_eq!(d.load_eval(second), 20.0); // unchanged inputs do no work
         let constant = d.g.constant(7.0);
@@ -5624,7 +5874,7 @@ mod tests {
         let counts: Vec<_> = calls.iter().map(|c| c.load(Ordering::Relaxed)).collect();
         assert_eq!(d.ctx(&[], 1.0).unwrap().params[2], 15.0);
         assert_eq!(calls.iter().map(|c| c.load(Ordering::Relaxed)).collect::<Vec<_>>(), counts);
-        assert_eq!(d.ctx(&[("p0".into(), 7.0)], 1.0).unwrap().params[2], 31.0);
+        assert_eq!(d.ctx(&[("p0".into(), 7.0.into())], 1.0).unwrap().params[2], 31.0);
     }
 
     #[test]
@@ -5787,7 +6037,7 @@ mod tests {
         assert!(all.iter().all(|x| Rc::ptr_eq(&x.root, &all[0].root)));
         assert_eq!(all[3].value()["d"], 3);
         assert_eq!(all[4].value()["k"], 1);
-        assert!(matches!(d.def("q.d"), Some(Value::Field(f)) if d.g.as_const(*f) == Some(3.0)));
+        assert!(matches!(d.def("q.d"), Some(Value::Field(f, _)) if d.g.as_const(*f) == Some(3.0)));
     }
 
     #[test]
@@ -5800,7 +6050,7 @@ mod tests {
         let d = Doc::load_str_in(&CORE, r#"(def b (read-json "belt.json")) (def w (get b "whole" (get b "per-mm"))) (def p (get b "per-mm" 7))"#, "t", &dir, &[])
             .unwrap_or_else(|e| panic!("{e:?}"));
         let num = |n: &str| match d.def(n) {
-            Some(Value::Field(f)) => d.g.as_const(*f),
+            Some(Value::Field(f, _)) => d.g.as_const(*f),
             v => panic!("{n}: {v:?}"),
         };
         assert_eq!((num("w"), num("p")), (Some(600.0), Some(7.0)));
@@ -5819,7 +6069,7 @@ mod tests {
         std::fs::write(dir.join("lib/table.json"), r#"{"member": 7}"#).unwrap();
         std::fs::write(dir.join("table.json"), r#"{"member": 99}"#).unwrap();
         let d = Doc::load_str_in(&CORE, r#"(import "lib/lookup.ink" as l) (def v (l.lookup "member"))"#, "t", &dir, &[]).unwrap_or_else(|e| panic!("{e:?}"));
-        assert!(matches!(d.def("v"), Some(Value::Field(f)) if d.g.as_const(*f) == Some(7.0)));
+        assert!(matches!(d.def("v"), Some(Value::Field(f, _)) if d.g.as_const(*f) == Some(7.0)));
     }
 
     #[test]
@@ -5853,7 +6103,7 @@ mod tests {
         }
         let d = Doc::load_str_in(&CORE, r#"(import "part1.ink" as p) (import "part2.ink" as q)"#, "t", &dir, &[]).unwrap_or_else(|e| panic!("{e:?}"));
         let v = |n: &str| match d.def(n) {
-            Some(Value::Field(f)) => d.g.as_const(*f),
+            Some(Value::Field(f, _)) => d.g.as_const(*f),
             v => panic!("{n}: {v:?}"),
         };
         assert_eq!((v("p.v"), v("q.v"), v("q.k")), (None, None, Some(8.0)));
@@ -5863,7 +6113,7 @@ mod tests {
         assert_eq!(names, ["p.size", "q.size"]);
         let ctx = |q: f64| Ctx::new(0.0, vec![3.0, q]);
         let at = |n: &str, c: &Ctx| match d.def(n) {
-            Some(Value::Field(f)) => ink_core::eval::eval_point(&ink_core::tape::Tape::new(&d.g, *f), c, [0.0; 3]),
+            Some(Value::Field(f, _)) => ink_core::eval::eval_point(&ink_core::tape::Tape::new(&d.g, *f), c, [0.0; 3]),
             v => panic!("{n}: {v:?}"),
         };
         assert_eq!((at("p.v", &ctx(3.0)), at("q.v", &ctx(4.0))), (13.0, 22.0));
@@ -5916,7 +6166,7 @@ mod tests {
             VERSION.store(version, Ordering::SeqCst);
             let src = "(probe p)\n(def f (max (- (abs x) 5) (study-field p v)))";
             let d = Doc::load_str_in(&PROBES, src, "test", Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
-            let Some(Value::Field(f)) = d.def("f") else { panic!("f is not a field") };
+            let Some(Value::Field(f, _)) = d.def("f") else { panic!("f is not a field") };
             d.grid_key("grid-bake", Some(1.0), None, Some(*f), &[], &d.load_ctx().params, &[])
         };
         let (a, b) = (key(1), key(2));
@@ -6049,7 +6299,7 @@ mod tests {
         assert_eq!(hint("(def slot (fn (x d) (move (box d 2 2) x 0 0)))"), "write (fn slot (x d) body)");
         // A def holding a function is called by name, as a local one is.
         let d = load("(def mark (lambda (z) (move (cylinder-z 1 1) 0 0 z)))\n(def marks (min (mark 10) (mark 20)))").unwrap_or_else(|e| panic!("{e:?}"));
-        assert!(matches!(d.def("marks"), Some(Value::Field(_))));
+        assert!(matches!(d.def("marks"), Some(Value::Field(..))));
         assert!(load("(def w 5)\n(def a (w 3))").err().unwrap().message.contains("'w' is a def holding a field, not a function"));
         // A reserved name lists them all.
         for n in ["t", "len", "ln", "floor", "fold", "at"] {
@@ -6122,5 +6372,129 @@ mod tests {
         // two tabs on one edge and a bend beyond both: which flange is it on?
         let two = "(sheet-bend (vec 30 10) (vec 30 0) 90 2) (sheet-bend (vec 30 40) (vec 30 30) 45 2) (sheet-bend (vec 45 40) (vec 45 0) 90 2)";
         assert!(says(&sheet("2", "0.4", two)).contains("a bend's line lies beyond two bends neither of which lies beyond the other"));
+    }
+
+    /// A number's unit goes with its value as it is computed, and the slot
+    /// that uses the value checks it: through lets, calls, the branch an
+    /// `if` takes, functions passed and bound, and sums; not through a
+    /// branch not taken, nor a product (whose units combine).
+    #[test]
+    fn a_value_carries_the_unit_it_was_said_in() {
+        static CORE: Registry = Registry::new(&[]);
+        let fns = "(fn twice (p) (+ p p)) (fn choose (v) (if 1 v 1psi)) (fn other (v) (if 0 v 1psi)) (fn pass (f v) (f v)) (fn id (v) v)";
+        let ids: String = (1..=17).map(|i| format!("(fn id{i} (v) ({} v))", if i == 1 { "id".into() } else { format!("id{}", i - 1) })).collect();
+        let load = |mass: &str| {
+            let src = format!("{fns} {ids} (param pp 50psi) (def r (ranged 1psi 2psi)) (body b (shape (- (max (abs x) (abs y) (abs z)) 1)) (attr mass {mass}))");
+            Doc::load_str_in(&CORE, &src, "t", Path::new("."), &[]).err().map(|e| e.message)
+        };
+        let nested = |x: &str| (0..23).fold(x.to_string(), |a, _| format!("(twice {a})"));
+        for mass in [
+            "(let ((p 50psi)) p)".to_string(),
+            nested("1psi"),
+            "(other 5g)".into(),
+            "(pass id 1psi)".into(),
+            "(let ((g id)) (g 1psi))".into(),
+            "(id17 1psi)".into(),
+            "(nth (map id (vec 1psi)) 0)".into(),
+            "(reduce + (vec 1psi 2psi))".into(),
+            "(- (max pp 0) 1)".into(),
+            "r".into(),
+        ] {
+            let e = load(&mass).unwrap_or_else(|| panic!("{mass}: accepted"));
+            assert!(e.starts_with("attr mass takes a mass") && e.contains("psi (t:1)"), "{mass}: {e}");
+        }
+        for mass in ["(choose 5g)", "(* 2 1psi)", &nested("1g")] {
+            assert_eq!(load(mass), None, "{mass}");
+        }
+        // A sum's terms are one quantity.
+        let e = load("(+ 1g 1psi)").unwrap();
+        assert!(e.starts_with("'+' takes values of one quantity, but 1g (t:1) is a mass and 1psi (t:1) is a pressure"), "{e}");
+    }
+
+    /// A temperature in degF or K reads a point on its scale, so a change
+    /// (a tolerance, an accuracy) in one is refused in a sum too, whichever
+    /// term it is.
+    #[test]
+    fn a_sum_keeps_a_unit_with_a_zero_of_its_own() {
+        for dev in ["(+ 1degC 33.8degF)", "(+ 33.8degF 1degC)", "(+ 1 1K)"] {
+            let src = format!("(param temp 20degC (tol -1 {dev}))");
+            let e = Doc::load_str_in(&CORE, &src, "t", Path::new("."), &[]).err().unwrap_or_else(|| panic!("{dev}: accepted"));
+            assert!(e.message.starts_with("a tolerance's deviation is a change"), "{dev}: {}", e.message);
+        }
+        // A deviation with a unit is its default's quantity; a bare term
+        // in a sum is in the language's unit.
+        let e = Doc::load_str_in(&CORE, "(param dim 1mm (tol -1g 1g))", "t", Path::new("."), &[]).err().unwrap();
+        assert!(e.message.starts_with("a tolerance's deviation takes a length"), "{}", e.message);
+        assert!(Doc::load_str_in(&CORE, "(param dim 1mm (tol (- 0.1 1um) (+ 0.1 1um)))", "t", Path::new("."), &[]).is_ok());
+    }
+
+    /// A `for` makes numbers of its list's values: each keeps the unit its
+    /// value was said in.
+    #[test]
+    fn a_for_keeps_its_values_units() {
+        let load = |list: &str| Doc::load_str_in(&CORE, &format!("(for q {list} (body b (shape (- x 1)) (attr mass q)))"), "t", Path::new("."), &[]).err().map(|e| e.message);
+        for list in ["(vec 50psi)", "(vec (+ 50psi 1))", "(let ((p 50psi)) (vec p))"] {
+            let e = load(list).unwrap_or_else(|| panic!("{list}: accepted"));
+            assert!(e.starts_with("attr mass takes a mass") && e.contains("written 50psi (t:1)"), "{list}: {e}");
+        }
+        assert_eq!(load("(vec 5g)"), None);
+    }
+
+    /// A --param value in a unit is checked as its default would be:
+    /// against the default's quantity, and where the param is used.
+    #[test]
+    fn a_param_given_in_a_unit_is_said_in_it() {
+        let dir = Scratch::new("param-units");
+        let load = |default: &str, given: &str| {
+            let f = dir.join("m.ink");
+            std::fs::write(&f, format!("(param m {default})\n(body b (shape (- x 1)) (attr mass m))")).unwrap();
+            let a = crate::command::Args::parse(&["eval".into(), f.display().to_string(), "--param".into(), format!("m={given}")]);
+            crate::command::param_args(&a).and_then(|p| Doc::load_file_in(&CORE, &f, &p.values)).err().map(|e| e.message)
+        };
+        let says = |default: &str, given: &str, text: &str| {
+            let e = load(default, given).unwrap_or_else(|| panic!("{default} {given}: accepted"));
+            assert!(e.contains(text), "{default} {given}: {e}");
+        };
+        says("5g", "50psi", "--param m: m is a mass, written 5g (");
+        says("5g", "50psi", "m.ink:1), but psi is a pressure");
+        says("5", "50psi", "attr mass takes a mass");
+        says("5", "50psi", "written 50psi (--param m)");
+        says("5", "1psi:2psi", "attr mass takes a mass");
+        says("5", "1g:2psi", "--param m: a range's ends are one quantity, but g is a mass and psi is a pressure");
+        for given in ["50g", "50", "1g:2g", "1mg:2"] {
+            assert_eq!(load("5g", given), None, "{given}");
+        }
+    }
+
+    /// A value given a param keeps its unit wherever it travels: to a
+    /// range by the name its form gives it, through a reload that changes
+    /// the value (an optimizer's design), and across a range's ends (degF
+    /// over degC, as in a sum, whichever end it is).
+    #[test]
+    fn a_given_unit_travels_with_its_value() {
+        let dir = Scratch::new("given-travels");
+        let run = |name: &str, src: &str, given: &str| {
+            let f = dir.join(name);
+            std::fs::write(&f, src).unwrap();
+            let a = crate::command::Args::parse(&["eval".into(), f.display().to_string(), "--param".into(), given.into()]);
+            crate::command::param_args(&a).and_then(|p| crate::view::ModelView::load_in(&CORE, &f, &p.values, 0.0))
+        };
+        // An unnamed range, by its form's name.
+        let size = "(body b (shape (- (max (abs x) (abs y) (abs z)) (ranged 1mm 5mm))))";
+        let e = run("size.ink", size, "b 0=500psi").err().expect("a pressure as a length");
+        assert!(e.message.contains("--param b 0: b 0 is a length, written 1mm") && e.message.contains("but psi is a pressure"), "{}", e.message);
+        assert!(run("size.ink", size, "b 0=0.1in").is_ok());
+        // A reload changing the value keeps its unit: m is a pressure.
+        let opt = "(param m 0)\n(def v (if (> m 1) m 2mm3))\n(body b (shape (- (max (abs x) (abs y) (abs z)) 0.5)))\n(assert a (volume (shape-of b) < v))";
+        let v = run("opt.ink", opt, "m=50psi").unwrap_or_else(|e| panic!("{e:?}"));
+        let e = v.reload(&[("m".into(), 3.0.into())]).err().expect("a pressure as a volume");
+        assert!(e.message.starts_with("volume takes a volume") && e.message.contains("(--param m)"), "{}", e.message);
+        assert!(run("opt.ink", opt, "m=50").unwrap().reload(&[("m".into(), 3.0.into())]).is_ok());
+        // A range's ends: degF or K is kept over degC, either way round.
+        let eps = "(param eps 1) (for v (vec eps) (assert a (value 1 > 0) (accuracy v)))";
+        for given in ["eps=1degC:274.15K", "eps=274.15K:1degC"] {
+            let e = run("eps.ink", eps, given).err().unwrap_or_else(|| panic!("{given}: accepted"));
+            assert!(e.message.starts_with("an accuracy is a change, and K reads a point on its scale"), "{given}: {}", e.message);
+        }
     }
 }

@@ -267,20 +267,24 @@
 ; are bridged, as a closing does.
 ; The edge is its own construction, named "fillet" or "chamfer", where the
 ; ball is the nearest thing. Elsewhere the result is min(a, b) (max(a, b)
-; for an intersection), whose faces are a's and b's.
+; for an intersection), whose faces are a's and b's. r = 0 is no edge.
 (fn fillet-union (a b r angle)
   (let ((th (deg->rad (- 90 angle))) (c (neg (sin th))) (s (cos th))
         (u (- r a)) (v (- r b)) (w (/ (- v (* c u)) s)))
-    (select (neg (min (- u (* c v)) w))
-      (select (neg (corner-reach a b r))
-        (tag "fillet" (- (max r (min a b)) (len2 (max u (* c v)) (max w 0))) opaque)
+    (select (neg r)
+      (select (neg (min (- u (* c v)) w))
+        (select (neg (corner-reach a b r))
+          (tag "fillet" (- (max r (min a b)) (len2 (max u (* c v)) (max w 0))) opaque)
+          (min a b))
         (min a b))
       (min a b))))
 (fn fillet-intersect (a b r angle) (neg (fillet-union (neg a) (neg b) r angle)))
 (fn chamfer-union (a b r)
   (let ((sharp (min a b)) (cut (* (sqrt 0.5) (- (+ a b) r))))
-    (select (neg (min (- r a) (- r b)))
-      (select (neg (corner-reach a b r)) (min (tag "chamfer" cut opaque) sharp) sharp)
+    (select (neg r)
+      (select (neg (min (- r a) (- r b)))
+        (select (neg (corner-reach a b r)) (min (tag "chamfer" cut opaque) sharp) sharp)
+        sharp)
       sharp)))
 (fn chamfer-intersect (a b r) (neg (chamfer-union (neg a) (neg b) r)))
 ; > 0 where a corner of a and b with radius r may be filled at a point:
@@ -409,9 +413,9 @@
 (fn extrude-x (g x0 x1) (warp (extrude-z g x0 x1) y z x))
 (fn extrude-y (g y0 y1) (warp (extrude-z g y0 y1) z x y))
 
-; Revolve a 2D profile g(x, y) about the z axis: profile x is the radius,
-; y the height.
-(fn revolve-z (g) (warp g (len2 x y) z 0))
+; (revolve-z g), built in, turns a 2D profile g(x, y) about the z axis:
+; profile x is the radius, y the height. A profile may start at x = 0: its
+; edge on the axis is no surface, and the axis is inside where it touches.
 
 ; ---------------------------------------------------------------- basic fields (primitives)
 
@@ -627,21 +631,49 @@
 
 ; Frames along a 3D polyline that twist as little as possible
 ; (rotation-minimising), one per segment at its start: z along it, x the
-; normal (`up` picks the first), y the binormal. They are (at ...) frames:
-; (place f F) puts f there, (get F "z") is the tangent.
+; normal (`up` picks the first), y the binormal. Carried round a loop
+; (path-closes) they come back turned about the tangent; that turn is
+; spread along the loop by length, so they close. They are (at ...)
+; frames: (place f F) puts f there, (get F "z") is the tangent.
 (fn path-frames (pts up)
   (map (lambda (r) (axes (origin (nth r 0)) (x (nth r 2)) (z (nth r 1)))) (path-rmf pts up)))
-; path-frames as vectors: (vec origin tangent normal binormal) per segment.
+; path-frames as vectors: (vec origin tangent normal binormal turn) per
+; segment, turn the radians its frame turns on along it (a loop's share of
+; its closing turn; 0 on an open path).
 (fn path-rmf (pts up)
   (let ((tans (map (lambda (a b) (unit (- b a))) (slice pts 0 -1) (slice pts 1)))
-        (n0 (unit (cross (cross (nth tans 0) up) (nth tans 0)))))
-    (map (lambda (o f) (vec o (nth f 0) (nth f 1) (cross (nth f 0) (nth f 1))))
-         (slice pts 0 -1)
-         (fold (lambda (acc t1)
-                 (let ((prev (nth acc -1)))
-                   (concat acc (vec (vec t1 (rmf-step (nth prev 0) (nth prev 1) t1))))))
-               (vec (vec (nth tans 0) n0))
-               (slice tans 1)))))
+        (n0 (unit (cross (cross (nth tans 0) up) (nth tans 0))))
+        (rmf (fold (lambda (acc t1)
+                     (let ((prev (nth acc -1)))
+                       (concat acc (vec (vec t1 (rmf-step (nth prev 0) (nth prev 1) t1))))))
+                   (vec (vec (nth tans 0) n0))
+                   (slice tans 1)))
+        (lens (map (lambda (a b) (norm (- b a))) (slice pts 0 -1) (slice pts 1)))
+        (total (reduce + lens))
+        (starts (fold (lambda (acc l) (concat acc (vec (+ (nth acc -1) l)))) (vec 0) (slice lens 0 -1)))
+        ; The last frame carried on to the first tangent, and the turn
+        ; about it to the first frame (below 1e-12, rounding: none).
+        (back (rmf-step (nth (nth rmf -1) 0) (nth (nth rmf -1) 1) (nth tans 0)))
+        (turn (select (path-closes pts) (atan2 (dot (cross back n0) (nth tans 0)) (dot back n0)) 0))
+        (turn (select (- (abs turn) 1e-12) 0 turn)))
+    (map (lambda (o f s l)
+           (let ((a (* turn (/ s total))) (tn (nth f 0)) (n (nth f 1)) (b (cross (nth f 0) (nth f 1))))
+             (vec o tn (+ (* n (cos a)) (* b (sin a))) (- (* b (cos a)) (* n (sin a))) (* turn (/ l total)))))
+         (slice pts 0 -1) rmf starts lens)))
+
+; Where `here` lies in the section of segment i (a to b) of a path with
+; path-rmf's `frames`: its frame's x and y, turned on by the frame's turn as
+; here goes from the mitre at a to the mitre at b (the planes bisecting the
+; joints), so neighbouring sections meet on their mitre.
+(fn path-section-xy (frames i a b)
+  (let ((f (nth frames i)) (q (- here a))
+        (ta (+ (nth (nth frames (- i 1)) 1) (nth f 1)))
+        (tb (+ (nth f 1) (nth (nth frames (if (== i (- (len frames) 1)) 0 (+ i 1))) 1)))
+        (da (/ (dot q ta) (max (norm ta) 1e-9)))
+        (db (/ (dot (- b here) tb) (max (norm tb) 1e-9)))
+        (th (* (nth f 4) (clamp (/ da (max (+ da db) (* 1e-9 (norm (- b a))))) 0 1)))
+        (u (dot q (nth f 2))) (v (dot q (nth f 3))))
+    (vec (+ (* u (cos th)) (* v (sin th))) (- (* v (cos th)) (* u (sin th))))))
 
 ; Parallel transport: normal r0 turned by the rotation taking tangent t0 to
 ; t1. Parallel tangents leave r0 as it is.
@@ -679,18 +711,20 @@
     (nth (reduce (lambda (a b) (select (- (nth a 0) (nth b 0)) a b)) pieces) 1)))
 
 ; Sweep a 2D profile (a field in x, y) along a 3D polyline: its x follows
-; the rotation-minimising frame's normal, its y the binormal. Joints are
-; mitred, a sharp mitre's outer corner rounded at the profile's reach (as in
-; tube and pipe). Ends are flat; a loop has none. Along a straight run the
-; field is the profile's (exact if it is); past the flat ends' rims, a
-; bound. Sample curves finely.
+; the rotation-minimising frame's normal, its y the binormal (path-frames:
+; on a loop they turn along each segment by its share of the closing turn,
+; from mitre to mitre). Joints are mitred, a sharp mitre's outer corner
+; rounded at the profile's reach (as in tube and pipe). Ends are flat; a
+; loop has none. Along a straight run the field is the profile's (exact if
+; it is and its frame does not turn); past the flat ends' rims, a bound.
+; Sample curves finely.
 (fn sweep (profile pts up)
   (let ((frames (path-rmf pts up))
         (reach (profile-reach profile)))
     (check (path-thickness pts >= reach) (by-nearest-segment pts
       (lambda (i a b)
-        (let ((f (nth frames i)) (q (- here a)))
-          (max (warp profile (dot q (nth f 2)) (dot q (nth f 3)) 0)
+        (let ((xy (path-section-xy frames i a b)))
+          (max (warp profile (nth xy 0) (nth xy 1) 0)
                (- (segment-distance-at here a b) reach))))))))
 
 ; Sweep a section that varies along the path. (section s) is the 2D profile
@@ -711,9 +745,9 @@
         (reach (profile-reach (warp (section z) x y (* 0.5 (+ z 1))))))
     (check (path-thickness pts >= reach) (by-nearest-segment pts
       (lambda (i a b)
-        (let ((f (nth frames i)) (q (- here a))
+        (let ((f (nth frames i)) (q (- here a)) (xy (path-section-xy frames i a b))
               (s (clamp (/ (+ (nth starts i) (dot q (nth f 1))) total) 0 1)))
-          (max (warp (section z) (dot q (nth f 2)) (dot q (nth f 3)) s)
+          (max (warp (section z) (nth xy 0) (nth xy 1) s)
                (- (segment-distance-at here a b) reach))))))))
 
 
@@ -1617,7 +1651,10 @@
 ;     1/100 th (at most BA/4) into their zones, sticking out of the
 ;     bend's outside face there by under (th/100)^2 / 2(r + th).
 ;   (sheet-flat S)  the flat pattern, z 0..th. `ink slice --out FILE.dxf`
-;     writes its cut file: outline and holes, not bend lines.
+;     writes its cut file: outline and holes, and the bend lines its body
+;     marks, `(mark bend (sheet-bend-lines S))`.
+;   (sheet-bend-lines S)  each bend's centre line, a to b within the
+;     outline: marks (vec g r) for a body's (mark NAME ...).
 ;   (sheet-frame S u v side)  the frame at the flat's point (u v) on its top
 ;     (side 1) or bottom face (-1), carried to the folded part: z out of
 ;     that face, x the flat's x.
@@ -1672,6 +1709,8 @@
                  (if (> (len holes) 0) (apply subtract (concat (vec outline) holes)) outline)
                  depths)))))))
 (fn sheet-flat (S) (extrude-z (nth S 6) 0 (nth S 2)))
+(fn sheet-bend-lines (S)
+  (map (lambda (g) (vec (sheet-across g here2) (max (sheet-lat g here2) (nth S 0)))) (nth S 4)))
 (fn sheet-folded (S) (let ((ps (sheet-pieces S))) (reduce min (concat (vec (nth ps 0)) (nth ps 1) (nth ps 2)))))
 ; Tests only pairs of pieces no bend joins (a zone joins its flange and the
 ; one it is on) whose proven boxes overlap, boxes taken without the holes.

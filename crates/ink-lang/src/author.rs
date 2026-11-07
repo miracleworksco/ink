@@ -81,13 +81,14 @@ impl Doc {
     fn literal(&self, v: &Value, at: &Sexp) -> R<(Sexp, String)> {
         let mk = |k: SK| Sexp { k, line: at.line, col: at.col };
         Ok(match v {
-            Value::Field(f) => {
+            Value::Field(f, said) => {
                 let x = match self.g.as_const(*f) {
                     Some(x) => x,
                     None => self.load_number(at, *f)?.ok_or_else(|| self.err(at, "for values must be known at load time"))?,
                 };
                 let text = if x.fract() == 0.0 && x.abs() < 1e15 { format!("{}", x as i64) } else { format!("{x}") };
-                (mk(SK::Num(x, None)), text)
+                // The number keeps the unit its value was said in.
+                (mk(SK::Num(x, said.as_ref().map(|s| crate::sexp::Written::From(Box::new((**s).clone()))))), text)
             }
             Value::Str(t) => (mk(SK::Str(t.clone())), t.clone()),
             Value::Vec(items) => {
@@ -113,9 +114,10 @@ impl Doc {
         if let Callable::Builtin(name) = f
             && let Some(Builtin::Variadic(op)) = builtin(name)
         {
-            let ids: Option<Vec<NodeId>> = items.iter().map(|v| if let Value::Field(n) = v { Some(*n) } else { None }).collect();
+            let ids: Option<Vec<NodeId>> = items.iter().map(|v| if let Value::Field(n, _) = v { Some(*n) } else { None }).collect();
             if let Some(ids) = ids {
-                return Ok(Value::Field(self.reduce(op, &ids)));
+                let said = self.sum_said(name, items, at)?;
+                return Ok(Value::Field(self.reduce(op, &ids), said));
             }
         }
         let m = items.len() / 2;
@@ -210,12 +212,12 @@ impl Doc {
                     return Err(self.err(e, format!("{name} would produce {} elements (limit 1e6)", if count < 1e12 { count.to_string() } else { format!("{count:e}") })));
                 }
                 let vals: Vec<f64> = (0..count as usize).map(|i| start + step * i as f64).collect();
-                return Ok(Value::Vec(vals.into_iter().map(|v| Value::Field(self.g.constant(v))).collect()));
+                return Ok(Value::Vec(vals.into_iter().map(|v| Value::Field(self.g.constant(v), None)).collect()));
             }
             "len" => {
                 let [l] = args else { return Err(self.err(e, "usage: (len list)")) };
                 let n = self.list(l, env)?.len();
-                return Ok(Value::Field(self.g.constant(n as f64)));
+                return Ok(Value::Field(self.g.constant(n as f64), None));
             }
             "concat" => {
                 // Lists end to end, or strings (names for (tag ...)).
@@ -237,7 +239,7 @@ impl Doc {
                 // load-time code can read text: index tables, decode data.
                 let [a] = args else { return Err(self.err(e, "usage: (char-codes \"text\")")) };
                 let Value::Str(s) = self.eval(a, env)? else { return Err(self.err(a, "char-codes takes a string")) };
-                return Ok(Value::Vec(s.chars().map(|c| Value::Field(self.g.constant(c as u32 as f64))).collect()));
+                return Ok(Value::Vec(s.chars().map(|c| Value::Field(self.g.constant(c as u32 as f64), None)).collect()));
             }
             "slice" => {
                 let usage = "usage: (slice list start [end]); negative indices count from the end";
@@ -304,7 +306,7 @@ impl Doc {
                             }
                             _ => return Err(self.err_hint(k, format!("a frame has no '{key}'"), Some("its keys: \"origin\", \"x\", \"y\", \"z\"".into()))),
                         };
-                        return Ok(Value::Vec(v.map(Value::Field).to_vec()));
+                        return Ok(Value::Vec(v.map(|f| Value::Field(f, None)).to_vec()));
                     }
                     _ => return Err(self.err(d, "get expects data (a JSON object) or a frame")),
                 };
@@ -330,7 +332,7 @@ impl Doc {
                     "t" => Var::T,
                     // A param by name, or a value that is a param itself (a (ranged lo hi)).
                     p => match self.param_index(p).map(|k| k as u32).or_else(|| match self.eval(v, env) {
-                        Ok(Value::Field(g)) => match self.g.nodes[g as usize] {
+                        Ok(Value::Field(g, _)) => match self.g.nodes[g as usize] {
                             crate::graph::Node::Var(Var::Param(k)) => Some(k),
                             _ => None,
                         },
@@ -340,7 +342,7 @@ impl Doc {
                         None => return Err(self.err_hint(v, format!("'{p}' is not x, y, z, t or a param"), Some(usage.into()))),
                     },
                 };
-                return Ok(Value::Field(self.derivative(f, var)));
+                return Ok(Value::Field(self.derivative(f, var), None));
             }
             _ => {}
         }

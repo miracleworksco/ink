@@ -88,6 +88,68 @@ fn check_flags_a_construction_hidden_inside_another_not_a_narrow_groove() {
     assert!(w.is_empty(), "{w:?}");
 }
 
+/// A name never seen forming surface is reported as undecided, saying where
+/// it was sought and claiming no width for what it may form: a cube cubed
+/// has faces 10 mm across, but no point reaches its surface (its slope is
+/// 0 there), so the search sees nothing.
+#[test]
+fn check_says_where_it_sought_a_name_it_did_not_see_and_bounds_nothing() {
+    let s = sc("unseen");
+    let f = s.model("cubed.ink", "(import \"std\")\n(body b (shape (tag cube (pow (box 10 10 10) 3))))\n");
+    let w = warnings(&run(&s, &["check", &f]), "was not seen forming");
+    assert!(w.len() == 1 && w[0].contains("'cube'") && w[0].contains("where it was sought") && w[0].contains("cells") && !w[0].contains("narrower"), "{w:?}");
+}
+
+/// Check weighs no published mass it need not, and keeps what it knows of
+/// those it does: an inner assembly's, measured because an outer mass
+/// reads its density, says it did not settle (a 0.25 mm plate's volume).
+#[test]
+fn check_says_how_a_density_it_measured_settled() {
+    let s = sc("unsettled");
+    let f = s.model(
+        "plate.ink",
+        "(import \"std\")\n(body plate (shape (box 150 150 0.25)))\n(body block (shape (move (box 10 10 10) 0 0 20)))\n\
+        (assembly inner (attr mass 27) (instance p plate))\n(assembly root (attr mass 100) (instance i inner) (instance b block))\n",
+    );
+    let d = run(&s, &["check", &f]);
+    let asm = |name: &str| d["assemblies"].as_array().unwrap().iter().find(|a| a["name"] == name).unwrap()["mass"].clone();
+    let (inner, root) = (asm("inner"), asm("root"));
+    assert!(inner["met"] == true && inner["unsettled"]["inner.mass-density"].as_str().is_some_and(|w| w.contains("not measured to")), "{}", pretty(&inner));
+    assert!(root["met"] == true && root.get("unsettled").is_none(), "{}", pretty(&root));
+}
+
+/// A void count stops at the call's time limit, as every search does
+/// (crate::stop), and says that is what left it undecided.
+#[test]
+fn a_void_count_stops_at_the_calls_time_limit() {
+    let s = sc("voids-deadline");
+    let f = s.model(
+        "sealed.ink",
+        "(import \"std\")\n(body sealed (shape (min (subtract (move (box 100 100 100) 0 0 50) (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 96 101))\n\
+        \x20 (extrude-z (circle-2d 6) 98.5 98.8))))\n",
+    );
+    let passed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let d = s.ink(["components", &f]).env("INK_DEADLINE", passed.to_string()).ok();
+    let t = &d["targets"][0];
+    assert!(t["cavities"].is_null() && t["proven"]["cavities"]["ended"] == "Stopped", "{}", pretty(t));
+    assert!(d["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("time limit passed")), "{}", pretty(&d));
+}
+
+/// A void count its budget stops says so, with the sizes of the cells it
+/// left, and that a finer res will not help (a hole flush with the void's
+/// ceiling: f = 0 across its mouth, which no res decides).
+#[test]
+fn a_void_count_its_budget_stops_says_so() {
+    let s = sc("voids-budget");
+    let f =
+        s.model("flush.ink", "(import \"std\")\n(body flush (shape (subtract (move (box 100 100 100) 0 0 50) (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101))))\n");
+    let d = run(&s, &["components", &f]);
+    let c = &d["targets"][0]["proven"]["cavities"];
+    assert!(c["ended"] == "Limit" && c["undecided"][0].as_f64().is_some_and(|a| a >= c["finest"].as_f64().unwrap()), "{}", pretty(c));
+    let w: Vec<&str> = d["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).filter(|w| w.contains("cavities")).collect();
+    assert!(w.len() == 1 && w[0].contains("budget") && w[0].contains("a finer res will not help"), "{w:?}");
+}
+
 #[test]
 fn undefined_cases_are_reported_by_check_and_by_eval_by_row() {
     // A ratio whose denominator is 0 wherever x <= 0 gives 0 there; only
@@ -376,6 +438,33 @@ fn gear_mesh_claims_fail_too_close_tilted_or_past_tip_clearance() {
     let plain = s.model("mesh-plain.ink", &format!("{GEARS}\n  (relate p w (gear-mesh 15 45 1)))\n"));
     let r: Vec<String> = ["0", "0.2", "-0.2", "0.3"].iter().map(|g| short(&s, &[&plain, "--param", &format!("gap={g}")])["centre-distance"].clone()).collect();
     assert_eq!(r, ["holds", "holds", "holds", "fails"]);
+}
+
+#[test]
+fn a_planet_orbiting_its_sun_is_related_by_gear_mesh_over_the_motion() {
+    // A planetary stage: three planets on a carrier turning a full turn,
+    // the sun 4 times as fast (a fixed ring of 36), each planet phased by
+    // mesh-turn. Each sun-planet mesh's claims hold over t, its direction
+    // across the axes proven to have a length at every moment. A planet
+    // whose orbit falls through the sun's axis (fall=2: at t = 0.5) has
+    // none there, and the load says when.
+    let s = sc("planetary");
+    let m = s.model(
+        "planetary.ink",
+        "(import \"std\")\n(param fall 0)\n(t-span 0 1)\n\
+         (fn gear (n) (subtract (extrude-z (involute-gear-2d n 1 20 0.05) 0 8) (cylinder-z 2 20)))\n\
+         (body sun (shape (gear 12)))\n(body planet (shape (gear 12)))\n(body carrier (shape (extrude-z (circle-2d 16) -4 -1)))\n\
+         (def c (* 360 t))\n(def s (* 4 c))\n(def rp (* (mesh-distance 12 12 1) (- 1 (* fall t))))\n\
+         (assembly root (instance carrier carrier (at (rot-z c))) (instance sun sun (at (rot-z s)))\n\
+         \x20 (for i (range 3)\n\
+         \x20   (instance p$i planet (at (rot-z (- (mesh-turn 12 12 (+ c (* 120 i)) s) (+ c (* 120 i)))) (move rp 0 0) (rot-z (+ c (* 120 i)))))\n\
+         \x20   (relate sun p$i (gear-mesh 12 12 1 20 0.1))))\n",
+    );
+    let d = run(&s, &["assert", &m]);
+    let held: Vec<_> = d["asserts"].as_array().unwrap().iter().filter(|a| a["status"] == "holds" && a["name"].as_str().unwrap().starts_with("relate:root/sun~p")).collect();
+    assert!(d["all_hold"] == true && held.len() == 9, "{}", pretty(&d));
+    let e = refused(&s, &["assert", &m, "--param", "fall=2"]);
+    assert!(msg(&e).contains("(unit across)") && msg(&e).contains("zero length at t = 0.5"), "{}", pretty(&e));
 }
 
 #[test]
@@ -817,8 +906,8 @@ fn interfere_checks_an_unbounded_body_against_every_other() {
 }
 
 #[test]
-fn interfere_asks_to_a_tenth_of_a_mm_and_samples_overlap_volume_every_accuracy() {
-    // 0.1 mm, not 1/20,000 of the window (0.0002 in a 4 mm one, which this
+fn interfere_asks_to_a_claims_accuracy_and_samples_overlap_volume_every_accuracy() {
+    // 0.05 mm, not 1/20,000 of the window (0.0002 in a 4 mm one, which this
     // 0.025-deep overlap would fail).
     let s = sc("interfere-accuracy");
     let d = run(
@@ -832,7 +921,7 @@ fn interfere_asks_to_a_tenth_of_a_mm_and_samples_overlap_volume_every_accuracy()
             ),
         ],
     );
-    assert!(d["accuracy"] == 0.1 && verdict(&d["pairs"][0]) == "holds", "{}", pretty(&d));
+    assert!(d["accuracy"] == 0.05 && verdict(&d["pairs"][0]) == "holds", "{}", pretty(&d));
     // A failing pair's overlap volume is sampled every accuracy, not at the
     // proof's cells: it stops where it finds a witness, here a 12.8 mm cell,
     // whose samples read these plates' 0.3 mm overlap (750 mm3) as 5812.

@@ -26,7 +26,7 @@ std, the standard library (`(import "std")`, written in ink), gives:
 - primitives centred on the origin: `(box sx sy sz)`, `(cylinder-z r h)`,
   `(sphere r)`;
 - 2D profiles such as `(rect-2d sx sy)` or `(polygon ...)`, made solid by
-  `(extrude-z g z0 z1)` or `(revolve-z g)`;
+  `(extrude-z g z0 z1)` or, built in, `(revolve-z g)`;
 - `(move f dx dy dz)`, `(rotate-z f deg)`;
 - fillets, threads, gears, sheet metal and materials.
 
@@ -136,20 +136,27 @@ inertia      g*mm2 kg*m2 lb*in2
   others are a rounded multiply. The inch, pound and pound-force are the
   international ones.
 - `68degF` is the temperature 20 °C. A temperature difference has no
-  literal: write it in °C. An accuracy or tolerance in degF or K is an
-  error.
+  literal: write it in °C. An accuracy or tolerance in degF or K, alone
+  or in a sum, is an error.
 - Only numbers carry units. Scale an expression by multiplying: `(* n
   1in)`.
 - Where a form takes a known quantity (a package form's forces and
   temperatures, a claim's bound on a metric, `clearance`, `volume`, `res`,
   a joint's limits, a body's density), another quantity's unit is an
-  error saying what it takes, also through a def or param. Sums are looked
-  through; products and function arguments are not checked.
+  error saying what it takes and where that number is written. A number
+  keeps its unit through names, lets, calls, the branch an `if` takes and
+  a `for`'s elements, and through sums, whose terms with a unit must be
+  one quantity (a bare term is in the language's unit, and is allowed); a
+  product's units combine, and it is not checked. A param's tolerance
+  deviations with a unit are its default's quantity, where that has one.
 - A density outside what real materials have (5e-8 to 0.023 g/mm³) is an
   error that says how to write it. 0 is massless.
 - Command options that are lengths or times take units (`--res 0.01in`,
-  `--param wall=0.25in`, `--density 0.284lb/in3`). `--points` and `--rays`
-  are mm.
+  `--param wall=0.25in`, `--density 0.284lb/in3`). A `--param` value or
+  range in a unit (a range's ends one quantity, as a sum's terms) is the
+  param's, wherever the param goes: checked against its default's quantity
+  and every form that uses it, at every value a run tries. `--points` and
+  `--rays` are mm.
 
 Answers are in the same units and don't name them: areas are mm²,
 volumes mm³, inertia g mm², angles deg, and a joint's values deg (a turn)
@@ -340,6 +347,7 @@ builds it is small and functional:
 (profile-reach f)              how far a 2D profile reaches from its origin, proven (to 1/1000 of its size); one reading t is refused
 (ranged lo hi [at])            a variable every claim reading it ranges over [lo, hi] (Tolerances)
 (polygon pts [drafts z0 z1])   a closed profile of lines, arcs and rounded corners (Standard library, Curves)
+(revolve-z g)                  a 2D profile turned about z (Standard library, Turned profiles: revolve-z)
 ```
 
 - Function names are values: `(map square l)`, `(reduce min ds)`. So are
@@ -473,6 +481,8 @@ names defined before it.
 (import "file.ink" as p)               ... under a namespace: its names read p.name here (p.bracket,
                                        p.root/arm, --param p.size=4), so files never clash. std stays
                                        global; files p imports without `as` join p's namespace
+(import "file.ink" (name v) ...)       ... setting its params' defaults for the whole load, so one value
+                                       per name; (name v (tol lo hi)) sets the band too. --param overrides
 (import "std")                         load the standard library (see: ink std)
 (param name default)                   design parameter; override with --param name=v
 (param name default (tol lo hi))       ... with a tolerance, proven over (Tolerances)
@@ -498,15 +508,8 @@ Packages add more forms (Data for other packages).
 params are its body's and root's arguments, defaulting to the params,
 `(body (rail (length length)) ...)`. An instance passes another size,
 `(instance r (p.rail 470))`, so a part at two sizes is two instances of
-one import.
-
-A param is defined once, so a file cannot give an imported one a new
-default (an error says so). To change it:
-
-- for a command, `--param base-t=3.2`, wherever it is declared;
-- as the imported body's or root's argument, pass it in an instance;
-- where its claims and package forms read it too, copy the file, or write
-  the design as functions of the size that both files call.
+one import. An import's value sizes the whole file, its claims and
+studies too: `(import "rail.ink" (length 470))`.
 
 Write dimensions from the params, `(probe 0 0 (+ base-t 1))` not `(probe
 0 0 6)`, so claims follow a new value. Built-in names (x y z t pi, and
@@ -546,7 +549,8 @@ imports. A parts catalog is `parts/` in such a directory.
   (attr material "pla")           ; a std/materials.ink name, or data
   (attr material-note "matte black, 40% infill")
   (attr spec (data (tensile 50 "MPa")))
-  (frame mount (at (move 0 0 5))))  ; a named frame, in the body's coordinates
+  (frame mount (at (move 0 0 5)))  ; a named frame, in the body's coordinates
+  (mark scribe (vec (- x 20) (box 40 20 5))))  ; a curve drawn on it (Marks)
 ```
 
 An attribute has any name and a number, string, data or field (a graded
@@ -567,6 +571,15 @@ piece of a body its own look. A number outside 0..1 (`(vec 200 30 30)`) is
 an error. Without a colour, a body gets a palette colour. A colour
 reading a package form's result shows how the result varies over the
 body.
+
+**Marks.** `(mark NAME CURVE ...)` draws curves on a part that are not
+its shape: a sheet's bend lines, a scribe line. A CURVE is `(vec g r)`,
+where field g is 0 inside field r < 0 (r: where the curve runs), or a vec
+of them. A mark is where g changes sign within r < 0, as a part's
+outline is where f does: a g that only touches 0, or a mark lying in the
+slice's plane, draws nothing there. `ink slice` gives a mark's slice within
+the part's bounds as curves, open or closed, written to a DXF dashed on
+layer NAME, which no target's layer may share.
 
 **Arguments.** A body takes arguments as an assembly does: `(body (spring
 (length 30)) (shape (compression g length)) ...)`. Its shape, attributes
@@ -730,11 +743,10 @@ nothing passes check, assert and interfere. Where holding matters, place
 it on the frame of what holds it and claim it, `(touches a b)`.
 
 **Interference.** `ink interfere` claims that no two instances overlap
-outside declared contact zones, as `disjoint` at accuracy 0.1 mm (twice
-a claim's default, for speed), wherever the model lies. So an overlap up
-to 0.2 mm thick passes (Claims: Accuracy): a shaft 0.2 mm over its bore's
-radius, or a thread out of phase. Check a fit with a `disjoint` claim and
-its `(accuracy x)`. Without root it checks every body, unless an
+outside declared contact zones, each pair a `disjoint` claim at a
+claim's default accuracy, or `--accuracy x`; the answer's `accuracy`
+says which. A pair passing only by that allowance says how deep it came
+(`held`, `near`). Without root it checks every body, unless an
 assembly places one: then it refuses; name one with `--target`.
 
 `pairs` lists the pairs whose bounding boxes overlap, each row the
@@ -901,7 +913,8 @@ never a wrong `holds` or `fails`. The rule, by claim:
   violation no deeper than the accuracy. Parts touching, or overlapping by
   less, are disjoint; across two flat faces that is an interference up to
   twice the accuracy thick. A pin may stand proud of its bore's face by
-  up to twice it and be a subset. So a `within` shows no gap; claim a
+  up to twice it and be a subset. So a `within` shows no gap (exact on
+  its corners, a part flush with them would be unknown); claim a
   clearance for one.
 - `(overlaps a b)` (shapes that must meet, as in a weld) holds by a
   witness point whose cube of half-side the accuracy lies inside both.
@@ -1003,10 +1016,11 @@ Its other fields say what the answer rests on:
 | `value` | fails; a number claim | what the claim measured: a clearance's `gap`; a shape claim's field at the witness, negative (`-depth`); a value, volume, metric, integral or mean claim's number (a mass is an integral). Of several fields, each is under `integrals` or `means`, with its status |
 | `gap` | a clearance fails | the distance between `witness_pair`: the first pair found closer than the clearance, so the smallest gap may be smaller (`ink distance` measures it) |
 | `depth` | an emptiness claim fails (`empty`, `disjoint`, `subset`, `range`, a clearance of 0) | how deep `witness` lies in what violates the claim (inside both shapes for disjoint; inside a and outside b for subset), as the fields measure distance: the overlap is at least this deep |
-| `held`, `near` | an emptiness claim holds, guaranteed, and it (an `interfere` pair as placed, with its zones) reads no ranged param nor t over a span | `held`: `outright` (nothing violates it) or `to the accuracy` (some cells held only by its allowance). Then `near`, where measured: `depth`, the deepest violating point found in those cells, by bounds of the field as placed there (to a µm: seated faces read 0), and `at` where above 0 |
+| `held`, `near` | an emptiness claim holds, guaranteed (over a motion, with t ranged; an `interfere` pair as placed, with its zones, reading no ranged param nor t over a span) | `held`: `outright` (nothing violates it) or `to the accuracy` (some cells held only by its allowance). Then `near`, where measured: `depth`, the deepest violating point found in those cells, by bounds of the field as placed there at one moment and value of the ranged params (to a µm: seated faces read 0), and where above 0 `at` and `params`, those values (t's over a motion) |
 | `params`, `t` | fails over ranged params or a motion | the params' values and the moment there |
 | `hint` | unknown, where it can say; measured over a motion | what would decide it: a smaller `(accuracy x)`, a finer `(res r)`, a probe. Over a motion, why ranging t did not, and that search's hint (`motion.t_ranged`) |
-| `undecided_cells`, `undecided_volume`, `undecided_cell` | unknown, by a search that kept them | how many cells it left undecided, their total volume, and one of them (the cell that ended the search, where one did): `centre` and `size` |
+| `undecided_cells`, `undecided_volume`, `undecided_cell` | unknown, by a search that kept them | how many cells it left undecided, their total volume, and one of them (the cell that ended the proof, where one did): `centre` and `size` |
+| `hunt` | unknown, after a hunt | the cells (a value's pieces) searched for a violation once the proof ended, none found (`cells`), and what stopped it (`stopped_by`): `cap` (as many as the proof tested), `budget`, `time limit`, or `refinement limit` (every cell left at it) |
 | `accuracy_asked` | unknown | the accuracy it was undecided at |
 | `accuracy_attained` | unknown shape claim, where found | the accuracy it does hold to: `(clearance a b 0.29)` unknown with 0.003 means `(clearance a b 0.287)` holds. `accuracy_attained_in_window` where only the window was examined |
 | `unbounded`, `in_window` | a shape not proven bounded | only the window was examined, and what was settled there |
@@ -1050,9 +1064,15 @@ Without `--res`, a search halves its cells down to half the claim's
 accuracy: 0.025 mm at the default 0.05, whatever the model's size. Faces
 that touch by design (a lid on its base) are proven in a few cells,
 whatever their area; curved contacts (teeth in mesh) at cells of about
-the accuracy. A cell undecided at the finest cells ends the search
-`unknown`, with `undecided_cell` and `accuracy_attained`; so does a search
-that would test over four million cells.
+the accuracy. A cell undecided at the refinement limit (space at the
+finest cells; a ranged param halved 8 times in a shape claim's cells, 32
+in a value claim's pieces) ends the proof: the claim is not proven at that
+refinement; so does a search that would test over four million cells.
+The search then hunts a violation in the rest, the largest cells first,
+until it has tested as many cells again as the proof did: one found fails
+the claim; else it is `unknown`, with `undecided_cell`,
+`accuracy_attained`, and `hunt`. A hunt that finds no violation does not
+show there is none: the cells it did not reach may hold one.
 
 - `--res r` (to `assert`, `interfere`, `distance`) lets the search halve
   undecided cells down to r, if r is finer than half the accuracy. Cells
@@ -1110,9 +1130,11 @@ fake a proof or a witness (CORE.md).
 - At a surface point, the kernel follows the min/max/select branches that
   decide the value and reports the names passed (`ink ray`).
 - `ink check` warns about a named construction proven to form none of a
-  body's surface (on a coarse grid: one not ruled out is not reported,
-  though it may form none). Another body used in this one (`shape-of`)
-  counts as one construction.
+  body's surface, and about one it never saw deciding a patch of it where
+  it searched (undecided: it may form only an edge, where it ties with
+  what covers it, or a blend's weighted-out side, or a face the sampled
+  search missed; the warning says how many cells it searched). Another
+  body used in this one (`shape-of`) counts as one construction.
 - `(shape-of path name)` gives a named construction inside a placed part
   (Assemblies).
 - `ink check` also warns about a body with no interior: proven empty, or
@@ -1139,7 +1161,10 @@ gives each command's options.
   skipped: the point, distance, normal (null where the field has no
   gradient) and the name there (`name`, the innermost; `path`, outermost
   first). A ray that only touches or runs along a surface does not hit
-  it. One starting inside material answers its origin (`starts_inside`),
+  it, but where only rounding decides which side of a surface it runs
+  (a face turned at an angle, the ray in it) its hit is where that
+  begins, with `rounding`: how far from 0 the field may be along it. One
+  starting inside material answers its origin (`starts_inside`),
   so start outside the material and inside the window (Where analysis
   looks). `--points`, `--from`,
   `--dir` and `--rays` also take `@file.json`, or `-` for stdin.
@@ -1157,7 +1182,8 @@ gives each command's options.
   or `hole`), area, perimeter and bounds. `--keys kind,points` gives their
   points, simplified to `--accuracy` (default half the cell). `--out
   FILE.dxf` writes the loops as an outline to cut (DXF R12, mm, a layer
-  per target). A sharp corner is cut across by up to a cell.
+  per target), and the targets' marks (kind `mark`, Bodies) dashed on
+  their own layers. A sharp corner is cut across by up to a cell.
 - `ink mass [--density NAME|NUMBER]`: each target's mass, volume and
   centre of mass; with `--keys` naming them, its `inertia` tensor about
   the centre of mass, `principal_moments` and `principal_axes`. `total`
@@ -1177,9 +1203,11 @@ gives each command's options.
     one that did not settle says so (`unsettled`), as does every answer
     reading a published mass's density that did not. `--res` gives the
     cells instead.
-- `ink components`: each target's solids and cavities, as the `cavities`
-  metric counts them (Manufacturing checks): each shell's volume, area,
-  box, `watertight`, and what the mesh missed (`unresolved`).
+- `ink components`: each target's cavities, as the `cavities` metric
+  counts them (Manufacturing checks; `proven`: its bounds, null where they
+  differ), and a mesh's shells (an estimate): `solids`, each shell's
+  volume, area and box, `watertight`, and what the mesh missed
+  (`unresolved`).
 
 **Answers as tables.** Each list of samples (eval's points, ray's rays, a
 slice's loops) is a table, `{"columns": [...], "rows": [[...], ...]}`.
@@ -1273,7 +1301,7 @@ answer may be.
 | gaps, slots, holes | `(min-thickness (air-around part m) > g)` | estimate, the same rays across the air |
 | undercuts from a set of directions | `(empty (hidden part stock (clear-air part stock lo) views))` | guaranteed for undercuts deeper than lo plus twice the accuracy |
 | overhangs, printed along +z | `(empty (overhangs part z0 a h))` | guaranteed, to a few degrees (below) |
-| enclosed voids | `(cavities part < 1)` | estimate: the mesh `ink components` makes |
+| enclosed voids | `(cavities part < 1)` | proven, or unknown (below) |
 | a flat outline to cut | `ink slice --out FILE.dxf` | its loops (Geometric queries) |
 
 examples/machining-access.ink, mould-undercut.ink, print-checks.ink and
@@ -1316,12 +1344,16 @@ bridge a printer can span fails as an overhang where wider than 2 h tan a.
   - A ceiling narrower than 2 h tan a counts as held.
 - **Enclosed voids.** `(cavities f < n)` counts f's enclosed voids, air
   no path leads out of (trapped powder or resin). A shape metric of the
-  design package: the inward-facing shells of the mesh `ink components`
-  makes (Meshes), or one at `(res r)`.
-  - Where the mesh is open or sees it missed a wall, the claim is
-    `unknown`.
-  - A skin thinner than about half a cell can seal a void unseen: give a
-    `(res r)` under half the thinnest wall that could.
+  design package, counted by interval bounds on cells halved where they
+  do not decide, down to its box / 20000, or `(res r)`, within a budget of
+  1 M cells and the call's time: a void sealed by a wall at least a cell
+  thick is found, however steep its field. A proven count is exact.
+  - Where they leave it undecided, the count is bounds: the claim is
+    `unknown` where they straddle its bound (`undecided-cells`: where, the
+    undecided cells' sizes, and what stopped it). At the finest cells: a
+    wall or gap thinner than them, surfaces that touch, a face flush with
+    another (f = 0 across a mouth). At the budget or the time limit, a
+    finer res does not help: count a smaller region.
   - An escape hole's width is a gap.
 - **Draft** is a `range` on a slope (Claims: The other claims).
 
@@ -1456,7 +1488,8 @@ flagged `outside_band` by the others.
   the values. `--param bore-d=8.1` moves the band with the value;
   `--param k=lo:hi` gives an absolute range; `--param k=v:v` pins k;
   `--nominal` drops the declared bands. `ink check` lists each param's
-  `tol` and `band`.
+  `tol` and `band`, and of one an import sets, its `written` default and
+  `set_at`.
 - `(ranged lo hi [at])` is a range of the question, not the part (how far
   a tool is withdrawn, every angle from 0 to 90). It is ranged as a band
   is, but `--nominal` keeps it, and `assert` and `interfere` refuse
@@ -1591,8 +1624,14 @@ over a span of t it is `unknown` (its `unavailable` says why).
   design warns, as does one whose design misses a requirement.
 - It reports that design (exact: its values read back as the floats its
   claims were asked of), its history, its `method` and `apply`: the
-  options that ask `ink assert` what it was verified for. Re-check the
-  design with them.
+  options that ask `ink assert` what it was verified for, each param in
+  the unit it was given in (in a run stopped early's answer too). Re-check
+  the design with them.
+- A design the search tried that could not be evaluated (one the model
+  refuses there, a study that fails) is in `failed_designs`, with its
+  error, and warned of: the search keeps clear of it, so the design
+  returned may be limited by it, not by a requirement. A `"gradient"`
+  run stops at one instead and answers its error.
 - `method` is `"gradient"` where every objective and requirement has
   exact derivatives (volume, mass, `value`, a package metric with an
   adjoint), else `"derivative-free"`, which needs more evaluations.
@@ -1617,7 +1656,7 @@ std is written in ink (std/std.ink, std/materials.ink).
 Sections: scalar helpers (`clamp`, `mix`, `blend`, `deg->rad`, `atan`,
 `acos`, `asin`); combination (`subtract`, smooth blends, fillets,
 chamfers, shells); appearance (`paint`, `color-map`); warps (`move`,
-`rotate-z`, `scale`, `twist-z`, `extrude-z`, `revolve-z`, mirrors,
+`rotate-z`, `scale`, `twist-z`, `extrude-z`, mirrors,
 repeats and patterns, thread frames); primitives (2D and 3D, exact
 distances); lattices; manufacturing; printing; sheet metal; paths; belts
 and chains; power transmission (gears, threads, pulleys).
@@ -1636,9 +1675,11 @@ and chains; power transmission (gears, threads, pulleys).
   ranged). A corner or an arc's bulge within 1e-9 of its points'
   bounding-box diagonal of the line that would replace it is dropped, and
   that line used; drops in a row add up. Its value is 1-Lipschitz, never
-  over the distance. The profile must be simple, its edges not crossing;
-  a crossing is refused where found, but the check misses some (an arc
-  crossing its neighbouring line loads).
+  over the distance. The profile must be simple: edges (lines and arcs as
+  drawn) that meet other than at a shared corner are refused, saying
+  where; beside a shared corner, a meeting whose sliver between the two
+  edges is within 100 times 1e-9 of the diagonal (a tangent joint's
+  rounded data) is allowed.
 - `(polygon pts drafts z0 z1)`: a moulded or drafted wall. pts is the
   profile at z = 0; each edge's wall leans outward by its draft (degrees;
   one for all, or one per edge) as z rises; rounds keep their radius;
@@ -1654,6 +1695,31 @@ and chains; power transmission (gears, threads, pulleys).
 - `bezier3-points`, `spline-points` (Catmull-Rom), `helix-points`,
   `regular-polygon-points`.
 
+### Turned profiles: `revolve-z`
+
+`(revolve-z g)` (built in) turns a 2D profile g(x, y) about the z axis:
+g read with x the radius, sqrt(x² + y²), and y the height, z. Draw the
+profile from x = 0; the axis is inside where the profile touches it.
+
+- An edge on the axis is no surface. Read at the radius (never below 0)
+  it is a term at most 0, and 0 only on the axis: -k x + c with k > 0 and
+  c <= 0 (its coefficients proven, not rounded), or k x + c, c >= 0,
+  negated. Such terms are left out of the profile's maxes (and their
+  negations out of its mins), read through names, `lipschitz`, `neg`,
+  `min`, `max`, multiplying or dividing by a positive constant, and
+  `select`. So `polygon`, a moved or scaled one, `polygon-distance` and
+  `subtract`s of them read inside along the axis. Every sign off the axis
+  is the profile's; only values inside, near an edge left out, change
+  (they read the remaining walls). Values are the profile's kind
+  (`polygon`: never over the distance), not distances to the turned
+  surface.
+- A profile reaching the axis some other way is not inside along the
+  axis: an edge on x = 0 written with `abs` (a `rect-2d` moved to touch
+  it) reads 0 there, so a probe is not inside and a ray along it meets a
+  surface; one offset inward, `(+ g r)`, reads r, a hole of radius r.
+  Write it as a `polygon` from x = 0, or carry the profile past the axis,
+  to x = -1.
+
 ### Sheet metal
 
 A sheet-metal part is designed flat and folded from it, so its folded
@@ -1664,7 +1730,9 @@ body and flat pattern agree.
 - `(sheet-bend a b angle r)`: the material left of a -> b folds by angle
   toward +z at inside radius r.
 - `(sheet-folded S)`: the folded part. `(sheet-flat S)`: the flat pattern
-  (`ink slice --out FILE.dxf` is its cut file).
+  (`ink slice --out FILE.dxf` is its cut file). `(sheet-bend-lines S)`:
+  each bend's centre line, a to b within the outline, a body's marks:
+  `(mark bend (sheet-bend-lines S))` puts them in the cut file.
 - `(sheet-frame S u v side)`: a frame at a point of the flat, carried to
   the folded part.
 - Bend rules, regions a design leaves empty: `sheet-short-flanges`,
@@ -1681,7 +1749,7 @@ body and flat pattern agree.
               (vec (move (circle-2d 2.5) 48 20 0)) 2 0.4
               (vec (sheet-bend (vec 30 40) (vec 30 0) 90 2))))   ; x > 30 folds up
 (body bracket (shape (sheet-folded S)) (frame upright (sheet-frame S 48 20 -1)))
-(body flat (shape (sheet-flat S)))                                ; the cut file
+(body flat (shape (sheet-flat S)) (mark bend (sheet-bend-lines S)))   ; the cut file
 (assert flanges (empty (sheet-short-flanges S 4)))
 (assert reliefs (empty (sheet-unrelieved S)))
 ```
@@ -1720,7 +1788,8 @@ See examples/sheet-metal.ink.
 - **Gears in mesh** are relations, A the input:
   - `(gear-mesh za zb module [pa [backlash [efficiency]]])`: spur, each
     axis its gear's z; the efficiency is its coupling's, read by a
-    dynamics package;
+    dynamics package. External pairs only: a planet in its ring fails
+    `centre-distance`;
   - `(bevel-mesh za zb module face ...)`, `(rack-mesh z module ...)`.
   - pa is the pressure angle (degrees, default 20). Under 10 is an error
     (likely a backlash written in its place).

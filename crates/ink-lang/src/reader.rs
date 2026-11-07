@@ -82,17 +82,19 @@ impl<'a> Reader<'a> {
 
     /// An expression where the form takes quantity `q` (`what` names the
     /// slot in messages): a number in it written in another quantity's unit
-    /// is refused (units::misfit).
+    /// is refused (units::Said).
     pub fn field_of(&mut self, e: &Sexp, q: Quantity, what: &str) -> R<NodeId> {
-        self.doc.fits(e, q, what, &self.env)?;
-        self.field(e)
+        let f = self.doc.field_of(e, q, what, &mut self.env)?;
+        self.reads.fields.push(f);
+        Ok(f)
     }
 
     /// An expression's value where the form takes quantity `q` (`what`
     /// names the slot in messages), as `field_of` checks it.
     pub fn value_of(&mut self, e: &Sexp, q: Quantity, what: &str) -> R<Value> {
-        self.doc.fits(e, q, what, &self.env)?;
-        self.value(e)
+        let v = self.value(e)?;
+        self.doc.fits(&v, e, q, what)?;
+        Ok(v)
     }
 
     /// `(accuracy x)`: how far past its bounds a claim allows, in quantity
@@ -103,8 +105,8 @@ impl<'a> Reader<'a> {
 
     /// A number known at load time where the form takes quantity `q`.
     pub fn number_of(&mut self, e: &Sexp, q: Quantity, what: &str) -> R<f64> {
-        self.doc.fits(e, q, what, &self.env)?;
-        self.number(e)
+        let f = self.field_of(e, q, what)?;
+        self.doc.load_value(f).ok_or_else(|| self.err(e, "expected a number known at load time (constants and params only)"))
     }
 
     /// The cell size of a `(res h)` clause: above 0 and finite

@@ -69,7 +69,7 @@ fn check_lists_a_ranges_span_warns_of_its_use_at_load_and_shows_it_at_its_at() {
 
 #[test]
 fn nothing_narrows_a_ranged_value_neither_another_name_nor_a_4th_view_element() {
-    // (No import sets one either: an import gives no values.)
+    // (Nor does an import: it sets params, never a ranged value.)
     let s = Scratch::new("ranged-narrow");
     // A view written with its own param ((vec dx dy dz s)) says so.
     let old = s.model(

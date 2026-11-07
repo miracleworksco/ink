@@ -57,8 +57,8 @@ pub const COMMANDS: &[(&str, &str, &[&str])] = &[
         "Write STL or 3MF (to print) or GLB (to view). Reports triangles, cells where a feature under res went missing, and (STL, 3MF) sampled deviation from the surface.",
         &["target", "out", "res", "max-res", "accuracy"],
     ),
-    ("components", "Count solids and cavities, as (cavities f < n) does.", &["target", "res"]),
-    ("interfere", "Overlaps between an assembly's instances outside contact zones, at rest or over the motion.", &["target", "res", "t-span"]),
+    ("components", "Count cavities by proof, as (cavities f < n) does, and list a mesh's shells.", &["target", "res"]),
+    ("interfere", "Overlaps between an assembly's instances outside contact zones, at rest or over the motion.", &["target", "res", "accuracy", "t-span"]),
     (
         "assert",
         "Check the file's claims and joint limits: each holds, fails (with a witness point where one shows it) or is unknown (with an undecided_cell, and a hint where it can). accuracy says how far off each answer may be; null means unknown or estimated. Exits 3 if any fails or is unknown.",
@@ -89,7 +89,11 @@ pub const OPTION_HELP: &[(&str, &str, &str)] = &[
     ("density", r#""1.24g/cm3""#, "A density (a number, g/mm3 unless it gives a unit) or the attribute naming one."),
     ("axis", r#""z""#, "The plane's normal: x, y or z."),
     ("at", "5", "The plane's position along axis, mm (default the middle)."),
-    ("accuracy", "0.02", "How far simplifying may move the outline or mesh from the samples, mm (default: slice res / 2, STL and 3MF res / 30, GLB res / 4; 0 keeps it uniform)."),
+    (
+        "accuracy",
+        "0.02",
+        "How far simplifying may move the outline or mesh from the samples, mm (default: slice res / 2, STL and 3MF res / 30, GLB res / 4; 0 keeps it uniform). interfere: how deep an overlap may pass unseen, mm (default: the model's accuracy, as a claim's).",
+    ),
     ("out", r#""part.stl""#, "The file written: mesh .stl/.3mf/.glb, slice .dxf (cut at the model's accuracy), render .png."),
     ("max-res", "1", "mesh: caps the cell size ink picks for a target (not a given --res)."),
     ("t-span", r#""0:2""#, "A:B: check claims that read t at every moment in [A, B] (default: the file's t-span)."),
@@ -410,7 +414,7 @@ fn dispatch(reg: &'static Registry, a: &Args) -> Result<J, InkError> {
                 "eval" => attrs_read(a, attrs)
                     .into_iter()
                     .filter(|_| r.names("attrs"))
-                    .filter(|&f| attrs.iter().any(|(k, v)| matches!(v, Value::Field(g) if *g == f) && (r.names(&format!("attrs.{k}")) || r.names_exactly("attrs"))))
+                    .filter(|&f| attrs.iter().any(|(k, v)| matches!(v, Value::Field(g, _) if *g == f) && (r.names(&format!("attrs.{k}")) || r.names_exactly("attrs"))))
                     .collect(),
                 _ => attrs_read(a, attrs),
             }
@@ -465,7 +469,7 @@ fn attrs_read(a: &Args, attrs: &Attrs) -> Vec<u32> {
     };
     fn fields(v: &Value, out: &mut Vec<u32>) {
         match v {
-            Value::Field(f) => out.push(*f),
+            Value::Field(f, _) => out.push(*f),
             Value::Vec(items) => items.iter().for_each(|x| fields(x, out)),
             _ => {}
         }

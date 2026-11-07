@@ -22,12 +22,11 @@ fn seated_screws_hold_to_the_accuracy_and_threads_are_excused_by_their_zones() {
     let d = ink(["interfere", &shelf, "--target", "bracket-set"]);
     let rows = pairs(&d);
     assert!(
-        d["overlapping_pairs"] == 0 && !rows.is_empty() && rows.iter().all(|p| verdict(p) == "holds" && p["accuracy"] == 0.1),
+        d["overlapping_pairs"] == 0 && !rows.is_empty() && rows.iter().all(|p| verdict(p) == "holds" && p["accuracy"] == 0.05),
         "screw heads seated on the brackets hold to the accuracy: {:?}",
         summary(rows)
     );
-    // Twice a claim's default, and the answer says what it lets pass, briefly.
-    assert!(d["accuracy"] == 0.1 && d["accuracy_why"].as_str().is_some_and(|w| w.contains("up to 0.2 mm thick passes") && w.len() < 200), "{}", d["accuracy_why"]);
+    assert!(d["accuracy"] == 0.05, "{}", pretty(&d));
     let d = ink(["interfere", &shelf]);
     let zoned: Vec<&Value> = pairs(&d).iter().filter(|p| p.get("contact_zones").is_some_and(|z| !z.is_null() && z.as_array().is_none_or(|a| !a.is_empty()))).collect();
     assert!(
@@ -95,8 +94,8 @@ fn a_witness_cube_lies_inside_both_parts_in_a_copy_turned_45_degrees() {
     // A witness's whole cube of half-side the accuracy lies in the overlap
     // in the world, in a copy turned 45 degrees (its corners stick out past
     // the ball of radius the accuracy), on an overlap slab 0.3 thick: at
-    // the accuracy (0.1) the cube's width across the slab is 0.283. (At
-    // 0.135 thick, as written for a finer accuracy, the pair holds with no
+    // --accuracy 0.1 the cube's width across the slab is 0.283. (At 0.135
+    // thick, as written for a finer accuracy, the pair holds with no
     // witness.)
     let s = Scratch::new("slab");
     let slab = s.model(
@@ -105,7 +104,7 @@ fn a_witness_cube_lies_inside_both_parts_in_a_copy_turned_45_degrees() {
 (assembly unit (instance block block) (instance plate plate))\n\
 (assembly root (instance c0 unit (at (rot-z 45) (move 100 0 0))) (instance c1 unit (at (rot-z 45) (move 0 100 0))))\n",
     );
-    let d = ink(["interfere", &slab]);
+    let d = ink(["interfere", &slab, "--accuracy", "0.1"]);
     let mut corners = vec![];
     for p in pairs(&d).iter().filter(|p| p.get("witness").is_some()) {
         let h = num(&p["accuracy"]);
@@ -195,12 +194,11 @@ fn a_contact_zone_resting_on_a_solve_over_t_is_solved_at_each_step_and_measured(
 }
 
 #[test]
-fn a_press_fit_interfere_passes_is_one_its_answer_says_passes_and_a_claim_catches() {
+fn interfere_asks_to_a_claims_default_accuracy_or_the_one_given() {
     // A shaft 0.4 over its bore's diameter: an overlap 0.2 thick, 0.1 deep.
-    // interfere passes it at its 0.1, and says what passes in a fit's
-    // terms (not "an overlap shallower than 0.1 is a claim's to check",
-    // which reads as if this one were caught); the claim it points to
-    // fails it.
+    // By default interfere asks as the file's claim does, and fails it as
+    // the claim does. Asked coarser, it passes, at the accuracy given, and
+    // says how deep it found the overlap.
     let s = Scratch::new("press-fit");
     let m = s.model(
         "fit.ink",
@@ -208,34 +206,40 @@ fn a_press_fit_interfere_passes_is_one_its_answer_says_passes_and_a_claim_catche
         (body shaft (shape (cylinder-z (/ shaft-d 2) 12)))\n(assembly fit (instance b bush) (instance s shaft))\n\
         (assert pressed (disjoint (shape-of bush) (shape-of shaft)))\n",
     );
-    let d = ink(["interfere", &m, "--target", "fit"]);
-    assert!(d["overlapping_pairs"] == 0, "{}", pretty(&d));
-    assert!(d["accuracy_why"].as_str().is_some_and(|w| w.contains("0.4 mm over its bore's diameter") && w.contains("(disjoint shaft bore)")), "{}", d["accuracy_why"]);
-    assert_eq!(verdict(&ink(["assert", &m])["asserts"][0]), "fails");
+    let (d, claim) = (ink(["interfere", &m, "--target", "fit"]), &ink(["assert", &m])["asserts"][0]);
+    assert!(d["accuracy"] == claim["accuracy"] && d["overlapping_pairs"] == 1 && verdict(&d["pairs"][0]) == "fails" && verdict(claim) == "fails", "{}", pretty(&d));
+    let d = ink(["interfere", &m, "--target", "fit", "--accuracy", "0.25"]);
+    let p = &d["pairs"][0];
+    assert!(d["accuracy"] == 0.25 && p["accuracy"] == 0.25 && verdict(p) == "holds" && p["held"] == "to the accuracy", "{}", pretty(&d));
+    assert!(p["near"]["depth"].as_f64().is_some_and(|x| (x - 0.1).abs() <= 0.01) && d["near_pairs"] == 1, "{}", pretty(p));
+    let bad = ink_err(["interfere", &m, "--target", "fit", "--accuracy", "0"]);
+    assert!(bad["error"]["message"].as_str().is_some_and(|m| m.contains("--accuracy expects a depth above 0")), "{bad}");
+    // Past ink's range it is refused, as the claim's own (accuracy 1e101) is.
+    let far = ink_err(["interfere", &m, "--target", "fit", "--accuracy", "1e101"]);
+    assert!(far["error"]["message"].as_str().is_some_and(|m| m.contains("outside ink's range")), "{far}");
 }
 
 #[test]
 fn an_undecided_pair_is_counted_and_its_hint_names_what_interfere_takes() {
     // A shaft 0.4 over its bore with a collar on the bushing's face: the
     // pair is unknown at 0.1. The summary said overlapping_pairs 0 and
-    // counted it nowhere, and its hint offered (accuracy x), which
-    // interfere does not take.
+    // counted it nowhere, and its hint offered (accuracy x), a claim's.
     let s = Scratch::new("undecided-pair");
     let m = s.model(
         "fit.ink",
         "(import \"std\")\n(param shaft-d 10.4)\n(body bush (shape (subtract (cylinder-z 10 12) (cylinder-z 5 20))))\n\
         (body shaft (shape (min (cylinder-z (/ shaft-d 2) 12) (move (cylinder-z 8 2) 0 0 12))))\n(assembly fit (instance b bush) (instance s shaft))\n",
     );
-    let d = ink(["interfere", &m, "--target", "fit"]);
+    let d = ink(["interfere", &m, "--target", "fit", "--accuracy", "0.1"]);
     let rows: Vec<&Value> = pairs(&d).iter().filter(|p| verdict(p) == "unknown").collect();
     assert!(d["undecided_pairs"] == rows.len() && !rows.is_empty(), "{}", pretty(&d));
-    assert!(rows.iter().all(|p| p["hint"].as_str().is_some_and(|h| !h.contains("A smaller (accuracy x)") && h.contains("(disjoint a b) (accuracy x)"))), "{}", pretty(&d));
+    assert!(rows.iter().all(|p| p["hint"].as_str().is_some_and(|h| !h.contains("(accuracy x)") && h.contains("A smaller --accuracy looks finer"))), "{}", pretty(&d));
 }
 
 #[test]
 fn a_pair_held_only_to_the_accuracy_says_how_deep_it_was_found_and_seated_faces_read_0() {
     // A shaft 0.1 over its bore's radius overlaps it in a shell 0.1 thick,
-    // 0.05 deep, which interfere's 0.1 lets pass: the pair says so, with a
+    // 0.05 deep, which --accuracy 0.1 lets pass: the pair says so, with a
     // point on the bore. Seated (shaft and bore alike) it reads 0 and is
     // not counted; 0.5 clear, it held outright. A disjoint claim alike.
     let s = Scratch::new("near-pairs");
@@ -249,7 +253,7 @@ fn a_pair_held_only_to_the_accuracy_says_how_deep_it_was_found_and_seated_faces_
                 shaft_d / 2.0
             ),
         );
-        for (d, row) in [(ink(["interfere", &m, "--target", "fit"]), "pairs"), (ink(["assert", &m]), "asserts")] {
+        for (d, row) in [(ink(["interfere", &m, "--target", "fit", "--accuracy", "0.1"]), "pairs"), (ink(["assert", &m]), "asserts")] {
             let p = &d[row][0];
             assert!(verdict(p) == "holds" && p["held"] == held, "{shaft_d}: {}", pretty(&d));
             let depth = p["near"]["depth"].as_f64();
@@ -308,10 +312,27 @@ fn held_unsaid(answers: &[(Value, &str)]) {
 }
 
 #[test]
-fn how_a_claim_held_is_not_said_over_ranged_params() {
+fn how_a_claim_held_over_ranged_params_is_said_with_where_in_the_band() {
+    // A shaft 5.04 to 5.06 in a bore 5: the claim held only to the
+    // accuracy, its near point inside both shapes at the r it was found
+    // at. An interfere pair over the band says nothing yet.
     let s = Scratch::new("held-over-ranged-params");
     let m = s.model("ranged.ink", &format!("(param r 5.05 (tol -0.01 0.01))\n{FIT}(assert fit (disjoint (shape-of bush) (shape-of shaft)) (accuracy 0.1))\n"));
-    held_unsaid(&[(ink(["assert", &m]), "asserts"), (ink(["interfere", &m, "--target", "fit"]), "pairs")]);
+    let d = ink(["assert", &m]);
+    let a = &d["asserts"][0];
+    let (depth, r) = (a["near"]["depth"].as_f64().unwrap_or(0.0), a["near"]["params"]["r"].as_f64().unwrap_or(0.0));
+    let at = a["near"]["at"].as_array().map_or(0.0, |p| p[0].as_f64().unwrap().hypot(p[1].as_f64().unwrap()));
+    assert!(
+        verdict(a) == "holds"
+            && a["held"] == "to the accuracy"
+            && depth > 0.0
+            && (a["param_spans"]["r"][0].as_f64().unwrap()..=a["param_spans"]["r"][1].as_f64().unwrap()).contains(&r)
+            && 5.0 < at
+            && at < r,
+        "{}",
+        pretty(&d)
+    );
+    held_unsaid(&[(ink(["interfere", &m, "--target", "fit", "--accuracy", "0.1"]), "pairs")]);
 }
 
 #[test]
@@ -319,7 +340,7 @@ fn how_a_pair_riding_a_moving_frame_held_is_not_said() {
     // Asked once in the frame it rides, but over the motion.
     let s = Scratch::new("held-riding");
     let m = s.model("moving.ink", &format!("(t-span 0 1)\n(param r 5.05)\n{FIT}(assembly root (instance unit fit (at) (slide x (* 10 t))))\n"));
-    held_unsaid(&[(ink(["interfere", &m]), "pairs")]);
+    held_unsaid(&[(ink(["interfere", &m, "--accuracy", "0.1"]), "pairs")]);
 }
 
 #[test]
@@ -338,7 +359,7 @@ fn every_near_point_of_a_pair_in_a_shared_frame_is_inside_both_shapes_as_placed(
         &format!("(param r 5.05)\n{FIT}(assembly root (instance c0 fit (at (move 100 0 0))) (instance c1 fit (at (rot-z 30) (move -400 10 0))) (instance c2 fit (at (rot-x 90) (move 1e5 -3e4 12.25))))\n"),
     );
     for (m, near) in [(&wavy, None), (&copies, Some(3))] {
-        let d = ink(["interfere", m]);
+        let d = ink(["interfere", m, "--accuracy", "0.1"]);
         assert!(near.is_none_or(|n| d["near_pairs"] == n), "{}", pretty(&d));
         let src = std::fs::read_to_string(m).unwrap();
         for p in pairs(&d).iter().filter(|p| p["near"].get("at").is_some()) {

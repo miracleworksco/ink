@@ -149,6 +149,18 @@ fn sag_turn(r: f64, d: f64) -> f64 {
     if d >= 2.0 * r { std::f64::consts::PI } else { (1.0 - d / r).acos() }
 }
 
+/// The sag of a circle of radius r over a chord d (r - sqrt(r^2 - d^2 / 4),
+/// as (d / 2)^2 / (r + sqrt(r^2 - d^2 / 4)), which does not cancel), in an
+/// outward bound: at least the true sag.
+fn sag_over(r: f64, d: f64) -> f64 {
+    use ink_core::interval::{self, I};
+    let b = |op: BinOp, x: I, y: I| interval::bin(op, x, y).0;
+    let q = b(BinOp::Mul, I::point(0.5 * d), I::point(0.5 * d));
+    let rest = b(BinOp::Sub, b(BinOp::Mul, I::point(r), I::point(r)), q);
+    let root = if rest.lo > 0.0 { interval::un(UnOp::Sqrt, rest).lo } else { 0.0 };
+    b(BinOp::Div, q, b(BinOp::Add, I::point(r), I::point(root))).hi.min(r)
+}
+
 /// A lower bound on the sine of how far an arc bulging out of a piece may
 /// turn out past its neighbour where they meet, read as it is (no pocket
 /// bridging the corner): until the corner lies d (polygon's allowance)
@@ -239,6 +251,10 @@ fn build(input: &[[f64; 3]], eps: f64) -> Result<(T, Loop, Trace), String> {
     let mut lp = Loop { pts, bs, eps, defs, ids, next };
     lp.split(|_, b| b.abs() > QUARTER * (1.0 + 1e-12));
     lp.merge_straight();
+    if let Some((i, j, p)) = lp.meets() {
+        let (a, b) = (lp.pts[i], lp.pts[j]);
+        return Err(format!("the polygon crosses itself at ({}, {}): its edges from ({}, {}) and from ({}, {}) meet there", p[0], p[1], a[0], a[1], b[0], b[1]));
+    }
     // The profile is its chord polygon with each arc's segment (between it
     // and its chord) added or taken away, so long as no other edge reaches
     // into a segment or across a chord. Each round halves the arcs that
@@ -491,6 +507,109 @@ impl Loop {
         self.bs = bs;
         self.defs.reverse();
         self.ids.reverse();
+    }
+
+    /// Two edges as drawn (lines and arcs, each at most a quarter turn) that
+    /// meet, or come within eps, other than beside a corner they share,
+    /// within the allowance for the data (100 eps): the edges and a point where
+    /// they meet. Each pair's candidates are where their lines and circles
+    /// cross (beside a shared corner, the other crossing, which stays exact
+    /// where they are tangent there), each one's ends and midpoint (a
+    /// touching corner, an overlap).
+    fn meets(&self) -> Option<(usize, usize, P)> {
+        let (n, eps) = (self.n(), self.eps);
+        let drawn = |e: usize| {
+            let (a, q, b) = (self.pts[e], self.pts[(e + 1) % n], self.bs[e]);
+            (a, q, (b != 0.0).then(|| arc_of(a, q, b)), if b == 0.0 { mul(add(a, q), 0.5) } else { halve(a, q, b).0 })
+        };
+        // Within eps of edge e as drawn (by unit directions: a profile at
+        // any scale, its products unable to underflow).
+        let on = |e: usize, p: P| {
+            let (a, q, arc, _) = drawn(e);
+            match arc {
+                None => {
+                    let (d, l) = (unit(sub(q, a)), norm(sub(q, a)));
+                    let t = dot(sub(p, a), d);
+                    cross(d, sub(p, a)).abs() <= eps && t >= -eps && t <= l + eps
+                }
+                Some(o) => {
+                    let (ua, uq, u) = (unit(sub(a, o.c)), unit(sub(q, o.c)), sub(p, o.c));
+                    let (sg, w) = (cross(ua, uq).signum(), unit(u));
+                    (norm(u) - o.r).abs() <= eps && sg * cross(ua, w) >= -eps / o.r && sg * cross(w, uq) >= -eps / o.r && dot(w, add(ua, uq)) > 0.0
+                }
+            }
+        };
+        let reach = |e: usize| {
+            let (a, q, _, _) = drawn(e);
+            let pad = (self.bs[e] * norm(sub(q, a)) / 2.0).abs() + eps;
+            ([a[0].min(q[0]) - pad, a[1].min(q[1]) - pad], [a[0].max(q[0]) + pad, a[1].max(q[1]) + pad])
+        };
+        for i in 0..n {
+            let (lo, hi) = reach(i);
+            for j in i + 1..n {
+                let (lo2, hi2) = reach(j);
+                if lo[0] > hi2[0] || lo2[0] > hi[0] || lo[1] > hi2[1] || lo2[1] > hi[1] {
+                    continue;
+                }
+                let shared: Vec<P> = [(j == i + 1).then(|| self.pts[j]), (i == (j + 1) % n).then(|| self.pts[i])].into_iter().flatten().collect();
+                let (ei, ej) = (drawn(i), drawn(j));
+                let mut cands = vec![ei.0, ei.1, ei.3, ej.0, ej.1, ej.3];
+                match (ei.2, ej.2) {
+                    (None, None) => {
+                        let (d1, d2) = (sub(ei.1, ei.0), sub(ej.1, ej.0));
+                        let den = cross(d1, d2);
+                        if shared.is_empty() && den != 0.0 {
+                            cands.push(add(ei.0, mul(d1, cross(sub(ej.0, ei.0), d2) / den)));
+                        }
+                    }
+                    (None, Some(o)) | (Some(o), None) => {
+                        let (a, q) = if ei.2.is_none() { (ei.0, ei.1) } else { (ej.0, ej.1) };
+                        let u = unit(sub(q, a));
+                        if let Some(&s) = shared.first() {
+                            cands.push(sub(s, mul(u, 2.0 * dot(sub(s, o.c), u))));
+                        } else {
+                            let foot = add(a, mul(u, dot(sub(o.c, a), u)));
+                            let h = norm(sub(foot, o.c));
+                            if h <= o.r + eps {
+                                let w = (o.r * o.r - h * h).max(0.0).sqrt();
+                                cands.extend([add(foot, mul(u, w)), sub(foot, mul(u, w))]);
+                            }
+                        }
+                    }
+                    (Some(o1), Some(o2)) => {
+                        let dc = sub(o2.c, o1.c);
+                        let d = norm(dc);
+                        if d <= eps {
+                            // One circle: an overlap shows at an end or a midpoint.
+                        } else if let Some(&s) = shared.first() {
+                            let u = mul(dc, 1.0 / d);
+                            let v = sub(s, o1.c);
+                            cands.push(add(o1.c, sub(mul(u, 2.0 * dot(v, u)), v)));
+                        } else if d <= o1.r + o2.r + eps && d >= (o1.r - o2.r).abs() - eps {
+                            let u = mul(dc, 1.0 / d);
+                            let a = (d * d + o1.r * o1.r - o2.r * o2.r) / (2.0 * d);
+                            let h = (o1.r * o1.r - a * a).max(0.0).sqrt();
+                            let m = add(o1.c, mul(u, a));
+                            cands.extend([add(m, mul([-u[1], u[0]], h)), sub(m, mul([-u[1], u[0]], h))]);
+                        }
+                    }
+                }
+                // Beside a shared corner, a meeting whose sliver between the
+                // two is within the allowance for the data (100 eps): a
+                // tangent joint whose points were rounded. The sliver is at
+                // most the sum of each arc's sag over the chord from the
+                // corner (sag_over, rounded up).
+                let arcs: Vec<f64> = [ei.2, ej.2].iter().flatten().map(|o| o.r).collect();
+                let apart = |p: P, s: P| {
+                    let d = norm(sub(p, s));
+                    d > 100.0 * eps && (arcs.is_empty() || arcs.iter().map(|&r| sag_over(r, d)).sum::<f64>() > 100.0 * eps)
+                };
+                if let Some(p) = cands.into_iter().find(|&p| shared.iter().all(|&s| apart(p, s)) && on(i, p) && on(j, p)) {
+                    return Some((i, j, p));
+                }
+            }
+        }
+        None
     }
 
     /// Two chord edges that meet other than at a shared corner, or an arc
@@ -1082,6 +1201,7 @@ fn hull_contacts(pts: &[P], arcs: &[(usize, Arc, usize, usize)], eps: f64) -> Ve
 }
 
 use super::*;
+use ink_core::interval::I;
 use walls::Walls;
 
 /// How to write a profile whose corners move (a mould draft: walls that
@@ -1114,6 +1234,215 @@ fn unbounded(sp: &Span) -> String {
     )
 }
 
+/// Which side of 0 a field of (x, y) is on wherever x >= 0, proven: `Below`
+/// is at most 0 there and 0 at most on the axis x = 0 (an edge on the axis,
+/// -k x + c with k > 0 and c <= 0), `Above` the same of its negation. A
+/// `Below` term of a max, or an `Above` one of a min, decides nothing off
+/// the axis, and on it reads 0 where the max (min) is inside (outside).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Side {
+    Below,
+    Above,
+}
+
+impl Side {
+    fn flip(self) -> Side {
+        if self == Side::Below { Side::Above } else { Side::Below }
+    }
+}
+
+/// `revolve-z`'s rewrite of one profile: its terms' coefficients, sides and
+/// rewrites, each found once per node (a profile's expressions are shared).
+#[derive(Default)]
+struct OffAxis {
+    affine: HashMap<NodeId, Option<[I; 4]>>,
+    side: HashMap<NodeId, Option<Side>>,
+    done: HashMap<NodeId, NodeId>,
+}
+
+/// A constant above 0 (a scale), if `n` is one.
+fn positive(g: &ink_core::graph::Graph, n: NodeId) -> Option<f64> {
+    g.as_const(n).filter(|&k| k > 0.0 && k.is_finite())
+}
+
+impl OffAxis {
+    /// `node` as a + b x + c y + d z of constants alone, if it is one: each
+    /// coefficient an interval holding its value in real numbers (outward
+    /// where the arithmetic rounds), so a sign or a zero read from it is
+    /// proven.
+    fn affine(&mut self, g: &ink_core::graph::Graph, node: NodeId) -> Option<[I; 4]> {
+        use ink_core::graph::{BinOp as B, Node, UnOp as U};
+        use ink_core::interval::{add_o, bin, mul_o, sub_o};
+        if let Some(&a) = self.affine.get(&node) {
+            return a;
+        }
+        let (o, l) = (I::point(0.0), I::point(1.0));
+        let a = (|| {
+            Some(match g.nodes[node as usize] {
+                Node::Const(v) => [I::point(v), o, o, o],
+                Node::Var(Var::X) => [o, l, o, o],
+                Node::Var(Var::Y) => [o, o, l, o],
+                Node::Var(Var::Z) => [o, o, o, l],
+                Node::Un(U::Neg, a) => self.affine(g, a)?.map(|v| I::new(-v.hi, -v.lo)),
+                Node::Tag(_, a) | Node::Real(a) => self.affine(g, a)?,
+                Node::Bin(op @ (B::Add | B::Sub), a, b) => {
+                    let (a, b) = (self.affine(g, a)?, self.affine(g, b)?);
+                    [0, 1, 2, 3].map(|i| if op == B::Add { add_o(a[i], b[i]) } else { sub_o(a[i], b[i]) })
+                }
+                Node::Bin(B::Mul, a, b) => match (g.as_const(a), g.as_const(b)) {
+                    (Some(k), _) => self.affine(g, b)?.map(|v| mul_o(I::point(k), v)),
+                    (_, Some(k)) => self.affine(g, a)?.map(|v| mul_o(I::point(k), v)),
+                    _ => return None,
+                },
+                Node::Bin(B::Div, a, b) => {
+                    let k = g.as_const(b).filter(|&k| k != 0.0)?;
+                    self.affine(g, a)?.map(|v| bin(B::Div, v, I::point(k)).0)
+                }
+                _ => return None,
+            })
+        })();
+        self.affine.insert(node, a);
+        a
+    }
+
+    /// The side `node` is on wherever x >= 0 (`Side`), proven: of an edge
+    /// on the axis, and through names, promises, neg, min, max, a scale
+    /// and a select whose branches are on one side.
+    fn side(&mut self, g: &ink_core::graph::Graph, node: NodeId) -> Option<Side> {
+        use ink_core::graph::{BinOp as B, Node, UnOp as U};
+        if let Some(&s) = self.side.get(&node) {
+            return s;
+        }
+        let zero = |v: I| v.lo == 0.0 && v.hi == 0.0;
+        let s = match self.affine(g, node) {
+            Some([c, kx, ky, kz]) if zero(ky) && zero(kz) => {
+                if kx.hi < 0.0 && c.hi <= 0.0 {
+                    Some(Side::Below)
+                } else if kx.lo > 0.0 && c.lo >= 0.0 {
+                    Some(Side::Above)
+                } else {
+                    None
+                }
+            }
+            Some(_) => None,
+            None => match g.nodes[node as usize] {
+                Node::Un(U::Neg, a) => self.side(g, a).map(Side::flip),
+                Node::Tag(_, a) | Node::Lipschitz(a, ..) => self.side(g, a),
+                // The max of two terms is below if both are, above if either
+                // is (0 only where that one is: on the axis); the min the
+                // other way round.
+                Node::Bin(op @ (B::Max | B::Min), a, b) => {
+                    let (sa, sb) = (self.side(g, a), self.side(g, b));
+                    let (all, any) = if op == B::Max { (Side::Below, Side::Above) } else { (Side::Above, Side::Below) };
+                    if sa == Some(any) || sb == Some(any) {
+                        Some(any)
+                    } else if sa == Some(all) && sb == Some(all) {
+                        Some(all)
+                    } else {
+                        None
+                    }
+                }
+                Node::Bin(B::Mul, a, b) => match (positive(g, a), positive(g, b)) {
+                    (Some(_), _) => self.side(g, b),
+                    (_, Some(_)) => self.side(g, a),
+                    _ => None,
+                },
+                Node::Bin(B::Div, a, b) if positive(g, b).is_some() => self.side(g, a),
+                Node::Select(_, a, b) => Some(self.side(g, a)?).filter(|&s| self.side(g, b) == Some(s)),
+                _ => None,
+            },
+        };
+        self.side.insert(node, s);
+        s
+    }
+
+    /// `a` without the terms on the axis (`Side`) of its maxes and mins,
+    /// once per node (a shared expression is rewritten once), through what
+    /// keeps a sign: names, promises (dropped where the field changes),
+    /// neg, a scale, and a select (its test too, so it picks the same
+    /// branch off the axis). Off the axis every sign is as it was.
+    fn rewrite(&mut self, g: &mut ink_core::graph::Graph, a: NodeId) -> NodeId {
+        use ink_core::graph::{BinOp as B, Node, UnOp as U};
+        if let Some(&n) = self.done.get(&a) {
+            return n;
+        }
+        let n = match g.nodes[a as usize] {
+            // A term on the axis (a group of them: `side` classes it) is
+            // left out, unless both are: then the max (min) is one, for
+            // what holds it to leave out.
+            Node::Bin(op @ (B::Max | B::Min), p, q) => {
+                let off = Some(if op == B::Max { Side::Below } else { Side::Above });
+                match (self.side(g, p) == off, self.side(g, q) == off) {
+                    (true, true) => a,
+                    (true, false) => self.rewrite(g, q),
+                    (false, true) => self.rewrite(g, p),
+                    (false, false) => {
+                        let (p, q) = (self.rewrite(g, p), self.rewrite(g, q));
+                        g.bin(op, p, q)
+                    }
+                }
+            }
+            Node::Un(U::Neg, p) => {
+                let p = self.rewrite(g, p);
+                g.neg(p)
+            }
+            Node::Tag(t, p) => {
+                let p = self.rewrite(g, p);
+                let name = g.tag_names[t as usize].clone();
+                g.tag(&name, p)
+            }
+            // A promise made of the whole holds of it, not of fewer terms.
+            Node::Lipschitz(p, _, _) => {
+                let q = self.rewrite(g, p);
+                if q == p { a } else { q }
+            }
+            Node::Bin(op @ (B::Mul | B::Div), p, q) if positive(g, q).is_some() => {
+                let p = self.rewrite(g, p);
+                g.bin(op, p, q)
+            }
+            Node::Bin(B::Mul, p, q) if positive(g, p).is_some() => {
+                let q = self.rewrite(g, q);
+                g.mul(p, q)
+            }
+            Node::Select(c, p, q) => {
+                let (c, p, q) = (self.rewrite(g, c), self.rewrite(g, p), self.rewrite(g, q));
+                g.select(c, p, q)
+            }
+            _ => a,
+        };
+        self.done.insert(a, n);
+        n
+    }
+}
+
+impl Doc {
+    /// `(revolve-z g)`: the 2D profile g(x, y) turned about the z axis, its
+    /// x the radius and its y the height. A profile reaching the axis has
+    /// an edge on it, a term -k x (k > 0) of a max: read at the radius r,
+    /// never below 0, it is below 0 but on the axis, where it reads 0 (no
+    /// surface: the axis is inside). So the profile is read without its
+    /// terms on the axis (`OffAxis::rewrite`): off the axis every sign stays
+    /// as it was; values change only inside, near an edge left out, where
+    /// they read the walls that remain.
+    pub(super) fn eval_revolve(&mut self, e: &Sexp, args: &[Sexp], env: &mut Env) -> R<Value> {
+        let [g] = args else {
+            return Err(self.err_hint(
+                e,
+                "revolve-z takes one profile",
+                Some("usage: (revolve-z g): the 2D profile g(x, y) turned about the z axis, x the radius and y the height".into()),
+            ));
+        };
+        let g = self.field(g, env)?;
+        let g = OffAxis::default().rewrite(&mut self.g, g);
+        let (x, y, z) = (self.g.var(Var::X), self.g.var(Var::Y), self.g.var(Var::Z));
+        let (xx, yy) = (self.g.un(UnOp::Square, x), self.g.un(UnOp::Square, y));
+        let s = self.g.add(xx, yy);
+        let r = self.g.un(UnOp::Sqrt, s);
+        let zero = self.g.constant(0.0);
+        Ok(Value::Field(self.g.subst(g, &[(Var::X, r), (Var::Y, z), (Var::Z, zero)]), None))
+    }
+}
+
 impl Doc {
     /// `(polygon pts [drafts z0 z1])`: pts are (vec u v) corners, (vec u v
     /// b) where the edge to the next point is an arc of bulge b, or (vec u v
@@ -1144,7 +1473,7 @@ impl Doc {
             }
             let mut p = [0.0; 4];
             for (k, v) in c.iter().enumerate() {
-                let Value::Field(f) = v else { return Err(self.err_hint(l, "a polygon's point holds numbers", Some(usage.into()))) };
+                let Value::Field(f, _) = v else { return Err(self.err_hint(l, "a polygon's point holds numbers", Some(usage.into()))) };
                 p[k] = self.load_number(l, *f)?.ok_or_else(|| self.err_hint(l, "a polygon's points must be known at load time", Some(MOVING.into())))?;
             }
             pts.push(p);
@@ -1155,11 +1484,11 @@ impl Doc {
                 let pts: Vec<[f64; 3]> = pts.iter().map(|p| [p[0], p[1], p[2]]).collect();
                 let t = polygon(&pts).map_err(|m| bad(self, m))?;
                 let f = self.lower_profile(&t, None).map_err(|m| bad(self, m))?;
-                return Ok(Value::Field(f));
+                return Ok(Value::Field(f, None));
             }
             let t = Walls::new(&pts, &vec![0.0; pts.len()]).and_then(|w| polygon(&w.solve(0.0)?.0)).map_err(|m| bad(self, m))?;
             let f = self.lower_profile(&t, None).map_err(|m| bad(self, m))?;
-            return Ok(Value::Field(f));
+            return Ok(Value::Field(f, None));
         };
         let angles: Vec<f64> = match self.eval(d, env)? {
             Value::Vec(v) => {
@@ -1172,12 +1501,12 @@ impl Doc {
                 }
                 let mut a = Vec::with_capacity(v.len());
                 for x in &v {
-                    let Value::Field(f) = x else { return Err(self.err_hint(d, "a polygon's drafts are numbers (degrees)", Some(usage.into()))) };
+                    let Value::Field(f, _) = x else { return Err(self.err_hint(d, "a polygon's drafts are numbers (degrees)", Some(usage.into()))) };
                     a.push(self.load_number(d, *f)?.ok_or_else(|| self.err_hint(d, "a polygon's drafts must be known at load time", Some(MOVING.into())))?);
                 }
                 a
             }
-            Value::Field(f) => vec![self.load_number(d, f)?.ok_or_else(|| self.err_hint(d, "a polygon's drafts must be known at load time", Some(MOVING.into())))?; pts.len()],
+            Value::Field(f, _) => vec![self.load_number(d, f)?.ok_or_else(|| self.err_hint(d, "a polygon's drafts must be known at load time", Some(MOVING.into())))?; pts.len()],
             other => return Err(self.err_hint(d, format!("a polygon's drafts are a number or a vec of numbers, not a {}", other.kind()), Some(usage.into()))),
         };
         if let Some(a) = angles.iter().find(|a| !(a.abs() < 90.0)) {
@@ -1238,7 +1567,7 @@ impl Doc {
         let f = self.reduce(BinOp::Min, &fs);
         let fixed = T::Max(vec![T::Lin(1.0, 0.0, -d.hi[0], None), T::Lin(-1.0, 0.0, d.lo[0], None), T::Lin(0.0, 1.0, -d.hi[1], None), T::Lin(0.0, -1.0, d.lo[1], None)]);
         let b = self.lower_profile(&fixed, None).map_err(|m| bad(self, m))?;
-        Ok(Value::Field(self.g.max(f, b)))
+        Ok(Value::Field(self.g.max(f, b), None))
     }
 
     /// A line the construction adds through points moving with the walls,

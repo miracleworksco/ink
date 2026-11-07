@@ -112,7 +112,7 @@ impl CliView for Session {
 
     fn value_at(&self, v: &Value, p: V3) -> J {
         match v {
-            Value::Field(f) => match self.doc.g.as_const(*f) {
+            Value::Field(f, _) => match self.doc.g.as_const(*f) {
                 Some(c) => n(c),
                 None if let Some(j) = unmeasured(&self.doc, *f) => j,
                 None => n(ink::eval::eval_point(&Tape::new(&self.doc.g, *f), &self.ctx, p)),
@@ -136,7 +136,7 @@ impl CliView for Session {
 
     fn describe(&self, v: &Value) -> J {
         match v {
-            Value::Field(f) => match self.doc.g.as_const(*f) {
+            Value::Field(f, _) => match self.doc.g.as_const(*f) {
                 Some(c) => n(c),
                 None if let Some(j) = unmeasured(&self.doc, *f) => j,
                 // One resting on a solve that fails here has none.

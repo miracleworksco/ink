@@ -248,31 +248,70 @@ pub fn png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
     out
 }
 
-/// One outline for DXF: its layer (the target), points in the plane's
-/// axes, and whether it closes.
+/// One outline for DXF: its layer (the target, or a mark's name), points
+/// in the plane's axes, whether it closes, and whether it is a mark (a
+/// line drawn, not cut: a sheet's bend).
 pub struct Outline<'a> {
     pub layer: &'a str,
     pub pts: &'a [[f64; 2]],
     pub closed: bool,
+    pub mark: bool,
 }
 
 /// DXF (R12, the version every cutting service and CAD reader takes), in
-/// mm: one POLYLINE per outline on its target's layer; `note` is a comment
-/// at the top saying how it was made.
-pub fn dxf(outlines: &[Outline], note: &str) -> Vec<u8> {
-    // A layer name may not hold <>/\":;?*|=' (DXF reference).
-    let layer = |s: &str| s.chars().map(|c| if "<>/\\\":;?*|='".contains(c) || c.is_whitespace() { '_' } else { c }).collect::<String>();
-    let mut s = format!("999\n{}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n", note.replace('\n', " "));
+/// mm: one POLYLINE per outline on its layer, an open one of two points a
+/// LINE; `note` is a comment at the top saying how it was made. A layer
+/// of cuts is continuous, white; one of marks dashed, red: shops read a
+/// bend as a dashed line at its centre on a layer of its own
+/// (SendCutSend, lasercut.parts, QuickCut's BEND). Err: a cut and a mark
+/// whose names are one layer as DXF reads them, naming both and it.
+pub fn dxf(outlines: &[Outline], note: &str) -> Result<Vec<u8>, String> {
+    // A layer name may not hold <>/\":;?*|=' (DXF reference), and is read
+    // in any case: one layer per name as read, spelled as first written.
+    let clean = |s: &str| s.chars().map(|c| if "<>/\\\":;?*|='".contains(c) || c.is_whitespace() { '_' } else { c }).collect::<String>();
+    let mut layers: Vec<(String, bool, &str)> = Vec::new();
+    for o in outlines {
+        let l = clean(o.layer);
+        match layers.iter().find(|(m, _, _)| m.eq_ignore_ascii_case(&l)) {
+            None => layers.push((l, o.mark, o.layer)),
+            Some((m, mark, first)) if *mark != o.mark => {
+                let (cut, mark) = if o.mark { (first, &o.layer) } else { (&o.layer, first) };
+                return Err(format!("the mark '{mark}' and the target '{cut}' would share DXF layer {}", m.to_uppercase()));
+            }
+            Some(_) => {}
+        }
+    }
+    let layer = |s: &str| {
+        let l = clean(s);
+        layers.iter().find(|(m, _, _)| m.eq_ignore_ascii_case(&l)).map_or(l, |(m, _, _)| m.clone())
+    };
+    let mut s = format!("999\n{}\n0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n", note.replace('\n', " "));
+    // ISO's DASHED (acadiso.lin): 12.7 on, 6.35 off.
+    s += "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n2\n\
+          0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0.0\n\
+          0\nLTYPE\n2\nDASHED\n70\n0\n3\nDashed __ __ __\n72\n65\n73\n2\n40\n19.05\n49\n12.7\n49\n-6.35\n0\nENDTAB\n";
+    s += &format!("0\nTABLE\n2\nLAYER\n70\n{}\n", layers.len());
+    for (l, mark, _) in &layers {
+        let (color, ltype) = if *mark { (1, "DASHED") } else { (7, "CONTINUOUS") };
+        s += &format!("0\nLAYER\n2\n{l}\n70\n0\n62\n{color}\n6\n{ltype}\n");
+    }
+    s += "0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n";
     for o in outlines {
         let l = layer(o.layer);
-        s += &format!("0\nPOLYLINE\n8\n{l}\n66\n1\n70\n{}\n10\n0\n20\n0\n30\n0\n", u8::from(o.closed));
+        if let ([a, b], false) = (o.pts, o.closed) {
+            s += &format!("0\nLINE\n8\n{l}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n", a[0], a[1], b[0], b[1]);
+            continue;
+        }
+        // 128: the linetype's pattern runs on across vertices (a mark's
+        // dashes, else short chords of a curve draw solid).
+        s += &format!("0\nPOLYLINE\n8\n{l}\n66\n1\n70\n{}\n10\n0\n20\n0\n30\n0\n", u8::from(o.closed) | if o.mark { 128 } else { 0 });
         for p in o.pts {
             s += &format!("0\nVERTEX\n8\n{l}\n10\n{}\n20\n{}\n30\n0\n", p[0], p[1]);
         }
         s += &format!("0\nSEQEND\n8\n{l}\n");
     }
     s += "0\nENDSEC\n0\nEOF\n";
-    s.into_bytes()
+    Ok(s.into_bytes())
 }
 
 pub fn write(path: &str, bytes: &[u8]) -> std::io::Result<()> {

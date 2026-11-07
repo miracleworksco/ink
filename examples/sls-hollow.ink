@@ -2,7 +2,7 @@
 ; Protolabs' SLS design rules (docs/IR.md, Manufacturing checks): walls at
 ; least 0.7 mm, and escape holes at least 5 mm across to empty the
 ; unsintered powder inside. Sealed, the hollow is an enclosed void (counted
-; from a mesh, an estimate). Two 6 mm holes across it empty it. 3 mm holes
+; by proof, exactly). Two 6 mm holes across it empty it. 3 mm holes
 ; empty it too, but are under the 5 mm the powder needs.
 (import "std")
 
@@ -16,7 +16,7 @@
 (body knob (shape holed) (attr material "nylon-pa12"))
 (body knob-small-holes (shape small) (attr material "nylon-pa12"))
 
-; expect-status: sealed-empties fails estimate
+; expect-status: sealed-empties fails
 (assert sealed-empties (cavities sealed < 1))
 (assert empties (cavities holed < 1))
 (assert walls (min-thickness holed > 0.7))

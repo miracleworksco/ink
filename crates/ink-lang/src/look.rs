@@ -45,10 +45,10 @@ impl Look {
     /// `read` left them at load.
     pub fn of(attrs: &[(String, Value)]) -> Look {
         let get = |k: &str| attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v);
-        let field = |k: &str| if let Some(Value::Field(f)) = get(k) { Some(*f) } else { None };
+        let field = |k: &str| if let Some(Value::Field(f, _)) = get(k) { Some(*f) } else { None };
         let color = match get("color") {
             Some(Value::Vec(c)) => match c.as_slice() {
-                [Value::Field(r), Value::Field(g), Value::Field(b)] => Some([*r, *g, *b]),
+                [Value::Field(r, _), Value::Field(g, _), Value::Field(b, _)] => Some([*r, *g, *b]),
                 _ => None,
             },
             _ => None,
@@ -78,7 +78,7 @@ pub(crate) fn read(g: &mut Graph, key: &str, v: Value) -> Result<Value, String> 
             let rgb = match &v {
                 Value::Str(s) => hex(s).map(|c| c.map(|c| g.constant(c))),
                 Value::Vec(c) => match c.as_slice() {
-                    [Value::Field(r), Value::Field(gr), Value::Field(b)] => Some([*r, *gr, *b]),
+                    [Value::Field(r, _), Value::Field(gr, _), Value::Field(b, _)] => Some([*r, *gr, *b]),
                     _ => None,
                 },
                 _ => None,
@@ -89,10 +89,10 @@ pub(crate) fn read(g: &mut Graph, key: &str, v: Value) -> Result<Value, String> 
             for (c, name) in rgb.iter().zip(["red", "green", "blue"]) {
                 unit(g, *c, &format!("color's {name}"))?;
             }
-            Ok(Value::Vec(rgb.iter().map(|&c| Value::Field(c)).collect()))
+            Ok(Value::Vec(rgb.iter().map(|&c| Value::Field(c, None)).collect()))
         }
         "metallic" | "roughness" | "transmission" => match v {
-            Value::Field(f) => unit(g, f, key).map(|_| v),
+            Value::Field(f, _) => unit(g, f, key).map(|_| v),
             _ => Err(format!("{key} {} is not a number or a scalar field in 0..1", shown(&v))),
         },
         _ => Ok(v),

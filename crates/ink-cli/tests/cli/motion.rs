@@ -164,6 +164,42 @@ fn a_block_sliding_on_a_grooved_rail_holds_and_a_stop_in_its_travel_is_found() {
     assert!(verdict(&hit) == "fails" && (num(&hit["witness"][0]) - 60.0).abs() < 3.0 && verdict(&past) == "holds", "{}\n{}", pretty(&hit), pretty(&past));
 }
 
+#[test]
+fn how_a_claim_held_over_a_motion_is_said_with_its_moment() {
+    // A block sliding 45.03 into a wall 45 away overlaps it 0.03 at the
+    // end: held with t ranged only to the accuracy, its near point inside
+    // both as placed at the moment it was found at.
+    let s = Scratch::new("motion-held");
+    let m = s.model(
+        "slide.ink",
+        "(import \"std\")\n(t-span 0 1)\n(body wall (shape (move (box 10 10 10) 55 0 0)))\n(body block (shape (box 10 10 10)))\n\
+         (assembly root (instance w wall) (instance b block (at) (slide x (* 45.03 t))))\n\
+         (assert clear (disjoint (shape-of root/w) (shape-of root/b)) (accuracy 0.1))\n",
+    );
+    let d = s.ink(["assert", &m]).ok();
+    let a = &d["asserts"][0];
+    let (t, x) = (num(&a["near"]["params"]["t"]), num(&a["near"]["at"][0]));
+    assert!(verdict(a) == "holds" && a["held"] == "to the accuracy" && num(&a["near"]["depth"]) > 0.0 && 50.0 < x && x < 5.0 + 45.03 * t, "{}", pretty(&d));
+}
+
+#[test]
+fn a_near_point_says_its_moment_where_the_frame_cancels_time() {
+    // Two boxes on one drive, overlapping by 0.05 in x: in the first's
+    // frame t cancels, but the near point as placed is at a moment, which
+    // it says.
+    let s = Scratch::new("motion-held-frame");
+    let m = s.model(
+        "pair.ink",
+        "(import \"std\")\n(t-span 2 3)\n(body a (shape (box 10 10 10)))\n(body b (shape (box 10 10 10)))\n\
+         (assembly root (instance a a (at) (slide x (* 10 t))) (instance b b (at (move 9.95 0 0)) (slide x (* 10 t))))\n\
+         (assert clear (disjoint (shape-of root/a) (shape-of root/b)) (accuracy 0.1))\n",
+    );
+    let d = s.ink(["assert", &m]).ok();
+    let a = &d["asserts"][0];
+    let (t, x) = (num(&a["near"]["params"]["t"]), num(&a["near"]["at"][0]));
+    assert!(verdict(a) == "holds" && a["held"] == "to the accuracy" && (2.0..=3.0).contains(&t) && (10.0 * t + 4.95 < x && x < 10.0 * t + 5.0), "{}", pretty(&d));
+}
+
 /// A D-shaft of radius R turning in a bore 4.3, a collar outside the block
 /// wider than the bore (so no cylinder holding the shaft clears the block).
 const SHAFT: &str = r#"(import "std")
@@ -718,7 +754,7 @@ fn a_long_lever_on_a_pin_0_6_clear_of_its_bore_holds_however_placed() {
 
 #[test]
 fn a_long_lever_on_a_pin_cutting_its_bore_fails_however_placed() {
-    // A pin 0.4 oversize cuts the bore 0.2 deep (twice interfere's accuracy).
+    // A pin 0.4 oversize cuts the bore 0.2 deep (four times interfere's accuracy).
     levers("motion-lever-fails", "4", "", "fails");
 }
 
@@ -729,13 +765,13 @@ fn a_long_lever_meets_a_post_where_its_turn_carries_it_however_placed() {
 
 #[test]
 fn a_bore_cut_short_by_twice_the_accuracy_is_unknown_at_once_saying_where() {
-    // The overlap is as deep as the accuracy at every angle (interfere's
-    // 0.1: 2.8; assert's, the model's 0.05: 2.9): undecided, saying where.
+    // The overlap is as deep as the accuracy (the model's, 0.05) at every
+    // angle: undecided, saying where.
     // Asked over t as one of two bodies moving apart, the same.
     let s = Scratch::new("motion-press");
     let two = "(body block (shape (box 4 4 4)))\n(assembly arms (instance l lever (at) (turn z (* 120 t))) (instance k block (at (rot-z (* -90 t)) (move 0 -40 0))))\n\
                (assembly root (instance b base) (instance m arms))\n(assert apart (disjoint (shape-of root/b) (shape-of root/m)))\n";
-    for (name, cmd, bore, text) in [("on its joint", "interfere", "2.8", LEVER_JOINT), ("over t", "assert", "2.9", two)] {
+    for (name, cmd, bore, text) in [("on its joint", "interfere", "2.9", LEVER_JOINT), ("over t", "assert", "2.9", two)] {
         let p = row(s.ink([cmd, &s.model(&format!("press-{cmd}.ink"), &(lever("3", "", bore, "") + text))]));
         assert!(verdict(&p) == "unknown" && has(&p["motion"], "undecided"), "{name}: {}", pretty(&p));
     }
@@ -1943,7 +1979,7 @@ impl Repro {
         let failing: Vec<&Value> = d["pairs"].as_array().into_iter().flatten().filter(|p| p["status"] == "fails").collect();
         let ok = d["overlapping_pairs"] == self.fails
             && failing.len() as u64 == self.fails
-            && failing.iter().all(|p| num(&p["t"]) > 0.0 && nums(&p["motion"]["span"]) == [0.0, 1.0] && (p["accuracy"] == 0.1) == self.guaranteed);
+            && failing.iter().all(|p| num(&p["t"]) > 0.0 && nums(&p["motion"]["span"]) == [0.0, 1.0] && (p["accuracy"] == 0.05) == self.guaranteed);
         if ok { Ok(()) } else { Err(format!("{}: {}", self.name, pretty(d))) }
     }
 }

@@ -776,18 +776,21 @@ pub enum Verdict {
         params: Vec<(u32, f64)>,
     },
     /// Boxes left undecided and their volume, and one of them, (lo, hi):
-    /// the one that ended the search (stuck at the finest cells), else the
-    /// first left in its order (none where it had none); why it ended
-    /// (`ended`); and the accuracy it holds to (`attained`: nothing
-    /// violates it deeper than that, from the boxes left: no point of an
-    /// emptiness's solid deeper; a clearance d, no pair closer than d less
-    /// it; None: none proven, or the time limit stopped it).
+    /// the one that ended the proof (stuck at the finest cells), else the
+    /// first left in its order (none where it had none); why the proof
+    /// ended (`ended`); the hunt for a violation after it, none found, and
+    /// why it stopped (`hunt`: search::Search::hunt); and the accuracy it holds to
+    /// (`attained`: nothing violates it deeper than that, from the boxes
+    /// left: no point of an emptiness's solid deeper; a clearance d, no
+    /// pair closer than d less it; None: none proven, or the time limit
+    /// stopped it).
     Unknown {
         cells: usize,
         volume: f64,
         ended: Ended,
         cell: Option<[V3; 2]>,
         attained: Option<f64>,
+        hunt: Option<search::Hunt>,
     },
 }
 
@@ -795,7 +798,7 @@ pub enum Verdict {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Ended {
     /// A box undecided with every side at its finest cells (`cell`), the
-    /// first the search reached: the rest are not refined.
+    /// first the search reached: the claim cannot be proven at them.
     Finest,
     /// It tested the boxes it may (BOXES, or the budget asked), or would
     /// have tested over four times as many (search::Search::round).
@@ -810,14 +813,41 @@ pub enum Ended {
 /// needed it (`exact` false: some cell was shown only to hold no point
 /// deeper than it, so the solid may not be empty; `Proof::exact`), with
 /// up to LOOSE such cells, the lowest bounds first, where a point of the
-/// solid may be (`loose`: lo, hi).
+/// solid may be (`loose`).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
     pub verdict: Verdict,
     pub res: f64,
     pub tol: f64,
     pub exact: bool,
-    pub loose: Vec<[V3; 2]>,
+    pub loose: Vec<Loose>,
+}
+
+/// A cell a proof settled only by its tolerance: its box (lo, hi) and the
+/// piece of the scope it was settled over, each ranged param's span
+/// (`params`, those derived from them left out) and time's over a step
+/// (`t`).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Loose {
+    pub cell: [V3; 2],
+    pub params: Vec<(u32, (f64, f64))>,
+    pub t: Option<(f64, f64)>,
+}
+
+impl Loose {
+    fn of(b: [I; 3], ctx: &Ctx) -> Loose {
+        let params = ctx.p_spans.iter().filter(|s| !s.derived).map(|s| (s.k, s.span)).collect();
+        Loose { cell: [b.map(|x| x.lo), b.map(|x| x.hi)], params, t: ctx.t_span }
+    }
+
+    /// ctx narrowed to the cell's scope.
+    pub fn scope(&self, ctx: &Ctx) -> Ctx {
+        let mut c = self.params.iter().fold(ctx.clone(), |c, &(k, span)| c.with_param(k, span));
+        if self.t.is_some() {
+            c.t_span = self.t;
+        }
+        c.into_scope()
+    }
 }
 
 /// How many cells a proof that needed its tolerance keeps (Proof::loose).
@@ -1021,10 +1051,12 @@ pub fn closer_pair(ta: &Tape, tb: &Tape, ctx: &Ctx, mut p: V3, mut q: V3, scale:
 /// finer than the floor. Best first, the box
 /// where the field can be lowest is refined first, so a witness is
 /// usually found in the first few hundred boxes; a box undecided with
-/// every side at the finest cells ends the search unknown (Ended::Finest),
-/// without refining the rest, with the accuracy it holds to (`attained`:
-/// no point of S deeper than that, from the boxes left; at or under `tol`,
-/// it is proven to it). At most BOXES boxes are tested (Ended::Limit).
+/// every side at the finest cells ends the proof (Ended::Finest), with the
+/// accuracy it holds to (`attained`: no point of S deeper than that, from
+/// the boxes left; at or under `tol`, it is proven to it). Else the search
+/// hunts a point deeper than `tol` in the rest (search::Search::hunt), and
+/// is unknown where it finds none. At most BOXES boxes are tested
+/// (Ended::Limit).
 /// Returns the answer, the cells it reached (the smallest side of a box
 /// tested) and whether a proof needed the tolerance (`exact` false).
 pub fn prove_empty(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>, floor: f64, tol: f64) -> Proof {
@@ -1047,7 +1079,7 @@ fn empty_now(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>, floo
     let Some(root) = lattice(blo, bhi, finest) else {
         return (
             Proof {
-                verdict: Verdict::Unknown { cells: 1, volume: f64::INFINITY, ended: Ended::Limit, cell: None, attained: None },
+                verdict: Verdict::Unknown { cells: 1, volume: f64::INFINITY, ended: Ended::Limit, cell: None, attained: None, hunt: None },
                 res: finest,
                 tol,
                 exact: false,
@@ -1068,25 +1100,39 @@ fn empty_run(q: &Empty, roots: Vec<search::Node<Pieces>>, finest: f64) -> (Proof
     // The lattice's sides are finest times powers of two: a side up to half
     // as wide again is at the finest cells (its ends rounded).
     let mut s = search::Search::new(q, roots, search::Precision::holds(1.5 * finest));
-    let outcome = s.finish(q, BOXES);
+    let mut outcome = s.finish(q, BOXES);
+    // Not proven, and not to the tolerance by the boxes left (`attained`):
+    // a point of S deeper than it may be there, so the search hunts one.
+    let mut attained = None;
+    if let search::Outcome::Unknown(u) = &outcome
+        && !u.stopped()
+    {
+        let a = q.attained(&s.left().collect::<Vec<_>>());
+        attained = Some(a);
+        if !(q.tol > 0.0 && a <= q.tol) {
+            s.hunt();
+            outcome = s.finish(q, BOXES);
+            attained = None;
+        }
+    }
     // The cells it reached: the lattice's, the smallest side tested (as
     // rounded) taken to the power of two of the finest it is.
     let res = finest * (s.res() / finest).log2().round().exp2();
-    let loose: Vec<[V3; 2]> = q.loose.lock().unwrap().iter().map(|c| c.1).collect();
+    let loose: Vec<Loose> = q.loose.lock().unwrap().iter().map(|c| c.1.clone()).collect();
     let verdict = match outcome {
         search::Outcome::Proven => Verdict::Proven,
         search::Outcome::Found((witness, at, value)) => Verdict::Disproven { witness, t: at.t, value, params: at.params },
         search::Outcome::Unknown(u) => {
             let left: Vec<&search::Node<Pieces>> = s.left().collect();
-            let attained = (u.ended != Ended::Stopped).then(|| q.attained(&left));
+            let attained = attained.or_else(|| (!u.stopped()).then(|| q.attained(&left)));
             if attained.is_some_and(|a| q.tol > 0.0 && a <= q.tol) {
                 // Every box left is held to the tolerance only.
-                let loose = left.iter().filter_map(|n| q.clip(n.b)).take(LOOSE).map(|b| [b.map(|x| x.lo), b.map(|x| x.hi)]).collect();
+                let loose = left.iter().filter_map(|n| Some(Loose::of(q.clip(n.b)?, &n.ctx))).take(LOOSE).collect();
                 return (Proof { verdict: Verdict::Proven, res, tol: q.tol, exact: false, loose }, s);
             }
             let volume = left.iter().filter_map(|n| q.clip(n.b)).map(|b| b.iter().map(|x| x.hi - x.lo).product::<f64>()).sum();
             let cell = u.cell.and_then(|[a, b]| q.clip(std::array::from_fn(|k| I::new(a[k], b[k])))).map(|b| [b.map(|x| x.lo), b.map(|x| x.hi)]);
-            Verdict::Unknown { cells: u.cells, volume, ended: u.ended, cell, attained }
+            Verdict::Unknown { cells: u.cells, volume, ended: u.ended, cell, attained, hunt: u.hunt }
         }
     };
     (Proof { verdict, res, tol: q.tol, exact: loose.is_empty(), loose }, s)
@@ -1219,7 +1265,7 @@ struct Empty {
     tol: f64,
     region: [I; 3],
     asked: [I; 3],
-    loose: std::sync::Mutex<Vec<(f64, [V3; 2])>>,
+    loose: std::sync::Mutex<Vec<(f64, Loose)>>,
     /// Time's span over the search (a step of a motion), which a box's
     /// share of it is of.
     t_band: Option<(f64, f64)>,
@@ -1312,14 +1358,14 @@ impl search::Question for Empty {
         match settles {
             Settles::AtLeast => return Settled,
             Settles::Covered => {
-                self.keep_loose(r.lo, b);
+                self.keep_loose(r.lo, b, ctx);
                 return Settled;
             }
             Settles::No => {}
         }
         let sides = b.map(|x| x.hi - x.lo);
         if self.covered(&sub, &wide, ctx, b, sides, &pts, &v) {
-            self.keep_loose(r.lo, b);
+            self.keep_loose(r.lo, b, ctx);
             return Settled;
         }
         // Covered at the scope's middle but not over it: the axis of it
@@ -1396,20 +1442,22 @@ impl search::Question for Empty {
 }
 
 impl Empty {
-    /// Keep box `b`, settled only by the tolerance with `lo` its field's
-    /// lower bound, among the LOOSE of lowest bound (ties by place, so the
-    /// boxes kept do not depend on the order threads settle them in).
-    fn keep_loose(&self, lo: f64, b: [I; 3]) {
-        let cell = [b.map(|x| x.lo), b.map(|x| x.hi)];
-        let key = |c: &(f64, [V3; 2])| -> [f64; 7] {
-            let [l, h] = c.1;
-            [c.0, l[0], l[1], l[2], h[0], h[1], h[2]]
+    /// Keep box `b` over ctx's scope, settled only by the tolerance with
+    /// `lo` its field's lower bound, among the LOOSE of lowest bound (ties
+    /// by place, then scope, so the cells kept do not depend on the order
+    /// threads settle them in).
+    fn keep_loose(&self, lo: f64, b: [I; 3], ctx: &Ctx) {
+        let key = |c: &(f64, Loose)| -> Vec<f64> {
+            let [l, h] = c.1.cell;
+            let scope = c.1.t.iter().chain(c.1.params.iter().map(|p| &p.1)).flat_map(|s| [s.0, s.1]);
+            [c.0, l[0], l[1], l[2], h[0], h[1], h[2]].into_iter().chain(scope).collect()
         };
-        let new = key(&(lo, cell));
+        let cell = (lo, Loose::of(b, ctx));
+        let new = key(&cell);
         let mut kept = self.loose.lock().unwrap();
         let at = kept.partition_point(|c| key(c).iter().zip(&new).map(|(x, y)| x.total_cmp(y)).find(|o| o.is_ne()).is_none_or(|o| o.is_lt()));
         if at < LOOSE {
-            kept.insert(at, (lo, cell));
+            kept.insert(at, cell);
             kept.truncate(LOOSE);
         }
     }
@@ -1720,11 +1768,87 @@ pub fn slice(tape: &Arc<Tape>, ctx: &Ctx, axis: usize, at: f64, lo: V3, hi: V3, 
         q[v] = p[1];
         q
     };
-    let segs = quad_descend(tape, ctx, &to3, o, h, axis, at, (u, v), [0, 0], size);
+    let segs = quad_descend(tape, tape, ctx, &to3, o, h, axis, at, (u, v), [0, 0], size);
     join(segs)
 }
 
+/// A mark's slice: where field `g` crosses 0 in the plane `axis = at`,
+/// inside `region` (r < 0) and the box lo..hi. Marching squares on `g` (as
+/// `slice`), each chain then cut where it leaves them, the cut found by
+/// bisection along its segment. A closed chain wholly inside stays closed;
+/// the rest are open, with area 0. A mark is where g changes sign, as an
+/// outline is where f does: a g touching 0 draws nothing there.
+#[allow(clippy::too_many_arguments)]
+pub fn slice_mark(g: &Arc<Tape>, region: &Tape, ctx: &Ctx, axis: usize, at: f64, lo: V3, hi: V3, h: f64) -> Vec<Loop> {
+    let (u, v) = slice_axes(axis);
+    let to3 = |p: [f64; 2]| {
+        let mut q = [at; 3];
+        q[u] = p[0];
+        q[v] = p[1];
+        q
+    };
+    // Inside where negative: the region within the box.
+    let r = |p: [f64; 2]| eval_point(region, ctx, to3(p)).max(lo[u] - p[0]).max(p[0] - hi[u]).max(lo[v] - p[1]).max(p[1] - hi[v]);
+    // The crossing on a -> b, r(a) and r(b) of opposite signs: well below
+    // the cell (slice's own error), 40 halvings at most.
+    let cross = |a: [f64; 2], b: [f64; 2], ra: f64| {
+        let (mut a, mut b) = (a, b);
+        for _ in 0..40 {
+            if ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt() < h * 1e-6 {
+                break;
+            }
+            let m = [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
+            if (r(m) < 0.0) == (ra < 0.0) { a = m } else { b = m }
+        }
+        [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]
+    };
+    let length = |pts: &[[f64; 2]]| pts.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum::<f64>();
+    let mut out = Vec::new();
+    for l in slice(g, ctx, axis, at, lo, hi, h) {
+        let mut pts = l.pts;
+        let mut rs: Vec<f64> = pts.iter().map(|&p| r(p)).collect();
+        if l.closed {
+            // Start a closed chain outside the region, if it leaves it.
+            match rs.iter().position(|&x| x >= 0.0) {
+                None => {
+                    let mut p = pts.clone();
+                    p.push(pts[0]);
+                    out.push(Loop { perimeter: length(&p), pts, closed: true, area: 0.0 });
+                    continue;
+                }
+                Some(k) => {
+                    pts.rotate_left(k);
+                    rs.rotate_left(k);
+                    pts.push(pts[0]);
+                    rs.push(rs[0]);
+                }
+            }
+        }
+        let mut cur: Vec<[f64; 2]> = Vec::new();
+        for k in 0..pts.len() {
+            let inside = rs[k] < 0.0;
+            if k > 0 && inside != (rs[k - 1] < 0.0) {
+                cur.push(cross(pts[k - 1], pts[k], rs[k - 1]));
+                if !inside {
+                    out.push(Loop { perimeter: length(&cur), pts: std::mem::take(&mut cur), closed: false, area: 0.0 });
+                }
+            }
+            if inside {
+                cur.push(pts[k]);
+            }
+        }
+        if cur.len() >= 2 {
+            out.push(Loop { perimeter: length(&cur), pts: cur, closed: false, area: 0.0 });
+        }
+    }
+    out.retain(|l| l.pts.len() >= 2);
+    out
+}
+
+/// `full`: the field unsimplified, for samples outside a cell (`march`).
+#[allow(clippy::too_many_arguments)]
 fn quad_descend(
+    full: &Tape,
     tape: &Arc<Tape>,
     ctx: &Ctx,
     to3: &(dyn Fn([f64; 2]) -> V3 + Sync),
@@ -1750,27 +1874,46 @@ fn quad_descend(
     }
     let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
     if size == 1 {
-        return march(&sub, ctx, to3, o, h, i);
+        return march(full, &sub, ctx, to3, o, h, i);
     }
     let hs = size / 2;
     let kids = [[0, 0], [hs, 0], [0, hs], [hs, hs]];
-    let parts: Vec<Vec<Seg>> = kids.par_iter().map(|k| quad_descend(&sub, ctx, to3, o, h, axis, at, uv, [i[0] + k[0], i[1] + k[1]], hs)).collect();
+    let parts: Vec<Vec<Seg>> = kids.par_iter().map(|k| quad_descend(full, &sub, ctx, to3, o, h, axis, at, uv, [i[0] + k[0], i[1] + k[1]], hs)).collect();
     parts.into_iter().flatten().collect()
 }
 
-fn march(tape: &Tape, ctx: &Ctx, to3: &(dyn Fn([f64; 2]) -> V3 + Sync), o: [f64; 2], h: f64, i: [i64; 2]) -> Vec<Seg> {
+fn march(full: &Tape, tape: &Tape, ctx: &Ctx, to3: &(dyn Fn([f64; 2]) -> V3 + Sync), o: [f64; 2], h: f64, i: [i64; 2]) -> Vec<Seg> {
     let p = |a: i64, b: i64| [o[0] + h * a as f64, o[1] + h * b as f64];
     let (x, y) = (i[0], i[1]);
-    let c = [p(x, y), p(x + 1, y), p(x + 1, y + 1), p(x, y + 1)];
+    let corner = [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)];
+    let c = corner.map(|(a, b)| p(a, b));
     let center = [o[0] + h * (x as f64 + 0.5), o[1] + h * (y as f64 + 0.5)];
     let mut v = Vec::new();
     eval_points(tape, ctx, &[to3(c[0]), to3(c[1]), to3(c[2]), to3(c[3]), to3(center)], &mut v);
-    let ins = [v[0] < 0.0, v[1] < 0.0, v[2] < 0.0, v[3] < 0.0];
+    // The curve is where the field changes sign, between f < 0 and f > 0.
+    // A corner at exactly 0 is inside unless a grid neighbour is positive:
+    // so the curve runs through it where the field crosses there, and a
+    // field touching 0 (negative or 0 on every side) draws nothing, no
+    // sliver of zero width. Every cell sharing the corner reads the same
+    // neighbours (unsimplified: they lie outside the cell).
+    let inside = |k: usize| {
+        v[k] < 0.0
+            || v[k] == 0.0 && {
+                let (a, b) = corner[k];
+                let mut n = Vec::new();
+                let near: Vec<V3> = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)].iter().map(|&(da, db)| to3(p(a + da, b + db))).collect();
+                eval_points(full, ctx, &near, &mut n);
+                n.iter().all(|&w| w <= 0.0)
+            }
+    };
+    let ins = [inside(0), inside(1), inside(2), inside(3)];
     // Edges (from lower to higher grid corner): e0 c0-c1, e1 c1-c2, e2 c3-c2, e3 c0-c3.
     let edges: [(usize, usize, EdgeKey); 4] = [(0, 1, (x, y, 0)), (1, 2, (x + 1, y, 1)), (3, 2, (x, y + 1, 0)), (0, 3, (x, y, 1))];
     let cross = |e: usize| {
         let (a, b, _) = edges[e];
-        let t = (v[a] / (v[a] - v[b])).clamp(0.0, 1.0);
+        // Both corners 0 (one with a positive neighbour): the middle.
+        let d = v[a] - v[b];
+        let t = if d == 0.0 { 0.5 } else { (v[a] / d).clamp(0.0, 1.0) };
         [c[a][0] + (c[b][0] - c[a][0]) * t, c[a][1] + (c[b][1] - c[a][1]) * t]
     };
     let crossing: Vec<usize> = (0..4).filter(|&e| ins[edges[e].0] != ins[edges[e].1]).collect();
@@ -2198,10 +2341,11 @@ pub struct Way {
 /// and a way that ends undecided leaves the rest to the other. A way's box
 /// stuck at `finest` (the gap there within about it of d, or a field that
 /// reads well under the distance near the other shape: a box of slabs
-/// beside an edge) ends the way, as best first it is the box nearest a
-/// violation; so a field far from a distance is unknown after thousands of
-/// boxes, not millions. Undecided both ways, it gives the way that proved
-/// more: the accuracy it holds to (`attained`: every point of the covered
+/// beside an edge) ends the way's proof, as best first it is the box
+/// nearest a violation. Undecided both ways, both hunt a pair closer than d
+/// in the rest (search::Search::hunt), in turn as before, each to its cap
+/// or the budget (`hunt`); none found, it gives the way that proved more:
+/// the accuracy it holds to (`attained`: every point of the covered
 /// shape at least d less that from the other), its boxes left and the box
 /// that ended it. The answer is a function of the question; it is cached
 /// by it. Returns the verdict, a pair closer than d (the claim's way
@@ -2245,29 +2389,54 @@ fn clearance_now(ways: &[Way], ctx: &Ctx, d: f64, finest: f64, budget: usize) ->
     let mut ended: Vec<Option<search::Undecided>> = vec![None; ways.len()];
     let swap = |w: &Way, (q, p): (V3, V3)| if w.swapped { (p, q) } else { (q, p) };
     let tested = |s: &[search::Search<(Arc<Tape>, Arc<Tape>), Near>]| s.iter().map(|s| s.tested()).sum::<usize>();
-    while let Some(k) = (0..ways.len()).filter(|&k| ended[k].is_none()).min_by(|&i, &j| searches[i].volume().total_cmp(&searches[j].volume())) {
-        let others: usize = searches.iter().enumerate().filter(|x| x.0 != k).map(|x| x.1.tested()).sum();
-        match searches[k].round(&qs[k], budget.saturating_sub(others)) {
-            None => {}
-            Some(search::Outcome::Proven) => return (Verdict::Proven, None, searches[k].res(), tested(&searches)),
-            Some(search::Outcome::Found((q, p, at))) => {
-                let v = Verdict::Disproven { witness: q, t: at.t, value: distance_up(p, q), params: at.params };
-                return (v, Some(swap(&ways[k], (q, p))), searches[k].res(), tested(&searches));
+    for hunt in [false, true] {
+        // Neither way proves it: unless stopped, both hunt a pair closer
+        // than d (search::Search::hunt), in turn as before.
+        if hunt {
+            if ended.iter().flatten().any(|u| u.stopped()) {
+                break;
             }
-            Some(search::Outcome::Unknown(u)) => ended[k] = Some(u),
+            searches.iter_mut().for_each(|s| s.hunt());
+            ended.iter_mut().for_each(|u| *u = None);
+        }
+        while let Some(k) = (0..ways.len()).filter(|&k| ended[k].is_none()).min_by(|&i, &j| searches[i].volume().total_cmp(&searches[j].volume())) {
+            let others: usize = searches.iter().enumerate().filter(|x| x.0 != k).map(|x| x.1.tested()).sum();
+            match searches[k].round(&qs[k], budget.saturating_sub(others)) {
+                None => {}
+                Some(search::Outcome::Proven) => return (Verdict::Proven, None, searches[k].res(), tested(&searches)),
+                Some(search::Outcome::Found((q, p, at))) => {
+                    let v = Verdict::Disproven { witness: q, t: at.t, value: distance_up(p, q), params: at.params };
+                    return (v, Some(swap(&ways[k], (q, p))), searches[k].res(), tested(&searches));
+                }
+                Some(search::Outcome::Unknown(u)) => ended[k] = Some(u),
+            }
         }
     }
+    // Both ways' hunts: their cells, stopped by the time limit if either
+    // was, by the refinement limit if both were, else by a cap or the budget.
+    let hunts: Vec<search::Hunt> = ended.iter().flatten().filter_map(|u| u.hunt).collect();
+    let hunt = (!hunts.is_empty()).then(|| {
+        use search::HuntEnd::{Budget, Cap, Stuck, Time};
+        let by = |e| hunts.iter().any(|h| h.stopped == e);
+        let stopped = if by(Time) {
+            Time
+        } else if hunts.iter().all(|h| h.stopped == Stuck) {
+            Stuck
+        } else if by(Cap) {
+            Cap
+        } else {
+            Budget
+        };
+        search::Hunt { cells: hunts.iter().map(|h| h.cells).sum(), stopped }
+    });
     // The way that proved the larger clearance (a stop ends both).
-    let Some((k, u)) = ended
-        .into_iter()
-        .enumerate()
-        .filter_map(|(k, u)| Some((k, u?)))
-        .max_by(|x, y| (x.1.ended == Ended::Stopped).cmp(&(y.1.ended == Ended::Stopped)).then(x.1.bound.total_cmp(&y.1.bound)).then(y.0.cmp(&x.0)))
+    let Some((k, u)) =
+        ended.into_iter().enumerate().filter_map(|(k, u)| Some((k, u?))).max_by(|x, y| x.1.stopped().cmp(&y.1.stopped()).then(x.1.bound.total_cmp(&y.1.bound)).then(y.0.cmp(&x.0)))
     else {
-        return (Verdict::Unknown { cells: 0, volume: 0.0, ended: Ended::Finest, cell: None, attained: None }, None, finest, tested(&searches));
+        return (Verdict::Unknown { cells: 0, volume: 0.0, ended: Ended::Finest, cell: None, attained: None, hunt: None }, None, finest, tested(&searches));
     };
     let attained = (u.bound > 0.0).then(|| (d - u.bound).next_up());
-    (Verdict::Unknown { cells: u.cells, volume: u.volume, ended: u.ended, cell: u.cell, attained }, None, searches[k].res(), tested(&searches))
+    (Verdict::Unknown { cells: u.cells, volume: u.volume, ended: u.ended, cell: u.cell, attained, hunt }, None, searches[k].res(), tested(&searches))
 }
 
 /// The minimum distance between two shapes, bracketed (`min_distance`):
@@ -2357,7 +2526,7 @@ fn min_distance_now(ways: &[Way], ctx: &Ctx, far: f64, seed: Option<(f64, V3, V3
         }
     }
     // The way that proved more (a stop ends both).
-    let u = ended.into_iter().flatten().max_by(|x, y| (x.ended == Ended::Stopped).cmp(&(y.ended == Ended::Stopped)).then(x.bound.total_cmp(&y.bound)));
+    let u = ended.into_iter().flatten().max_by(|x, y| x.stopped().cmp(&y.stopped()).then(x.bound.total_cmp(&y.bound)));
     let lower = u.as_ref().map_or(0.0, |u| u.bound.clamp(0.0, d.max(0.0)));
     MinDistance { lower, upper, ended: Some(u.map_or(Ended::Finest, |u| u.ended)), res: res(&searches), tested: tested(&searches) }
 }
@@ -2380,37 +2549,72 @@ impl Side {
     }
 }
 
+/// Where a ray reached a side of a field (ray_to): at t, and, where
+/// bounds rounded outward do not show a point within its eps after t on
+/// that side, how far from 0 the field's real value may be there
+/// (`rounding`: the ray runs in the surface, so only rounding decides the
+/// side, and it may be on either).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RayHit {
+    pub t: f64,
+    pub rounding: Option<f64>,
+}
+
 /// The first t in [t0, t1] where o + t dir is on `side` of the field.
 /// Interval arithmetic over segments of the ray, nearest first, each with
 /// the tape `local` keeps for the smallest block holding it, rules out the
-/// stretches wholly on the other side; a segment it cannot rule out is
+/// stretches wholly on the other side, as does the field's value at a
+/// segment's middle (bounded outward) and its rate along the ray (a mean
+/// value bound, finite only where the field is continuous: no undecided
+/// select, floor or atan2 across a jump); a segment neither rules out is
 /// halved down to `eps`, where the values at its ends decide. So a stretch
-/// of `side` longer than eps is never stepped over, a touch that does not
-/// cross is not a crossing, and a ray lying in the surface (where only
-/// rounding decides the sign) costs its length over eps (at least 1e-9 of
-/// t1). The crossing found is then bisected to the precision of floats: t
-/// is on `side`. None: no point of the ray is on that side, but for
-/// stretches shorter than eps.
-pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, eps: f64) -> Option<f64> {
+/// of `side` longer than eps is never stepped over, and a touch that does
+/// not cross is not a crossing. A segment whose middle's bound holds 0 and
+/// whose rate times its half-length is under that bound's width is a ray
+/// lying in the surface: halving it decides nothing, so it ends the search,
+/// a hit where it crosses if bounds show that one sure, else from its
+/// start, within rounding of 0 there (RayHit::rounding). The crossing found
+/// is bisected to the precision of floats: t is on `side`, in floats, and
+/// a hit is sure where bounds show a point of it within eps after t.
+/// None: no point of the ray is on that side, but for stretches shorter
+/// than eps.
+pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, eps: f64) -> Option<RayHit> {
     let ctx = local.ctx();
     let at = |t: f64| [o[0] + t * dir[0], o[1] + t * dir[1], o[2] + t * dir[2]];
     let f = |t: f64| {
         let p = at(t);
         eval_point(&local.tape_over(&p.map(I::point)), ctx, p)
     };
+    let eps = eps.max(1e-9 * t1.abs());
+    // Bounds `r` show: no point on `side`, every point on it.
+    let decide = |r: I| match side {
+        Side::Inside => (r.lo >= 0.0, r.hi < 0.0),
+        Side::Outside => (r.hi < 0.0, r.lo >= 0.0),
+    };
+    // The bounds at t: of the ray's real point there, and its float.
+    let point = |t: f64| {
+        let (p, b) = (at(t), segment_box(o, dir, t, t));
+        let b = std::array::from_fn(|k| I::new(b[k].lo.min(p[k]), b[k].hi.max(p[k])));
+        eval_interval(&local.tape_over(&b), ctx, b, None)
+    };
+    // t, sure where bounds show it, or a point up to eps after it and
+    // within the ray, on `side` (2^-20 eps first).
+    let hit = |t: f64| {
+        let r = point(t);
+        let sure = decide(r).1 || (0..=20).rev().map(|i| t + eps * 0.5f64.powi(i)).filter(|&s| s <= t1).any(|s| decide(point(s)).1);
+        RayHit { t, rounding: (!sure).then(|| r.lo.abs().max(r.hi.abs())) }
+    };
     let start = f(t0);
     if side.holds(start) {
-        return Some(t0);
+        return Some(hit(t0));
     }
-    let eps = eps.max(1e-9 * t1.abs());
-    let mut slots = Vec::new();
     // Segments from t0, each twice as long as the one before, so a ray that
     // crosses soon is searched in the small blocks near where it starts;
     // each depth-first, nearest half first. The first is as long as the
     // field's value at t0 (a distance field's gap to the surface; a field
     // scaled by k costs log2 k more segments), at least eps.
     let (mut from, mut len) = (t0, if start.is_finite() { start.abs().max(eps) } else { eps });
-    let mut stack = Vec::new();
+    let (mut stack, mut slots) = (Vec::new(), Vec::new());
     loop {
         let (a, b) = match stack.pop() {
             Some(s) => s,
@@ -2422,11 +2626,35 @@ pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, e
             None => return None,
         };
         let bx = segment_box(o, dir, a, b);
-        let r = eval_interval_in(&local.tape_over(&bx), ctx, bx, None, &mut slots);
-        let (none, all) = match side {
-            Side::Inside => (r.lo >= 0.0, r.hi < 0.0),
-            Side::Outside => (r.hi < 0.0, r.lo >= 0.0),
-        };
+        let tape = local.tape_over(&bx);
+        let r = eval_interval_in(&tape, ctx, bx, None, &mut slots);
+        let (mut none, mut all) = decide(r);
+        if !none && !all {
+            // Its middle's bound and its rate along the ray: the real field
+            // over the segment lies within their mean value bound.
+            let g = ink_core::eval::eval_interval_grad(&tape, ctx, bx);
+            let rate = (0..3).fold(I::point(0.0), |s, k| add_o(s, mul_o(g.d[k], I::point(dir[k]))));
+            let m = span_mid((a, b));
+            let mid = eval_interval_in(&tape, ctx, segment_box(o, dir, m, m), None, &mut slots);
+            if rate.lo.is_finite() && rate.hi.is_finite() && mid.lo.is_finite() && mid.hi.is_finite() {
+                let e = add_o(mid, mul_o(rate, sub_o(I::new(a, b), I::point(m))));
+                (none, all) = decide(e);
+                let undecided = !(decide(mid).0 || decide(mid).1);
+                if !none && !all && undecided && ink_core::interval::mag(rate) * (b - a) * 0.5 <= mid.hi - mid.lo {
+                    // Where it crosses in floats, if it does, and sure there
+                    // where bounds show it (`hit`); else from a, to rounding.
+                    let (fa, fb) = (f(a), f(b));
+                    let t = match (side.holds(fa), side.holds(fb)) {
+                        (false, true) => crossing(&f, side, (a, fa), (b, fb)),
+                        _ => a,
+                    };
+                    return Some(match hit(t) {
+                        h @ RayHit { rounding: None, .. } => h,
+                        _ => RayHit { t: a, rounding: Some(e.lo.abs().max(e.hi.abs())) },
+                    });
+                }
+            }
+        }
         if none {
             continue;
         }
@@ -2434,7 +2662,7 @@ pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, e
             // On that side somewhere in [a, b]: find the first crossing.
             let (fa, fb) = (f(a), f(b));
             if side.holds(fa) {
-                return Some(a);
+                return Some(hit(a));
             }
             if !side.holds(fb) {
                 // No crossing at the ends; refine this stretch further.
@@ -2445,7 +2673,7 @@ pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, e
                 }
                 continue;
             }
-            return Some(crossing(&f, side, (a, fa), (b, fb)));
+            return Some(hit(crossing(&f, side, (a, fa), (b, fb))));
         }
         let m = span_mid((a, b));
         stack.push((m, b));
@@ -3324,7 +3552,9 @@ mod tests {
     /// by rounding (cos of pi/2 y at y = 1): its bounds there are 10 wide,
     /// the branches' gap, not rounding (a rule taking them for rounding
     /// would drop it), and the material (x in 0.5
-    /// .. 1.25 at y = 1, f -0.25 at x = 1) is found where it starts.
+    /// .. 1.25 at y = 1, f -0.25 at x = 1) is found where it starts,
+    /// unsure: only rounding decides the select there, so bounds show no
+    /// point of it inside.
     #[test]
     fn a_ray_finds_material_behind_an_undecided_select() {
         use crate::test_fields::B;
@@ -3344,7 +3574,7 @@ mod tests {
         let tape = Arc::new(b.tape(f));
         let ctx = Ctx::new(0.0, vec![]);
         let t = ray_to(&Local::whole(&tape, &ctx), [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], (0.0, 2.0), Side::Inside, 2e-9);
-        assert!(t.is_some_and(|t| (t - 0.5).abs() < 1e-6), "{t:?}");
+        assert!(t.is_some_and(|h| (h.t - 0.5).abs() < 1e-6 && h.rounding.is_some()), "{t:?}");
     }
 
     #[test]

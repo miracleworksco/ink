@@ -170,6 +170,12 @@ pub trait ParamProvider: Send + Sync {
     /// measurement that did not settle), why: answers reading its params
     /// say so (`Inexact::unsettled`). An error where it can set nothing.
     fn provide(&self, params: &mut [f64], t: f64) -> Result<Option<String>, String>;
+    /// Why `provide` would fail at time t, found as cheaply as it can be
+    /// (`ink check` asks it of each solve on demand): by default, by
+    /// providing.
+    fn refusal(&self, params: &[f64], t: f64) -> Option<String> {
+        self.provide(&mut params.to_vec(), t).err()
+    }
     /// What it sets over the ranged params of `ctx` (`ctx.p_spans`, at
     /// moment `ctx.t`), where it reads some: its params derived from them
     /// (ink_core::eval::Derive), certified for every value of those it
@@ -409,6 +415,10 @@ pub struct Measured {
     /// that holds is unknown, and a coarser grid that says so while a finer
     /// does not cannot check the finer's answer.
     pub unseen: Option<String>,
+    /// Whether the value is proven, not measured on a grid (a count of
+    /// voids by proof): a claim on it is exact, not an estimate, unless it
+    /// leaves out on purpose what the proof left undecided.
+    pub proven: bool,
 }
 
 /// A value a metric leaves out (`Measured::excluded`).
@@ -858,10 +868,10 @@ impl Doc {
     /// load-time values: nothing reading them is decided at this moment
     /// (ModelView::refusal). Err: an unknown param, or an override of a
     /// solved one.
-    pub fn ctx_at(&self, overrides: &[(String, f64)], t: f64) -> Result<(Ctx, Vec<(usize, InkError)>), String> {
+    pub fn ctx_at(&self, overrides: &[(String, crate::Given)], t: f64) -> Result<(Ctx, Vec<(usize, InkError)>), String> {
         let providers = self.providers();
         let mut params: Vec<f64> = self.params.iter().map(|p| p.default).collect();
-        for (k, v) in overrides {
+        for (k, v) in overrides.iter().map(|(k, g)| (k, &g.value)) {
             // A (ranged lo hi), by its def, is looked at at a value of its
             // range (a command answering claims refuses it: ink-cli's session).
             if self.param_index(k).is_none()

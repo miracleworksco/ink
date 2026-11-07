@@ -6,6 +6,8 @@
 //! holds no table of its own; it reads the library's defs by name.
 
 use super::*;
+use ink_core::eval::eval_interval;
+use ink_core::interval::I;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -66,6 +68,69 @@ impl ParamProvider for PublishedMass {
     }
 
     fn provide(&self, params: &mut [f64], t: f64) -> Result<Option<String>, String> {
+        let (ctx, mass) = self.at(params, t)?;
+        let mut unsettled = None;
+        let mut weigh = |shape: &Arc<Tape>, rho: Option<&Arc<Tape>>| -> Result<f64, String> {
+            let (sum, why) = self.measure(shape, rho, &ctx)?;
+            unsettled = unsettled.take().or(why);
+            Ok(sum)
+        };
+        let own = self.own.iter().map(|(s, rho, n)| Ok(n * weigh(s, Some(rho))?)).sum::<Result<f64, String>>()?;
+        let volume = self.shared.iter().map(|(s, n)| Ok(n * weigh(s, None)?)).sum::<Result<f64, String>>()?;
+        if !(volume.is_finite() && volume > 0.0) {
+            return Err(self.empty());
+        }
+        if own > mass {
+            return Err(self.outweighed(own, mass));
+        }
+        params[self.owns[0]] = (mass - own) / volume;
+        Ok(unsettled.map(|why| format!("a volume it rests on is not measured to {}%: {why}. The density is mass over the finest measurement reached", query::ACCURACY * 100.0)))
+    }
+
+    /// Without measuring the volume it shares where it can: its mass, its
+    /// bodies' bounds, a volume above 0 (`holds_material`, else measured),
+    /// and what its bodies with a density of their own weigh, measured only
+    /// where their density's bound over their box could pass the mass.
+    fn refusal(&self, params: &[f64], t: f64) -> Option<String> {
+        let check = || -> Result<(), String> {
+            let (ctx, mass) = self.at(params, t)?;
+            // A volume above 0: a cell of one body proven inside, else
+            // the bodies measured.
+            let mut solid = false;
+            for (s, _) in &self.shared {
+                if let Some((lo, hi)) = self.bounds(s, &ctx)? {
+                    solid = solid || holds_material(s, &ctx, lo, hi);
+                }
+            }
+            if !solid {
+                let volume = self.shared.iter().map(|(s, n)| Ok(n * self.measure(s, None, &ctx)?.0)).sum::<Result<f64, String>>()?;
+                if !(volume.is_finite() && volume > 0.0) {
+                    return Err(self.empty());
+                }
+            }
+            let mut most = 0.0;
+            for (s, rho, n) in &self.own {
+                if let Some((lo, hi)) = self.bounds(s, &ctx)? {
+                    let b: [I; 3] = std::array::from_fn(|k| I::new(lo[k], hi[k]));
+                    let volume: f64 = (0..3).map(|k| hi[k] - lo[k]).product();
+                    most += n * eval_interval(rho, &ctx, b, None).hi.max(0.0) * volume;
+                }
+            }
+            if !(most * (1.0 + 1e-9) <= mass) {
+                let own = self.own.iter().map(|(s, rho, n)| Ok(n * self.measure(s, Some(rho), &ctx)?.0)).sum::<Result<f64, String>>()?;
+                if own > mass {
+                    return Err(self.outweighed(own, mass));
+                }
+            }
+            Ok(())
+        };
+        check().err()
+    }
+}
+
+impl PublishedMass {
+    /// The context it is measured in (its configuration) and its mass.
+    fn at(&self, params: &[f64], t: f64) -> Result<(Ctx, f64), String> {
         let mut values = params.to_vec();
         for &(k, v) in &self.at {
             values[k] = v;
@@ -75,30 +140,49 @@ impl ParamProvider for PublishedMass {
         if !mass.is_finite() || mass < 0.0 {
             return Err(format!("{}: mass must be finite and nonnegative (grams)", self.name));
         }
-        // The volume, or the mass under `rho`, as `ink mass` measures it;
-        // unsettled, the finest measurement reached, and why.
-        let mut unsettled = None;
-        let mut measure = |shape: &Arc<Tape>, rho: Option<&Arc<Tape>>| -> Result<f64, String> {
-            let reach = crate::reach_of(shape, DEFAULT_DOMAIN, &ctx);
-            if !reach.whole {
-                return Err(format!("{}: a published mass needs bounded bodies", self.name));
-            }
-            let Some((lo, hi, _)) = query::bounds(shape, &ctx, reach.lo, reach.hi) else { return Ok(0.0) };
-            let v = query::measured(shape, &[rho.map(|r| &**r), None], true, &ctx, lo, hi, None);
-            unsettled = unsettled.take().or(v.unsettled());
-            Ok(v.sums[0])
-        };
-        let own = self.own.iter().map(|(s, rho, n)| Ok(n * measure(s, Some(rho))?)).sum::<Result<f64, String>>()?;
-        let volume = self.shared.iter().map(|(s, n)| Ok(n * measure(s, None)?)).sum::<Result<f64, String>>()?;
-        if !(volume.is_finite() && volume > 0.0) {
-            return Err(format!("{}: a published mass needs a body with positive finite volume", self.name));
-        }
-        if own > mass {
-            return Err(format!("{}: its bodies with a density of their own weigh {own:.4} g, more than its published {mass} g", self.name));
-        }
-        params[self.owns[0]] = (mass - own) / volume;
-        Ok(unsettled.map(|why| format!("a volume it rests on is not measured to {}%: {why}. The density is mass over the finest measurement reached", query::ACCURACY * 100.0)))
+        Ok((ctx, mass))
     }
+
+    /// A body's box (None: empty), or why a mass over it cannot be measured.
+    fn bounds(&self, shape: &Arc<Tape>, ctx: &Ctx) -> Result<Option<(V3, V3)>, String> {
+        let reach = crate::reach_of(shape, DEFAULT_DOMAIN, ctx);
+        if !reach.whole {
+            return Err(format!("{}: a published mass needs bounded bodies", self.name));
+        }
+        Ok(query::bounds(shape, ctx, reach.lo, reach.hi).map(|(lo, hi, _)| (lo, hi)))
+    }
+
+    /// A body's volume, or its mass under `rho`, as `ink mass` measures it;
+    /// unsettled, the finest measurement reached, and why.
+    fn measure(&self, shape: &Arc<Tape>, rho: Option<&Arc<Tape>>, ctx: &Ctx) -> Result<(f64, Option<String>), String> {
+        let Some((lo, hi)) = self.bounds(shape, ctx)? else { return Ok((0.0, None)) };
+        let v = query::measured(shape, &[rho.map(|r| &**r), None], true, ctx, lo, hi, None);
+        Ok((v.sums[0], v.unsettled()))
+    }
+
+    fn empty(&self) -> String {
+        format!("{}: a published mass needs a body with positive finite volume", self.name)
+    }
+
+    fn outweighed(&self, own: f64, mass: f64) -> String {
+        format!("{}: its bodies with a density of their own weigh {own:.4} g, more than its published {mass} g", self.name)
+    }
+}
+
+/// Whether a shape in `lo..hi` holds a cell of material (so a volume
+/// above 0): a point the emptiness search finds inside, confirmed, and a
+/// box round it a billionth of the shape's size bounded below 0. False
+/// where that is not shown.
+fn holds_material(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3) -> bool {
+    let scale = query::max_extent(lo, hi);
+    let floor = 1e-6 * scale;
+    if !(floor > 0.0 && floor.is_finite()) {
+        return false;
+    }
+    let query::Verdict::Disproven { witness, .. } = query::prove_empty(shape, ctx, lo, hi, None, floor, 0.0).verdict else { return false };
+    let Some(p) = query::confirm_inside(shape, ctx, witness, scale) else { return false };
+    let e = 1e-9 * scale;
+    eval_interval(shape, ctx, p.map(|x| I::new(x - e, x + e)), None).hi < 0.0
 }
 
 /// Why an assembly's published mass is not used, where every body it
@@ -185,7 +269,7 @@ pub fn material_property(attrs: &[(String, Value)], key: &str) -> Option<f64> {
 /// a number or a field.
 pub fn attr(g: &mut Graph, who: &str, attrs: &[(String, Value)], key: &str) -> Result<Option<NodeId>, InkError> {
     match attrs.iter().find(|(k, _)| k == key) {
-        Some((_, Value::Field(f))) => Ok(Some(*f)),
+        Some((_, Value::Field(f, _))) => Ok(Some(*f)),
         Some((_, other)) => Err(InkError::msg(format!("attr '{key}' of {who} is a {}, not a number or a field", other.kind()))),
         None => Ok(material_property(attrs, key).map(|v| g.constant(v))),
     }
@@ -334,7 +418,7 @@ impl Doc {
             let get = |k: &str| b.attrs.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
             (get("mass"), get("density"))
         });
-        if let Some((Some(Value::Field(m)), Some(density))) = defined
+        if let Some((Some(Value::Field(m, _)), Some(density))) = defined
             && m == mass
         {
             attrs.push(("density".into(), density));
@@ -342,7 +426,7 @@ impl Doc {
         }
         let config = self.published_config(at, attrs.iter().find(|(k, _)| k == "mass-params").map(|(_, v)| v))?;
         let k = self.publish(at, name, format!("published mass of '{name}' over its volume"), mass, vec![(shape, 1.0)], Vec::new(), config)?;
-        attrs.push(("density".into(), Value::Field(self.g.var(Var::Param(k as u32)))));
+        attrs.push(("density".into(), Value::Field(self.g.var(Var::Param(k as u32)), None)));
         Ok(())
     }
 
@@ -407,7 +491,7 @@ impl Doc {
         for b in names {
             let body = self.bodies.iter_mut().find(|x| x.name == b).unwrap();
             let mut attrs = (*body.attrs).clone();
-            attrs.push(("density".into(), Value::Field(f)));
+            attrs.push(("density".into(), Value::Field(f, None)));
             body.attrs = Attrs::new(attrs);
         }
         self.keep_mass(asm, AssemblyMass { mass, density: Some(f) });
@@ -435,7 +519,7 @@ impl Doc {
 
     /// A published mass's value: grams, the same everywhere.
     fn total_mass(&self, at: &Sexp, mass: &Value) -> R<NodeId> {
-        let Value::Field(mass) = *mass else { return Err(self.err(at, "attr mass must be a number in grams")) };
+        let Value::Field(mass, _) = *mass else { return Err(self.err(at, "attr mass must be a number in grams")) };
         if self.g.depends_on(mass, |v| matches!(v, Var::X | Var::Y | Var::Z)) {
             return Err(self.err(at, "attr mass is a total mass, so it cannot vary with x, y or z"));
         }
@@ -575,7 +659,7 @@ impl Doc {
                 }
                 let Some((f, _)) = acc else { return Err(self.err(e, format!("'{target}' has no bodies"))) };
                 self.want(&[f]);
-                return Ok(Value::Field(f));
+                return Ok(Value::Field(f, None));
             }
             _ => {}
         }

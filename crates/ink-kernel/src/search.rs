@@ -25,14 +25,16 @@
 //! infinity, tested whole; every param halved `splits` times, or spreading
 //! them less than space does; t at adjacent floats; no axis spreading them)
 //! is stuck: the claim is not decided there at that accuracy. Asked
-//! whether a claim holds, the search then ends unknown, without refining
-//! the rest; asked to map where it holds over the whole scope
-//! (`Precision::maps`: a motion's steps, a sweep's boxes, the pieces of a
-//! scope), it sets the box aside and searches the rest, and ends unknown
-//! once none is left. A stuck box is set aside either way, never halved:
-//! where the boxes that seek a witness as it ends find one, an asker that
-//! goes on with a nearer question (query::min_distance) ends unknown at it
-//! the next round, unless that question settles it.
+//! whether a claim holds, the proof then ends unknown, the rest not
+//! refined; the claim cannot be proven, but can still be disproven, and the
+//! asker may go on to hunt a witness in the rest (`hunt`: largest first,
+//! as many boxes as the proof tested). Asked to map where it holds over
+//! the whole scope (`Precision::maps`: a motion's steps, a sweep's boxes,
+//! the pieces of a scope), it sets the box aside and searches the rest, and
+//! ends unknown once none is left. A stuck box is set aside either way,
+//! never halved: where the boxes that seek a witness as it ends find one,
+//! an asker that goes on with a nearer question (query::min_distance) ends
+//! unknown at it the next round, unless that question settles it.
 //!
 //! Each round halves the first BATCH boxes and tests the halves side by
 //! side (on a runner, a search's piece: by the runners, a share each,
@@ -42,10 +44,11 @@
 //! asker that tests boxes itself (one at a time, or reading what it cannot
 //! share across threads) takes the halves of a round and gives their tests
 //! back (`round_by`). Ended unknown, the stuck box and the first boxes left
-//! seek a witness before it answers. One budget: the boxes it may test; a search
+//! seek a witness before it answers. One budget: the boxes it may test; a proof
 //! that would test over four times as many in all, at the rate each depth
 //! has opened boxes so far, ends there (Knuth's estimate of a search tree's
-//! size). Past the call's time limit (crate::stop) it ends unknown.
+//! size), a hunt at as many as the proof tested. Past the call's time limit
+//! (crate::stop) it ends unknown.
 
 use crate::query::Ended;
 use crate::scope;
@@ -113,8 +116,8 @@ pub trait Question: Sync {
 /// How finely a search halves, and what it does with a box no halving
 /// decides: space to sides no wider than `finest` (the accuracy asked),
 /// each ranged param to 2^-`splits` of its band, t to adjacent floats;
-/// such a box ends the search, or, where it `maps` where the claim holds
-/// over the whole scope, is set aside.
+/// such a box ends the proof (a hunt sets it aside), or, where it `maps`
+/// where the claim holds over the whole scope, is set aside.
 #[derive(Clone, Copy, Debug)]
 pub struct Precision {
     pub finest: f64,
@@ -146,7 +149,36 @@ pub struct Undecided {
     pub cells: usize,
     pub volume: f64,
     pub cell: Option<[V3; 2]>,
+    /// Why the proof ended.
     pub ended: Ended,
+    /// The hunt for a witness after it, where one ran (`Search::hunt`).
+    pub hunt: Option<Hunt>,
+}
+
+impl Undecided {
+    /// Whether the call's time limit stopped it, in its proof or its hunt.
+    pub fn stopped(&self) -> bool {
+        self.ended == Ended::Stopped || self.hunt.is_some_and(|h| h.stopped == HuntEnd::Time)
+    }
+}
+
+/// A hunt for a witness once the proof ended undecided (`Search::hunt`):
+/// the boxes it tested, none a certified violation, and why it stopped.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Hunt {
+    pub cells: usize,
+    pub stopped: HuntEnd,
+}
+
+/// Why a hunt stopped: it had tested as many boxes as the proof (`Cap`),
+/// the search's budget (`Budget`), the call's time limit passed (`Time`),
+/// or every box left was stuck (`Stuck`: at the refinement limit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HuntEnd {
+    Cap,
+    Budget,
+    Time,
+    Stuck,
 }
 
 /// A box waiting: its bound, the axis it is halved on (None: stuck) and
@@ -161,14 +193,20 @@ struct Open<S> {
     /// Space axes halved with it (`together`).
     with: [bool; 3],
     volume: f64,
+    /// Waiting in a hunt (Search::hunt).
+    hunted: bool,
     seq: u64,
 }
 
 impl<S> Open<S> {
-    /// Whether it comes before `o`: lower bound, then smaller, then made
-    /// first.
+    /// Whether it comes before `o`: proving, lower bound, then smaller;
+    /// hunting, larger, then lower bound; then made first.
     fn first(&self, o: &Self) -> Ordering {
-        self.bound.total_cmp(&o.bound).then(self.volume.total_cmp(&o.volume)).then(self.seq.cmp(&o.seq))
+        match self.hunted {
+            false => self.bound.total_cmp(&o.bound).then(self.volume.total_cmp(&o.volume)),
+            true => o.volume.total_cmp(&self.volume).then(self.bound.total_cmp(&o.bound)),
+        }
+        .then(self.seq.cmp(&o.seq))
     }
 }
 
@@ -202,9 +240,9 @@ pub struct Search<S, W> {
     p: Precision,
     open: BinaryHeap<Open<S>>,
     /// Boxes stuck: none waits to be halved. Where the search maps the
-    /// whole scope it goes on without them; else one ends it, at the
-    /// round it is taken in or, where that round's witness let the asker
-    /// go on (a nearer question, which may settle it), the next.
+    /// whole scope or hunts it goes on without them; else one ends it, at
+    /// the round it is taken in or, where that round's witness let the
+    /// asker go on (a nearer question, which may settle it), the next.
     aside: Vec<Open<S>>,
     made: u64,
     tested: usize,
@@ -216,6 +254,11 @@ pub struct Search<S, W> {
     done: Option<Outcome<W>>,
     /// What each depth has shown (`ahead`).
     depths: Vec<Depth>,
+    /// Hunting (`hunt`): the boxes tested when it began, and why the
+    /// proof ended.
+    hunting: Option<(usize, Ended)>,
+    /// Why the proof last ended undecided.
+    unproven: Ended,
 }
 
 /// At one depth (halvings from a root): boxes tested, of them open, boxes
@@ -263,12 +306,30 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
     /// A search of `roots`, none yet taken.
     fn of<N: std::borrow::Borrow<Node<S>>>(roots: &[N], p: Precision) -> Self {
         let t_band = roots.iter().filter_map(|n| n.borrow().ctx.t_span).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
-        Search { p, open: BinaryHeap::new(), aside: Vec::new(), made: 0, tested: 0, volume: 0.0, res: f64::INFINITY, t_band, done: None, depths: Vec::new() }
+        Search {
+            p,
+            open: BinaryHeap::new(),
+            aside: Vec::new(),
+            made: 0,
+            tested: 0,
+            volume: 0.0,
+            res: f64::INFINITY,
+            t_band,
+            done: None,
+            depths: Vec::new(),
+            hunting: None,
+            unproven: Ended::Limit,
+        }
     }
 
     /// Boxes tested so far.
     pub fn tested(&self) -> usize {
         self.tested
+    }
+
+    /// Boxes tested hunting a witness (`hunt`).
+    fn sought(&self) -> usize {
+        self.hunting.map_or(0, |(from, _)| self.tested - from)
     }
 
     /// The volume of the boxes left (how much is undecided).
@@ -354,6 +415,29 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
         self.aside.retain(|o| o.bound < bound);
     }
 
+    /// The claim cannot be proven (the search ended undecided: a box
+    /// stuck, or it would not fit its budget), but can still be disproven:
+    /// go on for a witness alone. Boxes stuck are set aside, the rest
+    /// halved, the largest first, then the lowest bound: breadth first, so
+    /// a violation narrower than a box is reached once boxes are that small
+    /// everywhere, not after every box of one region is at its finest (a
+    /// region no size decides holds the lowest bounds, and would hold the
+    /// hunt), until a witness, every box left stuck, the time limit, the
+    /// budget, or as many boxes tested as the proof tested (its cap: a
+    /// claim held only where measured, no violation to find, would
+    /// otherwise spend the whole budget). A claim the proof decides never
+    /// hunts. Finding no witness does not show there is none: the boxes it
+    /// did not reach, and those stuck, may hold one. Deterministic as any
+    /// round.
+    pub fn hunt(&mut self) {
+        if self.hunting.is_some() {
+            return;
+        }
+        self.hunting = Some((self.tested, self.unproven));
+        let open = std::mem::take(&mut self.open).into_vec();
+        self.open = open.into_iter().map(|o| Open { hunted: true, ..o }).collect();
+    }
+
     /// Rounds of `q` to the search's end.
     pub fn finish<Q: Question<State = S, Witness = W>>(&mut self, q: &Q, limit: usize) -> Outcome<W> {
         loop {
@@ -414,7 +498,7 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
         if let Some(o) = self.done.take() {
             return Err(o);
         }
-        if let Some(stuck) = self.aside.iter().filter(|_| !self.p.maps).map(|o| o.seq).min() {
+        if let Some(stuck) = self.aside.iter().filter(|_| !self.p.maps && self.hunting.is_none()).map(|o| o.seq).min() {
             return Err(self.end(Ended::Finest, Some(stuck), seek));
         }
         if self.open.is_empty() {
@@ -426,7 +510,13 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
         if crate::stop::reached() {
             return Err(Outcome::Unknown(self.undecided(Ended::Stopped, None)));
         }
-        if self.tested >= limit || self.tested as f64 + self.ahead() > 4.0 * limit as f64 {
+        // A hunt cannot finish the tree the projection sizes: it ends at
+        // the budget, or once it has tested as many boxes as the proof.
+        let ended = match self.hunting {
+            Some((from, _)) => self.tested - from >= from,
+            None => self.tested as f64 + self.ahead() > 4.0 * limit as f64,
+        };
+        if self.tested >= limit || ended {
             return Err(self.end(Ended::Limit, None, seek));
         }
         let batch: Vec<Open<S>> = (0..most.min(self.open.len())).filter_map(|_| self.open.pop()).collect();
@@ -468,7 +558,7 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
                 let with = self.together(&node, &smear, axis);
                 let volume = self.volume_of(&node);
                 let bound = if bound.is_nan() { f64::NEG_INFINITY } else { bound };
-                Test::Open { bound, smear, state: Open { node, depth, bound, axis, with, volume, seq: 0 } }
+                Test::Open { bound, smear, state: Open { node, depth, bound, axis, with, volume, hunted: self.hunting.is_some(), seq: 0 } }
             }
         };
         (depth, side, t)
@@ -493,7 +583,7 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
                     o.seq = self.made;
                     self.made += 1;
                     if o.axis.is_none() {
-                        if !self.p.maps && stuck.is_none() {
+                        if !self.p.maps && self.hunting.is_none() && stuck.is_none() {
                             stuck = Some(o.seq);
                         }
                         self.aside.push(o);
@@ -596,11 +686,29 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
         Outcome::Unknown(self.undecided(ended, stuck))
     }
 
-    fn undecided(&self, ended: Ended, stuck: Option<u64>) -> Undecided {
+    /// The search ended undecided (`ended`: the proof's reason, or where
+    /// it hunts the hunt's: Finest, every box left stuck; Limit, its cap or
+    /// the budget; Stopped, the time limit), and what it left.
+    fn undecided(&mut self, ended: Ended, stuck: Option<u64>) -> Undecided {
+        let (ended, hunt) = match self.hunting {
+            Some((from, why)) => {
+                let stopped = match ended {
+                    Ended::Stopped => HuntEnd::Time,
+                    Ended::Finest => HuntEnd::Stuck,
+                    Ended::Limit if self.sought() >= from => HuntEnd::Cap,
+                    Ended::Limit => HuntEnd::Budget,
+                };
+                (why, Some(Hunt { cells: self.sought(), stopped }))
+            }
+            None => (ended, None),
+        };
+        self.unproven = ended;
         let left = || self.open.iter().chain(&self.aside);
+        // A hunt's: the first box stuck, which ended the proof.
+        let stuck = stuck.or(self.hunting.and(self.aside.first().map(|o| o.seq)));
         let cell = left().find(|o| Some(o.seq) == stuck).or(self.open.peek()).or(self.aside.first()).map(|o| [o.node.b.map(|x| x.lo), o.node.b.map(|x| x.hi)]);
         let bound = left().map(|o| o.bound).fold(f64::INFINITY, f64::min);
-        Undecided { bound, cells: self.open.len() + self.aside.len(), volume: left().map(|o| space_volume(&o.node.b)).sum(), cell, ended }
+        Undecided { bound, cells: self.open.len() + self.aside.len(), volume: left().map(|o| space_volume(&o.node.b)).sum(), cell, ended, hunt }
     }
 
     /// A box's volume: the product over its axes of its share of each
@@ -796,6 +904,50 @@ mod tests {
         let mut s = search();
         s.settle_from(0.0);
         assert!(matches!(s.round(&Near { finds: false }, 1000), Some(Outcome::Proven)));
+    }
+
+    /// A claim no box decides anywhere (every box open, its bound tying,
+    /// as sin^2 + cos^2 - 1 does), failing only in boxes no wider than
+    /// 2^-10 that hold 0.9: depth first, its proof ends at the first box
+    /// stuck at 2^-16, near 0, never reaching 0.9; the hunt goes on breadth
+    /// first and finds it, or ends once it has tested as many boxes as the
+    /// proof, the stuck box reported.
+    #[test]
+    fn a_stuck_box_ends_the_proof_and_the_hunt_finds_a_witness_elsewhere() {
+        struct Fails(Option<f64>);
+        impl Question for Fails {
+            type State = ();
+            type Witness = f64;
+            fn test(&self, n: &Node<()>) -> Test<(), f64> {
+                let x = n.b[0];
+                match self.0 {
+                    Some(a) if x.hi - x.lo <= 1.0 / 1024.0 && x.lo <= a && a <= x.hi => Test::Found(a),
+                    _ => Test::Open { bound: 0.0, smear: Smear { space: [1.0, 0.0, 0.0], ..Default::default() }, state: () },
+                }
+            }
+            fn seek(&self, _: &Node<()>) -> Option<f64> {
+                None
+            }
+        }
+        let run = |q: &Fails| {
+            let root = Node { b: [I::new(0.0, 1.0), I::point(0.0), I::point(0.0)], ctx: Arc::new(Ctx::new(0.0, vec![])), state: () };
+            let mut s = Search::new(q, vec![root], Precision::holds(1.0 / 65536.0));
+            let Outcome::Unknown(u) = s.finish(q, 100_000) else { panic!("the proof ends at a stuck box") };
+            assert_eq!((u.ended, u.hunt, u.cell.map(|c| c[0][0] < 0.5)), (Ended::Finest, None, Some(true)));
+            let proof = s.tested();
+            s.hunt();
+            (s.finish(q, 100_000), proof, s)
+        };
+        let (found, proof, s) = run(&Fails(Some(0.9)));
+        assert!(matches!(found, Outcome::Found(0.9)), "the hunt finds it");
+        assert!(proof < 4096 && s.sought() < 10_000, "{proof} boxes, then {} hunting", s.sought());
+        let (none, proof, s) = run(&Fails(None));
+        let Outcome::Unknown(u) = none else { panic!("none to find") };
+        // As many boxes as the proof tested, to the round's end.
+        let hunt = u.hunt.expect("a hunt");
+        assert_eq!((u.ended, hunt.stopped, hunt.cells), (Ended::Finest, HuntEnd::Cap, s.sought()));
+        assert!(proof <= hunt.cells && hunt.cells < proof + 2 * BATCH, "{proof} boxes, then {} hunting", hunt.cells);
+        assert!(u.cell.is_some_and(|c| c[1][0] - c[0][0] <= 1.0 / 65536.0), "the box that ended the proof: {:?}", u.cell);
     }
 
     /// A search's roots go as they are tested, with what their tests made:

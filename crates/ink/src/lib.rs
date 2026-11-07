@@ -12,7 +12,7 @@ pub use ink_lang::{InkError, materials, sexp, units};
 // The crates, re-exported so `ink::graph::...` paths keep working.
 pub use ink_core::{V3, eval, graph, interval, tape, v3};
 pub use ink_io::{export, gltf, render, seen, simplify};
-pub use ink_kernel::{cache, centred, feature, mesh, octree, query, ranged, rigid, runners, scope, stop};
+pub use ink_kernel::{cache, centred, feature, mesh, octree, query, ranged, rigid, runners, scope, stop, voids};
 
 /// Sampled fields (ink-core) and meshes read into fields (ink-io).
 pub mod grid {
@@ -45,7 +45,7 @@ pub fn load_file(path: &std::path::Path) -> Result<lang::Doc, InkError> {
 
 /// Load a file with the standard distribution's packages and parameter
 /// overrides applied to load-time computations.
-pub fn load_file_with(path: &std::path::Path, overrides: &[(String, f64)]) -> Result<lang::Doc, InkError> {
+pub fn load_file_with(path: &std::path::Path, overrides: &[(String, lang::Given)]) -> Result<lang::Doc, InkError> {
     lang::Doc::load_file_in(registry(), path, overrides)
 }
 
@@ -55,6 +55,6 @@ pub fn load_str(src: &str, name: &str, base: &std::path::Path) -> Result<lang::D
     load_str_with(src, name, base, &[])
 }
 
-pub fn load_str_with(src: &str, name: &str, base: &std::path::Path, overrides: &[(String, f64)]) -> Result<lang::Doc, InkError> {
+pub fn load_str_with(src: &str, name: &str, base: &std::path::Path, overrides: &[(String, lang::Given)]) -> Result<lang::Doc, InkError> {
     lang::Doc::load_str_in(registry(), src, name, base, overrides)
 }

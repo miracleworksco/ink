@@ -1833,6 +1833,56 @@ pub fn eval_dual(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<f64> {
 /// collecting the names passed. On a surface this says which named
 /// construction the point belongs to: implicit faces without B-rep.
 pub fn provenance(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<u32> {
+    let v = values(tape, ctx, p);
+    names_on(tape, |ins| {
+        let (a, b, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
+        match ins.op {
+            Op::Bin(BinOp::Min) => Follow::One(if v[a] <= v[b] || v[b].is_nan() { a } else { b }),
+            Op::Bin(BinOp::Max | BinOp::Emax) => Follow::One(if v[a] >= v[b] || v[b].is_nan() { a } else { b }),
+            Op::Select => Follow::One(if v[a] < 0.0 { b } else { c }),
+            _ => Follow::All,
+        }
+    })
+}
+
+/// The names the value at `p` depends on: provenance's walk, but a min or
+/// max follows its losing side too where that side comes within `reach` (a
+/// distance) of the winner's value by its own slope (both are on the
+/// surface there: at an edge between them, or on a face they share), and
+/// a product does not follow a factor whose co-factor is 0 (a blend's side
+/// weighted out). Slopes are measured `reach` along each corner of a
+/// tetrahedron about p, so scaling either side, or the field, by any
+/// positive factor reads the same.
+pub fn decided_names(tape: &Tape, ctx: &Ctx, p: V3, reach: f64) -> Vec<u32> {
+    let v = values(tape, ctx, p);
+    let around: Vec<Vec<f64>> =
+        [[1.0, 1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, 1.0]].iter().map(|d: &V3| values(tape, ctx, std::array::from_fn(|k| p[k] + reach * d[k]))).collect();
+    // At least the slope of instruction i's value (each corner is sqrt 3
+    // reach away; a gradient's component along one of them is at least
+    // 1 / sqrt 3 of it).
+    let slope = |i: usize| around.iter().map(|w| (w[i] - v[i]).abs()).fold(0.0, f64::max) / reach;
+    names_on(tape, |ins| {
+        let (a, b, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
+        let side = |first: bool| {
+            let lost = if first { b } else { a };
+            if !((v[a] - v[b]).abs() > reach * slope(lost)) { Follow::All } else { Follow::One(if first { a } else { b }) }
+        };
+        match ins.op {
+            Op::Bin(BinOp::Min) => side(v[a] < v[b]),
+            Op::Bin(BinOp::Max | BinOp::Emax) => side(v[a] > v[b]),
+            Op::Bin(BinOp::Mul) => match (v[a] != 0.0, v[b] != 0.0) {
+                (true, true) => Follow::All,
+                (false, false) => Follow::None,
+                (a_on, _) => Follow::One(if a_on { b } else { a }),
+            },
+            Op::Select => Follow::One(if v[a] < 0.0 { b } else { c }),
+            _ => Follow::All,
+        }
+    })
+}
+
+/// Every instruction's value at `p`.
+fn values(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<f64> {
     let n = tape.ssa.len();
     let mut v = vec![0.0f64; n];
     for (i, ins) in tape.ssa.iter().enumerate() {
@@ -1858,15 +1908,7 @@ pub fn provenance(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<u32> {
             Op::Grid(gi, m) => tape.grids[gi as usize].component([v[a], v[b], v[c]], m),
         };
     }
-    names_on(tape, |ins| {
-        let (a, b, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
-        match ins.op {
-            Op::Bin(BinOp::Min) => Some(if v[a] <= v[b] || v[b].is_nan() { a } else { b }),
-            Op::Bin(BinOp::Max | BinOp::Emax) => Some(if v[a] >= v[b] || v[b].is_nan() { a } else { b }),
-            Op::Select => Some(if v[a] < 0.0 { b } else { c }),
-            _ => None,
-        }
-    })
+    v
 }
 
 /// The names on every path the value can take: `provenance` with both
@@ -1875,15 +1917,21 @@ pub fn provenance(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<u32> {
 /// arithmetic proved cannot decide the value anywhere in it), every name
 /// whose surface lies in the region, and maybe others.
 pub fn names_on_paths(tape: &Tape) -> Vec<u32> {
-    names_on(tape, |_| None)
+    names_on(tape, |_| Follow::All)
 }
 
-/// The walk from the root `provenance` and `names_on_paths` share: `pick`
-/// gives the operand a min, max or select follows (None: both of its
-/// branches; a select's condition names nothing), every other op follows
-/// all its operands, and a name provenance stops at (Tape::opaque) hides
-/// those inside it.
-fn names_on(tape: &Tape, pick: impl Fn(&crate::tape::Ins) -> Option<usize>) -> Vec<u32> {
+/// Which operands of a min, max, select or product the walk follows.
+enum Follow {
+    All,
+    One(usize),
+    None,
+}
+
+/// The walk from the root `provenance`, `decided_names` and
+/// `names_on_paths` share: `pick` gives the operands an op follows (All:
+/// every operand, but a select's condition, which names nothing), and a
+/// name provenance stops at (Tape::opaque) hides those inside it.
+fn names_on(tape: &Tape, pick: impl Fn(&crate::tape::Ins) -> Follow) -> Vec<u32> {
     let n = tape.ssa.len();
     let mut out = Vec::new();
     let mut seen = vec![false; n];
@@ -1895,9 +1943,13 @@ fn names_on(tape: &Tape, pick: impl Fn(&crate::tape::Ins) -> Option<usize>) -> V
         seen[i] = true;
         let ins = &tape.ssa[i];
         let (a, b, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
-        if let Some(k) = pick(ins) {
-            stack.push(k);
-            continue;
+        match pick(ins) {
+            Follow::One(k) => {
+                stack.push(k);
+                continue;
+            }
+            Follow::None => continue,
+            Follow::All => {}
         }
         // Push the later operands first, so the first one's names come out first.
         match ins.op {

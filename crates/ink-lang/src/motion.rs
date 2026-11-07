@@ -482,14 +482,19 @@ fn ranged_in(v: &mut ModelView, claim: &Claim, bound: Option<u32>, span: (f64, f
         }
         _ => {
             let (c, own) = ink_kernel::stop::within(if opts.beside { 1.0 } else { 0.5 }, || claims::decide(v, asked, opts));
-            let ranged = v.ranged_reads(&read);
+            // t's param among them where the world reads it, though the
+            // frame cancels it (a witness, a near point, is at a moment).
+            let mut ranged = v.ranged_reads(&read);
+            if world.is_some() && !ranged.iter().any(|r| r.0 == k) {
+                ranged.push((k, span));
+            }
             (v.ctx, v.motion) = (ctx, motion);
             let c = c?;
             // Its witnesses in the world, each shown one there (undecided,
             // there are none).
             let c = match &world {
                 Some(w) if c.status != Status::Unknown => match w.confirmed(v, c.evidence.clone()) {
-                    Some(evidence) => Check { evidence, ..c },
+                    Some(evidence) => Check { evidence, held: c.held.clone().map(|h| w.held(v, h)), ..c },
                     None => return Ok(None),
                 },
                 _ => c,
@@ -815,10 +820,27 @@ impl Frame {
                 let t = params.iter().find(|x| x.0 == self.k).map_or(self.span.0, |x| x.1);
                 Verdict::Disproven { witness: w, t, value: ink_core::eval::eval_point(&tape, &c, w), params }
             }
-            Verdict::Unknown { cells, volume, ended, attained, .. } => Verdict::Unknown { cells, volume, ended, cell: None, attained },
+            Verdict::Unknown { cells, volume, ended, attained, hunt, .. } => Verdict::Unknown { cells, volume, ended, cell: None, attained, hunt },
             o => o,
         };
         Some(Proof { verdict, ..p })
+    }
+
+    /// How the claim held, its near point (found in the frame) moved into
+    /// the world at its moment and confirmed there on the world's field,
+    /// as a witness is (`proof`): outright in the frame, it holds outright
+    /// in the world (the frame is exact in real numbers); a near point the
+    /// world does not show is not measured.
+    fn held(&self, v: &ModelView, h: claims::Held) -> claims::Held {
+        let claims::Held::ToAccuracy { near: Some((_, Some((p, at)))) } = h else { return h };
+        let params = self.with_t(&at.params);
+        let c = self.ctx(v, &params);
+        let w = self.point(v, &c, p);
+        let at = ink_kernel::scope::At { t: params.iter().find(|x| x.0 == self.k).map_or(self.span.0, |x| x.1), params };
+        match claims::Held::confirmed_at(false, [(w, at)], &Tape::new(&v.doc.g, self.empty), &c) {
+            claims::Held::ToAccuracy { near: Some((_, None)) } => claims::Held::ToAccuracy { near: None },
+            h => h,
+        }
     }
 
     /// The evidence with its witnesses in the world, each shown one of the
@@ -848,7 +870,7 @@ impl Frame {
                         let value = ink_kernel::query::distance_up(p, q);
                         (Verdict::Disproven { witness: p, t, value, params }, Some((p, q)))
                     }
-                    Verdict::Unknown { cells, volume, ended, attained, .. } => (Verdict::Unknown { cells, volume, ended, cell: None, attained }, None),
+                    Verdict::Unknown { cells, volume, ended, attained, hunt, .. } => (Verdict::Unknown { cells, volume, ended, cell: None, attained, hunt }, None),
                     verdict => (verdict, pair),
                 };
                 Evidence::ClearanceSearch { verdict, pair, res }
@@ -1271,7 +1293,7 @@ mod tests {
     }
 
     fn field(v: &ModelView, name: &str) -> u32 {
-        let crate::Value::Field(f) = v.doc.def(name).unwrap().clone() else { panic!("{name} is no field") };
+        let crate::Value::Field(f, _) = v.doc.def(name).unwrap().clone() else { panic!("{name} is no field") };
         f
     }
 

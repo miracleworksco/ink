@@ -1,6 +1,7 @@
 //! Interference: every pair of a target's instances whose boxes meet,
 //! claimed disjoint outside their declared contact zones (contacts, and
-//! relations with a zone), to `ACCURACY`, each answered as a `disjoint`
+//! relations with a zone), to the accuracy asked (by default the model's,
+//! as a claim's: ModelView::accuracy), each answered as a `disjoint`
 //! claim is. Still pairs are proven in parallel, each question once
 //! (pairs placed alike, in a frame of their own: pairs::framed), and
 //! answered by the claims' own step (claims::answer); pairs that move over
@@ -23,22 +24,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The accuracy every pair is asked to, mm, wherever the model lies:
-/// twice the claims' default, for its cost (`WHY`). An overlap shallower
-/// than parts are made to changes no decision. A stopgap: no part states
-/// how exact it is, to take the tighter of a pair's.
-pub const ACCURACY: f64 = 0.1;
-
-/// What interfere's accuracy lets pass, as its answer says. Why 0.1, twice
-/// a claim's 0.05: a contact costs as its area over the accuracy squared,
-/// so a pair at 0.05 costs about 4 times as much (a 193-pair assembly: 19
-/// CPU-s at 0.1, 80 at 0.05). The 0.1 is a depth inside both parts, half
-/// an overlap's thickness.
-pub const WHY: &str = "an overlap up to 0.2 mm thick passes (a shaft 0.4 mm over its bore's diameter). Check a fit with a claim: (disjoint shaft bore) with its (accuracy x)";
-
 /// The pairs to check, found (`plan`): what the answer says besides its
 /// pairs, and each pair's question, built.
 pub struct Plan {
+    /// The accuracy every pair is asked to, mm.
+    pub accuracy: f64,
     /// Items resting on a solve with no value here, with its error: no
     /// pair with one is checked (as assert's claims: ModelView::refusal).
     pub unsolved_items: Vec<(String, InkError)>,
@@ -192,9 +182,9 @@ pub fn default_items(v: &mut ModelView) -> Result<Vec<Item>, InkError> {
 }
 
 /// The pairs of `all` (a target's items, `target` what it places, where
-/// it names a body or assembly: Doc::target) to check, at `res`, and each
-/// still pair's question.
-pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, res: Option<f64>) -> Result<Plan, InkError> {
+/// it names a body or assembly: Doc::target) to check, at `res`, to
+/// `accuracy` (None: the model's), and each still pair's question.
+pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, res: Option<f64>, accuracy: Option<f64>) -> Result<Plan, InkError> {
     if all.len() < 2 {
         return Err(InkError::msg("interfere needs a target with at least two instances"));
     }
@@ -202,6 +192,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
     // entry points: a pointwise view (a library caller's) would box each
     // item at one value and call pairs apart that meet at another.
     v.scope_question()?;
+    let accuracy = accuracy.unwrap_or_else(|| v.accuracy());
     // As assert's claims (ModelView::refusal): an item resting on a solve
     // with no value here is left out, with the solve's error, and the rest
     // are checked. Over a motion, an item that moves with t is solved at
@@ -258,7 +249,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
     let mut fields = v.doc.placed_reads(&items);
     fields.extend(relations.iter().filter_map(|r| r.zone));
     let scope = crate::validity::scope(v);
-    crate::validity::refuse(&v.doc, &scope, &fields, bounds.iter().flatten().map(|b| (b.0, b.1)), res.unwrap_or(ACCURACY).min(ACCURACY))?;
+    crate::validity::refuse(&v.doc, &scope, &fields, bounds.iter().flatten().map(|b| (b.0, b.1)), res.unwrap_or(accuracy).min(accuracy))?;
     let exact: Vec<bool> = measured.iter().map(|m| !m).collect();
     let (candidates, boxed_apart, among) = pairs::candidate_pairs(&bounds, &whole, &over, &[&exact]);
     drop(over);
@@ -377,6 +368,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
     // those riding one group, are proven at once, in parallel.
     let still: Vec<usize> = (0..candidates.len()).filter(|&k| (!moving[k] || riding[k]) && unsolved[k].is_none()).collect();
     let mut plan = Plan {
+        accuracy,
         unsolved_items,
         unbounded_items: items.iter().zip(&whole).filter(|(_, w)| !**w).map(|(it, _)| it.label.clone()).collect(),
         apart,
@@ -406,7 +398,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
         let (i, j) = plan.candidates[k];
         let parts: Option<Vec<(u32, &str)>> =
             plan.facts[k].zones.iter().map(|&z| plan.relations[z].local.filter(|l| l.b.is_none()).map(|l| (l.a, plan.relations[z].a.as_str()))).collect();
-        let frame = parts.filter(|_| plan.facts[k].whole && !plan.facts[k].inexact.any()).and_then(|p| pairs::framed(v, &plan.items[i], &plan.items[j], &p, ACCURACY));
+        let frame = parts.filter(|_| plan.facts[k].whole && !plan.facts[k].inexact.any()).and_then(|p| pairs::framed(v, &plan.items[i], &plan.items[j], &p, plan.accuracy));
         let Some(fr) = frame else {
             // Riding a group, it is asked in its frame or over t: the
             // world's question holds at one moment.
@@ -520,7 +512,7 @@ pub fn at_one_moment(v: &mut ModelView) -> Vec<String> {
         if claims::one_moment_of(v, &reads).is_none() {
             continue;
         }
-        let Ok(p) = plan(v, items, target.as_ref(), None) else { continue };
+        let Ok(p) = plan(v, items, target.as_ref(), None, None) else { continue };
         for (what, _) in p.one_moment {
             if !out.contains(&what) {
                 out.push(what);
@@ -549,7 +541,7 @@ impl Plan {
         let n = self.candidates.len();
         let mut rows: Vec<Option<Pair>> = (0..n).map(|_| None).collect();
         let mut again = Vec::new();
-        let opts = ClaimOptions { res, accuracy: Some(ACCURACY), ..Default::default() };
+        let opts = ClaimOptions { res, accuracy: Some(self.accuracy), ..Default::default() };
         for (k, pair) in prove_pairs(v, &self.questions, &self.asks, &self.facts, opts, row) {
             match pair {
                 Some(p) => rows[k] = Some(p),
@@ -699,7 +691,7 @@ impl Plan {
 fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Option<Framed>)], facts: &[Facts], opts: ClaimOptions, row: &Row) -> Vec<(usize, Option<Pair>)> {
     use rayon::prelude::*;
     let ctx = v.ctx.clone();
-    let (res, tol) = (opts.res, opts.accuracy.unwrap_or(ACCURACY));
+    let (res, tol) = (opts.res, opts.accuracy.unwrap_or_else(|| v.accuracy()));
     let world = v.proof_options(res, tol);
     let shared = ProofOptions { tol: Framed::asked(tol), ..world };
     let mut of: Vec<Vec<usize>> = vec![Vec::new(); questions.len()];
@@ -817,14 +809,14 @@ fn framed(p: &Proof, fr: &Framed, tape: &Tape, ctx: &Ctx, tol: f64) -> Option<Pr
             }
             Verdict::Disproven { witness: w, t: *t, value: *value, params: params.clone() }
         }
-        Verdict::Unknown { cells, volume, ended, cell, .. } => {
+        Verdict::Unknown { cells, volume, ended, cell, hunt, .. } => {
             let cell = cell.map(|[lo, hi]| {
                 let (a, b) = fr.at.aabb(lo, hi);
                 [a, b]
             });
             // Its attained accuracy is the frame's, which the frame's
             // rounding moves: none is given.
-            Verdict::Unknown { cells: *cells, volume: volume * fr.det.mid(), ended: *ended, cell, attained: None }
+            Verdict::Unknown { cells: *cells, volume: volume * fr.det.mid(), ended: *ended, cell, attained: None, hunt: *hunt }
         }
     };
     Some(Proof { verdict, res: p.res, tol, exact: p.exact, loose: Vec::new() })
@@ -872,7 +864,7 @@ mod tests {
         let (ctx, _) = doc.ctx_at(&[], 0.0).unwrap();
         let mut v = ModelView::new(doc, ctx);
         let (items, target) = (v.doc.items("root").unwrap(), v.doc.target("root"));
-        let plan = plan(&mut v, items, target.as_ref(), None).unwrap();
+        let plan = plan(&mut v, items, target.as_ref(), None, None).unwrap();
         assert_eq!((plan.apart, plan.candidates.len()), (0, 1));
         let pairs = plan.run(&mut v, None, &|_| None).unwrap();
         assert!(pairs[0].overlaps());

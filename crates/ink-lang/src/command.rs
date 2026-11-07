@@ -197,7 +197,9 @@ pub fn param_word(w: &str) -> bool {
 /// it); name=lo:hi a range (the value at its middle), which assert and
 /// interfere prove over; name=v:v pins a value (no band).
 pub struct ParamArgs {
-    pub values: Vec<(String, f64)>,
+    /// Each value, with the unit it was given in (d=0.25in), if any: a
+    /// load reads the param as said in it (crate::Given).
+    pub values: Vec<(String, crate::Given)>,
     pub ranges: Vec<(String, (f64, f64))>,
     pub pinned: Vec<String>,
 }
@@ -205,7 +207,7 @@ pub struct ParamArgs {
 pub fn param_args(a: &Args) -> Result<ParamArgs, InkError> {
     let mut p = ParamArgs { values: Vec::new(), ranges: Vec::new(), pinned: Vec::new() };
     // A value may say its unit (d=0.25in), read in the language's.
-    let num = |k: &str, v: &str| -> Result<f64, InkError> { crate::sexp::number(v.trim()).map(|(v, _)| v).map_err(|e| InkError::msg(format!("--param {k}: {e}"))) };
+    let num = |k: &str, v: &str| crate::sexp::number(v.trim()).map_err(|e| InkError::msg(format!("--param {k}: {e}")));
     for spec in a.opts.get("param").into_iter().flatten().flat_map(|s| s.split(',')) {
         let (k, v) = spec.split_once('=').ok_or_else(|| InkError::msg(format!("--param expects name=value or name=lo:hi, got '{spec}'")))?;
         let k = k.trim().to_string();
@@ -215,13 +217,22 @@ pub fn param_args(a: &Args) -> Result<ParamArgs, InkError> {
             return Err(InkError::msg(format!("--param {k} is given twice: give each param one value (name=v), range (name=lo:hi) or pin (name=v:v)")));
         }
         match v.split_once(':') {
-            None => p.values.push((k.clone(), num(&k, v)?)),
+            None => {
+                let (value, unit) = num(&k, v)?;
+                p.values.push((k.clone(), crate::Given { value, unit }));
+            }
             Some((lo, hi)) => {
-                let (lo, hi) = (num(&k, lo)?, num(&k, hi)?);
+                let ((lo, ul), (hi, uh)) = (num(&k, lo)?, num(&k, hi)?);
+                // A range's ends are one quantity, said as a sum's terms are
+                // (units::kept).
+                let unit = match (ul, uh) {
+                    (Some(a), Some(b)) => Some(crate::units::kept(a, b).map_err(|m| InkError::msg(format!("--param {k}: a range's ends {m}")))?),
+                    (a, b) => a.or(b),
+                };
                 if !(lo <= hi && lo.is_finite() && hi.is_finite()) {
                     return Err(InkError::msg(format!("--param {k}={lo}:{hi}: a range needs finite lo <= hi")));
                 }
-                p.values.push((k.clone(), ink_core::eval::span_mid((lo, hi))));
+                p.values.push((k.clone(), crate::Given { value: ink_core::eval::span_mid((lo, hi)), unit }));
                 if lo == hi {
                     p.pinned.push(k);
                 } else {

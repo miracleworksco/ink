@@ -311,5 +311,5 @@ fn interfere_judges_the_span_asked_and_its_contact_zones() {
     let d = s.ink(["interfere", &slow, "--t-span", "0:1"]).ok();
     assert!(d["pairs_apart_by_bounding_boxes"] == 1, "{}", pretty(&d));
     let d = s.ink(["interfere", &in_range]).ok();
-    assert!(d["overlapping_pairs"] == 0 && d["pairs"][0]["status"] == "holds" && d["pairs"][0]["accuracy"] == 0.1, "{}", pretty(&d));
+    assert!(d["overlapping_pairs"] == 0 && d["pairs"][0]["status"] == "holds" && d["pairs"][0]["accuracy"] == 0.05, "{}", pretty(&d));
 }

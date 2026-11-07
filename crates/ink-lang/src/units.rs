@@ -2,10 +2,8 @@
 //! pressures MPa, ...: `Quantity::unit`), so a bare number has one meaning
 //! everywhere. A number may say its unit instead, `1in`, `50psi`, `68degF`,
 //! read as the language's (`UNITS`); a form that takes a known quantity
-//! refuses a number written in another's (`misfit`). Answers are in the
+//! refuses a value said in another's (`Said`). Answers are in the
 //! language's units.
-
-use crate::sexp::{SK, Sexp};
 
 /// A kind of quantity, and the one unit the language reads it in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,37 +288,90 @@ pub fn from(x: f64, u: &Unit) -> f64 {
     }
 }
 
-/// The unit expression `e` is written in, and where: of a number in it
-/// written with one, looking only through sums (`+ - neg abs min max`,
-/// select's branches; a product's units combine, and are not read), and
-/// through names, by `named` (a def or param written in a unit).
-pub fn written<'a>(e: &'a Sexp, named: &dyn Fn(&str) -> Option<&'static Unit>) -> Vec<(&'a Sexp, &'static Unit)> {
-    match &e.k {
-        SK::Num(_, Some((u, _))) => vec![(e, u)],
-        SK::Sym(s) => named(s).map(|u| (e, u)).into_iter().collect(),
-        SK::List(items) => {
-            let Some((head, args)) = items.split_first() else { return Vec::new() };
-            let args = match head.sym() {
-                Some("+" | "-" | "neg" | "abs" | "min" | "max") => args,
-                Some("select") if args.len() == 3 => &args[1..],
-                _ => return Vec::new(),
-            };
-            args.iter().flat_map(|a| written(a, named)).collect()
-        }
-        _ => Vec::new(),
+/// Value `x`, in the language's unit, written in unit `u` so that it
+/// reads back exactly (a --param an answer gives back): in `u` where its
+/// number does, else in the language's unit of its quantity.
+pub fn write(x: f64, u: &'static Unit) -> String {
+    let w = format!("{}{}", to(x, u), u.name);
+    match crate::sexp::number(&w) {
+        Ok((y, _)) if y == x => w,
+        _ => format!("{x}{}", u.quantity.unit()),
     }
 }
 
-/// Why expression `e`, where a form takes `q` (`what`: the form, for the
-/// message), cannot be one, and where: a number in it written in another
-/// quantity's unit (`written`). None: it fits, or says no unit.
-pub fn misfit<'a>(e: &'a Sexp, q: Quantity, what: &str, named: &dyn Fn(&str) -> Option<&'static Unit>) -> Option<(&'a Sexp, String)> {
-    let (at, u) = written(e, named).into_iter().find(|(_, u)| u.quantity != q)?;
-    let mut m = wrong(u, q, what);
-    if let Some(n) = at.sym() {
-        m = format!("{m} ({n} is written in {})", u.name);
+/// Of two units values are said in that are combined (a sum's terms, a
+/// range's ends), the one the result is said in: one with a zero of its
+/// own (degF, K) over one without, as the result reads a point on its
+/// scale. Err: two quantities, "are one quantity, but ...".
+pub fn kept(a: &'static Unit, b: &'static Unit) -> Result<&'static Unit, String> {
+    if a.quantity != b.quantity {
+        return Err(format!("are one quantity, but {} is {} and {} is {}", a.name, a.quantity.name(), b.name, b.quantity.name()));
     }
-    Some((at, m))
+    let offset = |u: &Unit| matches!(u.scale, Scale::Offset { .. });
+    Ok(if offset(b) && !offset(a) { b } else { a })
+}
+
+/// A value given a param from outside the model (`--param m=50g`, an
+/// optimizer's design): a number in the language's unit, and the unit it
+/// was given in, if any. A param given a unit reads as said in it
+/// (Doc::param_given), wherever the value travels.
+#[derive(Clone, Copy, Debug)]
+pub struct Given {
+    pub value: f64,
+    pub unit: Option<&'static Unit>,
+}
+
+impl PartialEq for Given {
+    fn eq(&self, o: &Given) -> bool {
+        self.value == o.value && self.unit.map(|u| u.name) == o.unit.map(|u| u.name)
+    }
+}
+
+impl From<f64> for Given {
+    /// A number in the language's unit, saying none.
+    fn from(value: f64) -> Given {
+        Given { value, unit: None }
+    }
+}
+
+/// A value in the language's unit of its quantity, in unit `u` (`from`'s
+/// inverse).
+pub fn to(x: f64, u: &Unit) -> f64 {
+    match u.scale {
+        Scale::Pow10(p) => x / 10f64.powi(p),
+        Scale::Factor(k) => x / k,
+        Scale::Offset { zero, factor } => x / factor + zero,
+    }
+}
+
+/// The number written with a unit that a value's quantity was said by,
+/// carried with the value as it is computed (Value::Field): through names,
+/// lets, calls and the branch taken, and through sums (`+ - neg abs min
+/// max`, select's branches), which take one quantity; a product's units
+/// combine, and it carries none. A slot taking a known quantity checks it.
+#[derive(Clone, Debug)]
+pub struct Said {
+    pub unit: &'static Unit,
+    /// The number as written, in `unit`.
+    pub written: f64,
+    pub file: std::sync::Arc<str>,
+    pub line: u32,
+}
+
+impl Said {
+    /// "50psi (part.ink:4)"; given on the command line, "50psi (--param p)".
+    pub fn cite(&self) -> String {
+        match self.line {
+            0 => format!("{}{} ({})", self.written, self.unit.name, self.file),
+            n => format!("{}{} ({}:{n})", self.written, self.unit.name, self.file),
+        }
+    }
+
+    /// Why a value said by this, where a form takes `q` (`what`: the form,
+    /// for the message), cannot be one. None: it is one.
+    pub fn misfit(&self, q: Quantity, what: &str) -> Option<String> {
+        (self.unit.quantity != q).then(|| format!("{}, written {}", wrong(self.unit, q, what), self.cite()))
+    }
 }
 
 /// "pressure takes a pressure (MPa; or with its unit: ...), but lbf is a force".
@@ -343,6 +394,19 @@ mod tests {
         for (i, a) in UNITS.iter().enumerate() {
             assert!(UNITS[i + 1..].iter().all(|b| a.name != b.name), "{} twice", a.name);
         }
+    }
+
+    #[test]
+    fn a_value_is_written_back_in_its_unit() {
+        // As a --param an answer gives back: it reads back exactly.
+        let back = |x: f64, u: &str| {
+            let w = write(x, unit(u).unwrap());
+            (crate::sexp::number(&w).unwrap().0 == x).then_some(w)
+        };
+        assert_eq!(back(read("50", unit("psi").unwrap()).unwrap(), "psi").as_deref(), Some("50psi"));
+        assert_eq!(back(20.0, "degF").as_deref(), Some("68degF"));
+        // Not exact in its unit: in the language's, of its quantity.
+        assert_eq!(back(0.1 + 0.2, "in").map(|w| w.ends_with("mm") || w.ends_with("in")), Some(true));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::eval::{eval_dual, eval_point};
 use crate::forms::{Objective, Optimize};
 use crate::graph::Var;
 use crate::lang::claims::{self, Check, ClaimOptions, Status};
-use crate::lang::command::{Args, claim_scope};
+use crate::lang::command::{Args, ParamArgs, claim_scope, param_args};
 use crate::lang::view::ModelView;
 use crate::lang::{Claim, Cmp, FormMetric, Measured, RunOpts};
 use crate::optimize;
@@ -135,14 +135,14 @@ fn requirements(v: &mut ModelView, name: &str) -> Result<(Objective, Vec<(String
     Ok((objective, requires))
 }
 
-/// Design's metrics of a shape (Package::shape_metrics), estimates:
-/// `min-thickness`, the thinnest wall by rays from surface samples spaced
+/// Design's metrics of a shape (Package::shape_metrics): `min-thickness`,
+/// an estimate, the thinnest wall by rays from surface samples spaced
 /// `res` (ModelView::thickness: 128 along its box), where it is (`at`);
-/// `cavities`, the enclosed voids of its mesh as `ink components` makes it
-/// (ModelView::components), none where the mesh leaves their count
-/// unknown. An empty shape has no wall and no void.
+/// `cavities`, the enclosed voids by proof (ModelView::voids): those it
+/// proved, and, where its cells leave more possible, the most there may be
+/// (`undecided-cells`, excluded). An empty shape has no wall and no void.
 pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<f64>) -> Result<Measured, InkError> {
-    let measured = |value, at, res| Measured { value, at, res, warnings: Vec::new(), excluded: Vec::new(), unseen: None };
+    let measured = |value, at, res| Measured { value, at, res, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false };
     Ok(match metric {
         "min-thickness" => match v.thickness(f, res) {
             None => measured(Ok(f64::INFINITY), None, None),
@@ -152,19 +152,15 @@ pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<
                 measured(Ok(min.3), Some(min.0), Some(h))
             }
         },
-        _ => match v.components(f, res)? {
-            None => measured(Ok(0.0), None, None),
-            Some(m) if m.analysis.boundary_edges > 0 || m.analysis.nonmanifold_edges > 0 => measured(
-                Err("the mesh has open or non-manifold edges (ink components gives the shells), so its voids are not known: which side of its shells is air is not; a finer (res r) may close it".into()),
-                None,
-                Some(m.res),
-            ),
-            Some(m) if !m.resolved() => measured(
-                Err("the mesh missed a wall or a gap thinner than its cells (ink components: unresolved), which can seal a void or close an opening, so its voids are not known; a finer (res r) may resolve it".into()),
-                m.unresolved.at,
-                Some(m.res),
-            ),
-            Some(m) => measured(Ok(m.voids().len() as f64), None, Some(m.res)),
+        _ => match v.voids(f, res)? {
+            None => Measured { proven: true, ..measured(Ok(0.0), None, None) },
+            Some(c) => {
+                let mut m = Measured { proven: true, ..measured(Ok(c.at_least as f64), c.count().is_none().then_some(c.at).flatten(), None) };
+                if let Some((what, decide)) = c.why_undecided() {
+                    m.excluded.push(crate::lang::Excluded { key: "undecided-cells", value: c.at_most.map_or(f64::INFINITY, |n| n as f64), at: c.at, what, decide });
+                }
+                m
+            }
         },
     })
 }
@@ -191,9 +187,17 @@ fn unbounded(v: &mut ModelView, f: u32, what: &str) -> Result<(), InkError> {
 /// value).
 fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String, Claim)>) -> Result<Measures, InkError> {
     let opts = RunOpts { res: None, tol: TOL };
+    // A proven metric that leaves values undecided (a void count's
+    // bounds apart) is not known at this design: the search steers clear
+    // of it, as of one with no value.
     let measured = |v: &mut ModelView, m: &FormMetric| -> Result<(f64, Measured), InkError> {
         let r = v.measure(m, opts)?;
-        let x = r.value.clone().map_err(|why| InkError::msg(format!("'{}' gave no '{}' at this design: {why}", m.form, m.metric)))?;
+        let no = |why: String| InkError::msg(format!("'{}' gave no '{}' at this design: {why}", m.form, m.metric));
+        let x = r.value.clone().map_err(no)?;
+        if let Some(ex) = r.excluded.first().filter(|_| r.proven) {
+            let most = if ex.value.is_finite() { format!("{}", ex.value) } else { "unbounded".into() };
+            return Err(no(format!("its value is not known, only that it is from {x} to {most}: it leaves out {}", ex.what)));
+        }
         Ok((x, r))
     };
     // The integral of field g (1 where none: the volume) over shape f in
@@ -461,8 +465,12 @@ pub struct Optimized {
     /// The names of the params the requirements' answers index (`verify`'s
     /// view's, which may hold t besides the document's).
     pub answer_params: Vec<String>,
-    /// What the reader must know of the run (it ended where it started).
+    /// What the reader must know of the run (it ended where it started,
+    /// designs it could not evaluate).
     pub warnings: Vec<String>,
+    /// The designs the search tried that could not be evaluated (one the
+    /// model refuses there, a study that failed), each with its error.
+    pub failed: Vec<(Vec<f64>, InkError)>,
     /// The moment the search measured each design at, where its
     /// requirements were verified over a motion (`verify`): the search's
     /// measure is of that moment only.
@@ -498,6 +506,41 @@ pub struct Iteration {
 /// least violating) is also reported as the answer so far, in the fields a
 /// finished run gives (`design`, `objective`, `feasible`, `requires`,
 /// `apply`).
+/// `apply`: the options that ask ink assert of a design what the run's
+/// verification asks (command::claim_scope): each param's value as the run
+/// gave it, in the unit it was given in (a pin, name=v:v, kept a pin: its
+/// tolerance dropped), the varied ones' at the design, exactly; and the
+/// run's moment, --t. One for every answer, in progress or finished.
+pub struct Replay {
+    given: ParamArgs,
+    t: Option<String>,
+}
+
+impl Replay {
+    pub fn of(a: &Args) -> Result<Replay, InkError> {
+        Ok(Replay { given: param_args(a)?, t: a.get("t").map(String::from) })
+    }
+
+    /// The options for the design `x` of the params `names`.
+    pub fn apply(&self, names: &[String], x: &[f64]) -> String {
+        let given = &self.given;
+        let pin = |k: &str| given.pinned.iter().any(|p| p == k);
+        let unit = |k: &str| given.values.iter().find(|(n, _)| n == k).and_then(|(_, g)| g.unit);
+        let value = |k: &str, x: f64| {
+            let x = unit(k).map_or(format!("{x}"), |u| ink_lang::units::write(x, u));
+            if pin(k) { format!("{k}={x}:{x}") } else { format!("{k}={x}") }
+        };
+        let fixed = given.values.iter().filter(|(k, _)| !names.contains(k)).map(|(k, g)| value(k, g.value));
+        let varied = names.iter().zip(x).map(|(k, x)| value(k, *x));
+        let flag: Vec<String> = fixed.chain(varied).collect();
+        let mut apply = format!("--param {}", flag.join(","));
+        if let Some(t) = &self.t {
+            apply += &format!(" --t {t}");
+        }
+        apply
+    }
+}
+
 struct Trials<'a> {
     names: &'a [String],
     maximize: bool,
@@ -505,24 +548,31 @@ struct Trials<'a> {
     /// The best so far: (feasible, objective or total violation, signed so
     /// that smaller is better).
     best: std::cell::Cell<Option<(bool, f64)>>,
+    /// Each design's view (ModelView::reload).
+    design: &'a dyn Fn(&[f64]) -> Result<ModelView, InkError>,
+    replay: &'a Replay,
+    /// The designs that could not be evaluated, each once, with why.
+    failed: std::cell::RefCell<Vec<(Vec<f64>, InkError)>>,
 }
 
 impl<'a> Trials<'a> {
-    fn new(run: &Optimized, names: &'a [String], method: &str) -> Trials<'a> {
+    fn new(run: &Optimized, names: &'a [String], method: &str, design: &'a dyn Fn(&[f64]) -> Result<ModelView, InkError>, replay: &'a Replay) -> Trials<'a> {
         use serde_json::json;
         crate::lang::claims::progress(json!({"answer": {"optimize": run.name, "sense": if run.maximize { "maximize" } else { "minimize" }, "method": method}}));
-        Trials { names, maximize: run.maximize, count: Default::default(), best: Default::default() }
+        Trials { names, maximize: run.maximize, count: Default::default(), best: Default::default(), design, replay, failed: Default::default() }
     }
 
-    /// `evaluate_design` of the trial design `x` (a view of it, `d`).
-    fn evaluate(&self, d: &mut ModelView, x: &[f64], name: &str) -> Result<Measures, InkError> {
+    /// The design `x` as a view, its measures (`evaluate_design`), and the
+    /// view. A design that cannot be loaded or evaluated is reported, in
+    /// progress and kept for the answer (`failed`), with its error.
+    fn evaluate(&self, x: &[f64], name: &str) -> Result<(ModelView, Measures), InkError> {
         use serde_json::json;
         let t0 = std::time::Instant::now();
-        let r = cache::trial(|| evaluate_design(d, name));
+        let r = (self.design)(x).and_then(|mut d| cache::trial(|| evaluate_design(&mut d, name)).map(|m| (d, m)));
         self.count.set(self.count.get() + 1);
         let design: serde_json::Map<String, serde_json::Value> = self.names.iter().zip(x).map(|(p, x)| (p.clone(), json!(x))).collect();
         let mut row = json!({"evaluation": self.count.get(), "design": design});
-        let status = match &r {
+        let status = match r.as_ref().map(|(_, m)| m) {
             Ok(m) => {
                 let (v, c, feasible) = (&m.objective, &m.requires, m.within());
                 row["objective"] = json!(v);
@@ -536,8 +586,7 @@ impl<'a> Trials<'a> {
                 if better {
                     self.best.set(Some((feasible, score)));
                     let mut answer = row.clone();
-                    let flag: Vec<String> = self.names.iter().zip(x).map(|(p, x)| format!("{p}={x}")).collect();
-                    answer["apply"] = json!(format!("--param {}", flag.join(",")));
+                    answer["apply"] = json!(self.replay.apply(self.names, x));
                     crate::lang::claims::progress(json!({"answer": answer}));
                 }
                 // By the search's measure: a design's claims are asked only
@@ -545,13 +594,43 @@ impl<'a> Trials<'a> {
                 if feasible { "within" } else { "violating" }
             }
             Err(e) => {
-                row["error"] = json!(e.message);
+                row["error"] = e.to_json();
+                // Each design once (a simplex may try one again).
+                let mut failed = self.failed.borrow_mut();
+                if !failed.iter().any(|(y, _)| y == x) {
+                    failed.push((x.to_vec(), e.clone()));
+                }
+                // In the answer so far too (a run stopped early answers it).
+                let warned: Vec<String> = failed_warning(self.names, &failed).into_iter().collect();
+                crate::lang::claims::progress(json!({"answer": {"failed_designs": failed_json(self.names, &failed), "warnings": warned}}));
                 "failed"
             }
         };
         crate::lang::claims::progress(json!({"done": format!("design {}", self.count.get()), "status": status, "ms": t0.elapsed().as_secs_f64() * 1e3, "row": row}));
         r
     }
+}
+
+/// The designs a run could not evaluate, as its answer gives them: each
+/// design and its error (message, where, hint).
+pub fn failed_json(names: &[String], failed: &[(Vec<f64>, InkError)]) -> serde_json::Value {
+    use serde_json::json;
+    failed.iter().map(|(x, e)| json!({"design": names.iter().zip(x).map(|(p, x)| (p.clone(), json!(x))).collect::<serde_json::Map<_, _>>(), "error": e.to_json()})).collect()
+}
+
+/// The warning for designs a run could not evaluate: the search kept clear
+/// of them, so the design it returns may be limited by the model's error,
+/// not by a requirement.
+fn failed_warning(names: &[String], failed: &[(Vec<f64>, InkError)]) -> Option<String> {
+    let (x, e) = failed.first()?;
+    let at: Vec<String> = names.iter().zip(x).map(|(p, x)| format!("{p}={x}")).collect();
+    let n = failed.len();
+    Some(format!(
+        "{n} design{} could not be evaluated (failed_designs), and the search kept clear of them: the first, at {}: {}",
+        if n == 1 { "" } else { "s" },
+        at.join(", "),
+        e.message
+    ))
 }
 
 /// Run the optimization `name` of a view loaded from a file: each design
@@ -573,6 +652,7 @@ pub fn run_optimize(v: &ModelView, name: &str, budget: Option<usize>, options: &
     let o = v.doc.pick::<Optimize>("optimize", Some(name))?;
     // Refused before the first design, the answer saying why.
     quantified(v, o)?;
+    let replay = Replay::of(options)?;
     let name = name.to_string();
     let (vary, maximize) = (o.vary.clone(), o.maximize);
     let budget = budget.unwrap_or(o.budget);
@@ -581,7 +661,7 @@ pub fn run_optimize(v: &ModelView, name: &str, budget: Option<usize>, options: &
     let x0: Vec<f64> = vary.iter().map(|(p, l, h)| v.ctx.params[v.doc.param_index(p).unwrap()].clamp(*l, *h)).collect();
     let params: Vec<String> = vary.iter().map(|p| p.0.clone()).collect();
     let design = |x: &[f64]| -> Result<ModelView, InkError> {
-        let changes: Vec<(String, f64)> = params.iter().zip(x).map(|(p, x)| (p.clone(), *x)).collect();
+        let changes: Vec<(String, ink_lang::Given)> = params.iter().zip(x).map(|(p, x)| (p.clone(), (*x).into())).collect();
         cache::trial(|| v.reload(&changes))
     };
     let run = Optimized {
@@ -598,6 +678,7 @@ pub fn run_optimize(v: &ModelView, name: &str, budget: Option<usize>, options: &
         trace: Trace::Simplex { evaluations: 0, improvements: Vec::new() },
         failure: None,
         warnings: Vec::new(),
+        failed: Vec::new(),
         answer_params: Vec::new(),
         search_t: None,
     };
@@ -606,15 +687,15 @@ pub fn run_optimize(v: &ModelView, name: &str, budget: Option<usize>, options: &
         design(&x0).and_then(|mut d| cache::trial(|| design_gradient(&mut d, &run.name, &idx))).is_ok_and(|(g0, gs)| g0.iter().chain(gs.iter().flatten()).all(Option::is_some));
     if exact {
         crate::lang::claims::progress(serde_json::json!({"of": "designs", "kept": false}));
-        return optimize_gradient(run, &idx, &params, budget, &lo, &hi, &x0, &design).and_then(|o| verify(o, &design, options)).map(|o| ended(o, &lo, &hi));
+        return optimize_gradient(run, &idx, &params, budget, &lo, &hi, &x0, &design, &replay).and_then(|o| verify(o, &design, options)).map(|o| ended(o, &lo, &hi));
     }
     let name = &run.name;
     crate::lang::claims::progress(serde_json::json!({"total": budget, "of": "designs", "kept": false}));
-    let trials = Trials::new(&run, &params, "derivative-free");
+    let trials = Trials::new(&run, &params, "derivative-free", &design, &replay);
     let mut details: Vec<Option<Measures>> = Vec::new();
     let mut failures: Vec<Option<String>> = Vec::new();
     let outcome = optimize::minimize(&lo, &hi, &x0, budget, |x| {
-        let r = design(x).and_then(|mut d| trials.evaluate(&mut d, x, name));
+        let r = trials.evaluate(x, name).map(|(_, m)| m);
         // One record per evaluation, failed or not: they are looked up by
         // their position in the optimizer's history (so a failed evaluation
         // cannot shift later designs' requirements).
@@ -643,6 +724,9 @@ pub fn run_optimize(v: &ModelView, name: &str, budget: Option<usize>, options: &
         }
     }
     let found = details.get(idx).cloned().flatten();
+    let failed = trials.failed.take();
+    let mut warnings = found.as_ref().map(|m| m.warnings.clone()).unwrap_or_default();
+    warnings.extend(failed_warning(&params, &failed));
     Ok(Optimized {
         design: best.x.clone(),
         objective: found.as_ref().map_or(f64::NAN, |m| m.objective),
@@ -650,7 +734,8 @@ pub fn run_optimize(v: &ModelView, name: &str, budget: Option<usize>, options: &
         start: start.x.clone(),
         start_objective: details[0].as_ref().map_or(f64::NAN, |m| m.objective),
         start_within: start.eval.feasible(),
-        warnings: found.as_ref().map(|m| m.warnings.clone()).unwrap_or_default(),
+        warnings,
+        failed,
         requires: found.map(|m| m.requires).unwrap_or_default(),
         trace: Trace::Simplex { evaluations: outcome.history.len(), improvements },
         failure: failures.get(idx).cloned().flatten(),
@@ -755,6 +840,7 @@ fn optimize_gradient(
     hi: &[f64],
     x0: &[f64],
     design: &dyn Fn(&[f64]) -> Result<ModelView, InkError>,
+    replay: &Replay,
 ) -> Result<Optimized, InkError> {
     let (name, sign) = (&run.name, if run.maximize { -1.0 } else { 1.0 });
     let mut log: Vec<(Vec<f64>, Measures, usize)> = Vec::new();
@@ -764,10 +850,9 @@ fn optimize_gradient(
     // requirement tightened by MARGIN, so a design it accepts is within the
     // bound by the search's measure (then `verify` asks each claim).
     const MARGIN: f64 = 1e-6;
-    let trials = Trials::new(&run, params, "gradient");
+    let trials = Trials::new(&run, params, "gradient", design, replay);
     let out = optimize::minimize_mma(lo, hi, x0, budget, |x| {
-        let mut d = design(x).map_err(|e| e.message)?;
-        let m = trials.evaluate(&mut d, x, name).map_err(|e| e.message)?;
+        let (mut d, m) = trials.evaluate(x, name).map_err(|e| e.message)?;
         let (mut g0, mut gs) = cache::trial(|| design_gradient(&mut d, name, idx)).map_err(|e| e.message)?;
         // Central differences for whatever has no exact derivative.
         let mut solves = 1;
@@ -781,8 +866,7 @@ fn optimize_gradient(
             let at = |step: f64| -> Result<(f64, Vec<f64>), String> {
                 let mut xx = x.to_vec();
                 xx[j] = (x[j] + step).clamp(lo[j], hi[j]);
-                let mut d2 = design(&xx).map_err(|e| e.message)?;
-                let m = trials.evaluate(&mut d2, &xx, name).map_err(|e| e.message)?;
+                let (_, m) = trials.evaluate(&xx, name).map_err(|e| e.message)?;
                 Ok((m.objective, m.requires.iter().map(|c| c.violation).collect()))
             };
             let (xp, xm) = ((x[j] + h).min(hi[j]), (x[j] - h).max(lo[j]));
@@ -804,7 +888,9 @@ fn optimize_gradient(
             jacobian: gs.iter().map(|g| g.iter().map(|x| x.unwrap()).collect()).collect(),
         })
     })
-    .map_err(InkError::msg)?;
+    // A design that could not be evaluated stops the method: its error, as
+    // the model gave it (where, hint).
+    .map_err(|m| trials.failed.borrow().last().map_or_else(|| InkError::msg(m), |(_, e)| e.clone()))?;
     let (best_x, _, iterations) = out;
     // The best design that meets every bound as written, else MMA's (the
     // least violating).
@@ -820,11 +906,15 @@ fn optimize_gradient(
         .into_iter()
         .map(|(x, m, evaluations)| Iteration { design: x, objective: m.objective, max_violation: m.requires.iter().fold(0.0f64, |w, c| w.max(c.violation)), evaluations })
         .collect();
+    let failed = trials.failed.take();
+    let mut warnings = found.warnings;
+    warnings.extend(failed_warning(params, &failed));
     Ok(Optimized {
         design,
         objective: found.objective,
         feasible: false,
-        warnings: found.warnings,
+        warnings,
+        failed,
         requires: found.requires,
         start,
         start_objective,

@@ -18,6 +18,7 @@ use ink_core::interval::{I, add_o};
 use ink_core::tape::Tape;
 use ink_kernel::query::{self, Verdict};
 use ink_kernel::ranged::{self, Comparison, Proof, ValueSpan};
+use ink_kernel::scope::At;
 use std::sync::Arc;
 
 /// Whether a claim holds. How far off that could be is the answer's
@@ -168,15 +169,16 @@ pub struct Check {
 }
 
 /// How an emptiness claim (empty, disjoint, subset) held.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Held {
     /// No cell needed the accuracy's allowance: nothing violates it.
     Outright,
     /// Some cells held only to the accuracy. `near`: the deepest violating
     /// point found among NEAR_SAMPLES^3 points through each (depth 0 and no
-    /// point: none found), a measurement; None where the field reads
-    /// ranged params or t.
-    ToAccuracy { near: Option<(f64, Option<V3>)> },
+    /// point: none found), a measurement, with the moment and ranged
+    /// params' values it was found at (`At`: none ranged, its params
+    /// empty).
+    ToAccuracy { near: Option<(f64, Option<(V3, At)>)> },
 }
 
 /// Points measured along each side of a loose cell (Held::candidates).
@@ -188,12 +190,19 @@ const CONFIRM_TRIES: usize = 16;
 impl Held {
     /// Where a proof's loose cells may hold a violating point: each
     /// cell's NEAR_SAMPLES^3 points below 0 on `tape` (the question's, in
-    /// its frame, simplified over the cell), the CONFIRM_TRIES deepest.
-    pub fn candidates(p: &Proof, tape: &Tape, ctx: &Ctx) -> Vec<V3> {
+    /// its frame, simplified over the cell and its piece of the scope), at
+    /// the middle of that piece and where each ranged param (t among them
+    /// over a motion) is pushed to the end of its span that lowers the
+    /// field at the cell's centre (scope::pushed: a thin overlap at the
+    /// end of a motion), the CONFIRM_TRIES deepest, with where in the
+    /// scope.
+    pub fn scoped(p: &Proof, tape: &Tape, ctx: &Ctx) -> Vec<(V3, At)> {
         let (mut values, mut below) = (Vec::new(), Vec::new());
-        for [lo, hi] in &p.loose {
+        for l in &p.loose {
+            let [lo, hi] = l.cell;
+            let over = l.scope(ctx);
             let mut ch = vec![ink_core::tape::BOTH; tape.len()];
-            eval_interval(tape, ctx, std::array::from_fn(|k| I::new(lo[k], hi[k])), Some(&mut ch));
+            eval_interval(tape, &over, std::array::from_fn(|k| I::new(lo[k], hi[k])), Some(&mut ch));
             let sub = tape.simplify(&ch);
             let points: Vec<V3> = (0..NEAR_SAMPLES.pow(3))
                 .map(|i| {
@@ -201,28 +210,52 @@ impl Held {
                     std::array::from_fn(|k| lo[k] + (hi[k] - lo[k]) * (at[k] as f64 + 0.5) / NEAR_SAMPLES as f64)
                 })
                 .collect();
-            eval_points(&sub, ctx, &points, &mut values);
-            below.extend(values.iter().zip(points).filter(|x| *x.0 < 0.0).map(|(f, c)| (*f, c)));
+            let mid = ink_kernel::scope::middle(&over, over.t_span.is_some());
+            let centre = std::array::from_fn(|k| 0.5 * (lo[k] + hi[k]));
+            let pushed = ink_kernel::scope::pushed(&[&sub], &over, centre).map(|x| x.0);
+            for at in std::iter::once(mid).chain(pushed) {
+                eval_points(&sub, &at, &points, &mut values);
+                below.extend(values.iter().zip(&points).filter(|x| *x.0 < 0.0).map(|(f, c)| (*f, *c, At::of(&at))));
+            }
         }
         below.sort_by(|a, b| a.0.total_cmp(&b.0));
-        below.into_iter().take(CONFIRM_TRIES).map(|x| x.1).collect()
+        below.into_iter().take(CONFIRM_TRIES).map(|x| (x.1, x.2)).collect()
+    }
+
+    /// `scoped`'s points (interfere's pairs, which read no scope).
+    pub fn candidates(p: &Proof, tape: &Tape, ctx: &Ctx) -> Vec<V3> {
+        Held::scoped(p, tape, ctx).into_iter().map(|x| x.0).collect()
+    }
+
+    /// `confirmed_at`, each point at ctx's moment.
+    pub fn confirmed(exact: bool, points: impl IntoIterator<Item = V3>, world: &Tape, ctx: &Ctx) -> Held {
+        Held::confirmed_at(exact, points.into_iter().map(|c| (c, At { t: ctx.t, params: Vec::new() })), world, ctx)
     }
 
     /// How a claim whose proof was `exact` (or not) held, its near point
-    /// the deepest of `points` (in the world) where `world`, the claim's
-    /// field as placed (a pair's, with its zones), is below 0 by bounds
-    /// rounded outward (a float value may round away what the real one
-    /// is), as deep as the bound.
-    pub fn confirmed(exact: bool, points: impl IntoIterator<Item = V3>, world: &Tape, ctx: &Ctx) -> Held {
+    /// the deepest of `points` (in the world, each at its moment and
+    /// ranged params' values: ctx's point there, Ctx::point) where
+    /// `world`, the claim's field as placed (a pair's, with its zones), is
+    /// below 0 by bounds rounded outward (a float value may round away
+    /// what the real one is), as deep as the bound.
+    pub fn confirmed_at(exact: bool, points: impl IntoIterator<Item = (V3, At)>, world: &Tape, ctx: &Ctx) -> Held {
         if exact {
             return Held::Outright;
         }
-        let deepest = points.into_iter().map(|c| (eval_interval(world, ctx, c.map(I::point), None).hi, c)).filter(|x| x.0 < 0.0).min_by(|a, b| a.0.total_cmp(&b.0));
-        Held::ToAccuracy { near: Some(Held::near(deepest.map_or(0.0, |d| -d.0), deepest.map(|d| d.1))) }
+        let bound = |c: V3, at: &At| {
+            let mut x = Ctx { t: at.t, ..ctx.clone() };
+            for &(k, v) in &at.params {
+                x.params[k as usize] = v;
+            }
+            eval_interval(world, &x.point(), c.map(I::point), None).hi
+        };
+        let deepest = points.into_iter().map(|(c, at)| (bound(c, &at), (c, at))).filter(|x| x.0 < 0.0).min_by(|a, b| a.0.total_cmp(&b.0));
+        let depth = deepest.as_ref().map_or(0.0, |d| -d.0);
+        Held::ToAccuracy { near: Some(Held::near(depth, deepest.map(|d| d.1))) }
     }
 
     /// A near point at least `depth` deep, rounded to a µm: none at 0.
-    pub fn near(depth: f64, at: Option<V3>) -> (f64, Option<V3>) {
+    pub fn near(depth: f64, at: Option<(V3, At)>) -> (f64, Option<(V3, At)>) {
         let depth = (depth * 1e3).round().max(0.0) / 1e3;
         (depth, at.filter(|_| depth > 0.0))
     }
@@ -631,8 +664,12 @@ fn ask_in(v: &mut ModelView, claim: Claim, bound: Option<u32>, opts: ClaimOption
         return Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact)));
     }
     let c = match motion {
-        // Over a motion, how it held is not kept (Check::held).
-        Some(span) => crate::motion::over_span(v, claim.clone(), bound, span, opts)?.then(v, |_, c| Ok(Asked::Done(Check { held: None, ..c })))?,
+        // Over a motion, how it held is said where t ranged decided it
+        // (its near point at a moment), never of a moment measured.
+        Some(span) => crate::motion::over_span(v, claim.clone(), bound, span, opts)?.then(v, |_, c| {
+            let ranged = c.motion.as_ref().is_some_and(|m| m.ranged);
+            Ok(Asked::Done(Check { held: c.held.clone().filter(|_| ranged), ..c }))
+        })?,
         None => Asked::Done(decide(v, claim.clone(), opts)?),
     };
     c.then(v, move |v, c| Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact))))
@@ -898,18 +935,16 @@ const POINT_CUBE: f64 = 0.005;
 
 /// How far below 0 the field must be shown over that cube for the point to
 /// be inside (not on a face of no thickness inside the material, where the
-/// field is 0, as a revolve's section on its axis is).
+/// field is 0, as where two pieces abut).
 const POINT_MARGIN: f64 = 1e-9;
 
 /// The solid of field `f` holds no point deeper than `tol` (an emptiness
 /// claim, or an overlap's, a subset's, a clearance of 0's).
 fn shallow(v: &mut ModelView, f: u32, tol: f64, res: Option<f64>) -> Check {
     let (p, whole) = v.prove(f, res, tol);
-    let held = (!held_unsaid(v, f)).then(|| {
-        let tape = v.clipped(f);
-        let points = if p.exact { Vec::new() } else { Held::candidates(&p, &tape, &v.ctx) };
-        Held::confirmed(p.exact, points, &tape, &v.ctx)
-    });
+    let tape = v.clipped(f);
+    let points = if p.exact { Vec::new() } else { Held::scoped(&p, &tape, &v.ctx) };
+    let held = Some(Held::confirmed_at(p.exact, points, &tape, &v.ctx));
     Check { held, ..emptied(p, whole) }
 }
 
@@ -1320,8 +1355,8 @@ pub fn reads_t(v: &ModelView, nodes: &[u32]) -> bool {
     nodes.iter().any(|&f| v.doc.g.depends_on(f, |x| x == Var::T)) || v.doc.solves_read(nodes).iter().any(|&i| v.doc.solves[i].on_t)
 }
 
-/// Whether how a claim on `node` held goes unsaid: it reads ranged params,
-/// or t over a span.
+/// Whether how an `interfere` pair on `node` held goes unsaid: it reads
+/// ranged params, or t over a span.
 pub(crate) fn held_unsaid(v: &ModelView, node: u32) -> bool {
     !v.ranged_reads(&[node]).is_empty() || (v.motion.is_some() || v.ctx.t_span.is_some()) && reads_t(v, &[node])
 }
@@ -1507,7 +1542,8 @@ pub fn grid_error(x: f64, x2: f64, x4: Option<f64>) -> (f64, &'static str) {
 }
 
 /// A package's metric against its comparison: an estimate (its accuracy
-/// moves the comparison, and guarantees nothing), and unknown where the
+/// moves the comparison, and guarantees nothing; exact where the metric is
+/// proven, Measured::proven), and unknown where the
 /// metric has no value (a failed solve; nothing to measure over). Forms
 /// keep their own (res ...): the geometry's res is not theirs (cells a
 /// hundredth of a millimetre would not fit a study); `res` overrides (a
@@ -1525,6 +1561,9 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
     // that out on purpose, when the answer stands and says so.
     let num = |x: f64| if x.is_finite() { format!("{}", (x * 1e4).round() / 1e4) } else { "unbounded".into() };
     let mut undecided: Option<(Vec<String>, Vec<String>)> = None;
+    // A proven value's claim is exact, unless it leaves out on purpose
+    // what would change it.
+    let mut exact = measured.proven;
     if measured.value.is_ok() {
         let measured_status = status;
         for ex in &measured.excluded {
@@ -1534,6 +1573,7 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
             }
             let at = ex.at.map_or(String::new(), |p| format!(" at [{:.3}, {:.3}, {:.3}]", p[0], p[1], p[2]));
             if excluding.contains(&ex.key) {
+                exact = false;
                 measured.warnings.push(format!(
                     "this claim {} leaving out {} on purpose (excluding {}). Counted, that ({}{at}) would make it {}",
                     measured_status.as_str(),
@@ -1569,6 +1609,7 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
         u.1.push("refine (res r) to under half the gap's width, or close the gap in the model".into());
     }
     if status == Status::Holds
+        && !measured.proven
         && let (Ok(x), Some(h)) = (measured.value.clone(), measured.res)
     {
         let mut coarse = |k: f64| -> Result<f64, String> {
@@ -1613,5 +1654,6 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
     }
     let undecided = undecided.map(|(why, how)| (why.join("; "), how.join("; ")));
     let quantity = v.doc.registry.metric_quantity(m.metric);
-    Ok(checked(status, Evidence::Metric { measured, head, form: m.form.clone(), quantity, undecided }).estimate())
+    let check = checked(status, Evidence::Metric { measured, head, form: m.form.clone(), quantity, undecided });
+    Ok(if exact { check } else { check.estimate() })
 }

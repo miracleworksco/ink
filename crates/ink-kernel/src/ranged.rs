@@ -194,6 +194,14 @@ pub struct ValueSpan {
     pub witness: Option<(At, f64)>,
     /// Pieces of the scope examined.
     pub pieces: usize,
+    /// Unknown: why the proof ended (query::Ended::Finest: a piece at the
+    /// refinement limit, every ranged param it reads halved `halvings`
+    /// times), and the hunt for a violation after it, none found
+    /// (search::Search::hunt).
+    pub ended: Option<query::Ended>,
+    pub hunt: Option<search::Hunt>,
+    /// The most times a piece's ranged param is halved.
+    pub halvings: u32,
 }
 
 /// The comparison `c` (to its tolerance) at every value of `ctx`'s ranged
@@ -207,23 +215,30 @@ pub struct ValueSpan {
 /// how far its bounds reach past the bound refines a curve it meets breadth
 /// first, all along it). A point whose outward bounds violate deeper than
 /// the tolerance disproves (bounds at a piece's centre, where every ranged
-/// param keeps its real meaning); a rounding across the bound does not. A piece no halving decides (a value
-/// that meets its bound, moved by the tolerance, all along a curve) ends it
-/// unknown, the rest not halved. Panics without a ranged param.
+/// param keeps its real meaning); a rounding across the bound does not. A
+/// piece undecided at that limit (a value that meets its bound, moved by
+/// the tolerance, all along a curve; or one only finer pieces decide) ends
+/// the proof; the search then hunts a violation in the rest
+/// (search::Search::hunt) to its cap, and is unknown where it finds none,
+/// saying why each stopped. Panics without a ranged param.
 pub fn value_span(tape: &Tape, ctx: &Ctx, at: V3, c: Comparison, opts: &ProofOptions) -> ValueSpan {
     assert!(!ctx.p_spans.is_empty() || ctx.t_span.is_some(), "a scope beyond space");
     let q = ValueOver { tape, at, c, splits: 4 * opts.depth };
     let p = search::Precision { finest: 0.0, splits: q.splits, maps: false };
     let mut s = search::Search::new(&q, vec![search::Node { b: at.map(I::point), ctx: Arc::new(ctx.clone()), state: () }], p);
-    let outcome = s.finish(&q, usize::MAX);
+    let mut outcome = s.finish(&q, usize::MAX);
+    if matches!(&outcome, search::Outcome::Unknown(u) if !u.stopped()) {
+        s.hunt();
+        outcome = s.finish(&q, query::BOXES);
+    }
     let iv = eval_interval_scope(tape, ctx, at.map(I::point), None);
     let (range, pieces) = ((iv.lo, iv.hi), s.tested());
-    let (status, witness) = match outcome {
-        search::Outcome::Proven => (Status::Proven, None),
-        search::Outcome::Found(w) => (Status::Disproven, Some(w)),
-        search::Outcome::Unknown(_) => (Status::Unknown, None),
+    let (status, witness, ended, hunt) = match outcome {
+        search::Outcome::Proven => (Status::Proven, None, None, None),
+        search::Outcome::Found(w) => (Status::Disproven, Some(w), None, None),
+        search::Outcome::Unknown(u) => (Status::Unknown, None, Some(u.ended), u.hunt),
     };
-    ValueSpan { status, range, witness, pieces }
+    ValueSpan { status, range, witness, pieces, ended, hunt, halvings: q.splits }
 }
 
 /// A value over the ranged params as a question of the one search

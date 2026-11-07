@@ -11,7 +11,7 @@ pub(crate) const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 pub(crate) fn field(src: &str, name: &str) -> (Doc, Tape) {
     let d = ink::load_str(&format!("(import \"std\")\n{src}"), "test", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
-    let Value::Field(f) = d.def(name).unwrap_or_else(|| panic!("no def {name}")).clone() else { panic!("{name} is not a field") };
+    let Value::Field(f, _) = d.def(name).unwrap_or_else(|| panic!("no def {name}")).clone() else { panic!("{name} is not a field") };
     let t = Tape::new(&d.g, f);
     (d, t)
 }
@@ -154,7 +154,7 @@ fn shape_of_except_leaves_out_the_parts_named() {
     )
     .unwrap();
     let d = ink::load_str("(import \"m.ink\" as m) (assert moving/b (value 1 > 0))", "test", &dir).unwrap_or_else(|e| panic!("{e:?}"));
-    let Some(Value::Field(f)) = d.def("m.left").cloned() else { panic!("m.left is not a field") };
+    let Some(Value::Field(f, _)) = d.def("m.left").cloned() else { panic!("m.left is not a field") };
     let t = Tape::new(&d.g, f);
     assert!(at(&t, [0.0, 0.0, 0.0]) < 0.0 && at(&t, [5.0, 0.0, 0.0]) > 0.0, "a kept, b left out");
     let names: Vec<&str> = d.asserts.iter().map(|a| a.name.as_str()).collect();
@@ -189,7 +189,7 @@ fn attr_of_reads_the_placed_bodys_attribute() {
                (assembly root (instance n nut) (instance k key (at (move 3 0 0))))
                (def size (get (get (attr-of root/n spec) \"drive\") \"size\")) (def note (attr-of nut note)) (param p 3)";
     let d = ink::load_str(src, "test", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
-    let Some(Value::Field(f)) = d.def("size").cloned() else { panic!("size is not a number") };
+    let Some(Value::Field(f, _)) = d.def("size").cloned() else { panic!("size is not a number") };
     assert_eq!(d.g.as_const(f), Some(2.5));
     assert!(matches!(d.def("note"), Some(Value::Str(s)) if s.as_str() == "m5"));
     // An attribute keeps its name in a file imported under a namespace, though
@@ -205,7 +205,7 @@ fn attr_of_reads_the_placed_bodys_attribute() {
         Path::new(ROOT),
     )
     .unwrap_or_else(|e| panic!("{e:?}"));
-    let Some(Value::Field(f)) = d.def("heat").cloned() else { panic!("heat is not a field") };
+    let Some(Value::Field(f, _)) = d.def("heat").cloned() else { panic!("heat is not a field") };
     assert!(eval_point(&Tape::new(&d.g, f), &CTX, [30.0, 0.0, 0.0]).abs() < 1e-12, "the part's own x = 0 where it lies");
     for (bad, says) in [
         ("(attr-of root/k spec)", "body 'key' (at 'root/k') has no attribute 'spec'"),
@@ -242,7 +242,7 @@ fn met_by_names_the_frame_a_part_is_placed_by() {
     // A record's numbers are numbers (24.0 is 24); a size written as text is
     // no number, and arithmetic on it says so.
     let d = ink::load_str("(def nut24 (read-json \"tests/fixtures/drive-24.json\")) (def same (== (get (get nut24 \"drive\") \"size\") 24))", "met", Path::new(ROOT)).unwrap();
-    let Some(Value::Field(f)) = d.def("same").cloned() else { panic!("same is not a number") };
+    let Some(Value::Field(f, _)) = d.def("same").cloned() else { panic!("same is not a number") };
     assert_eq!(d.g.as_const(f), Some(1.0));
     let e = ink::load_str("(def text (read-json \"tests/fixtures/drive-text.json\")) (def off (- (get (get text \"drive\") \"size\") 2.5))", "met", Path::new(ROOT))
         .err()
@@ -618,7 +618,7 @@ fn spline_interpolates_its_points() {
     assert_eq!(pts.len(), 3 * 8 + 1);
     let get = |v: &Value| -> Vec<f64> {
         let Value::Vec(c) = v else { panic!() };
-        c.iter().map(|x| if let Value::Field(n) = x { d.g.as_const(*n).unwrap() } else { panic!() }).collect()
+        c.iter().map(|x| if let Value::Field(n, _) = x { d.g.as_const(*n).unwrap() } else { panic!() }).collect()
     };
     assert_eq!(get(&pts[8]), vec![10.0, 5.0, 0.0]);
     assert_eq!(get(&pts[16]), vec![20.0, 0.0, 5.0]);
@@ -694,6 +694,36 @@ fn a_loop_is_mitred_where_it_closes() {
     }
 }
 
+/// Round a loop that is not planar, rotation-minimising frames come back
+/// turned about the tangent (here 2.8 degrees); path-rmf spreads the turn
+/// along the loop and the sweep turns its sections with it from mitre to
+/// mitre, so they meet at every joint, the closing one too: the field is
+/// continuous, no steeper than 1.1 between points 2e-4 apart near each
+/// joint. Unspread, it jumped by 0.097 across the closing seam.
+#[test]
+fn a_nonplanar_loop_s_sweep_is_continuous() {
+    let corners = [[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [20.0, 20.0, 10.0], [0.0, 20.0, 20.0], [-5.0, 10.0, 5.0]];
+    let pts: Vec<String> = corners.iter().map(|p| format!("(vec {} {} {})", p[0], p[1], p[2])).collect();
+    let (_d, t) = field(&format!("(def f (sweep (rect-2d 1 4) (closed (vec {})) (vec 0 0 1)))", pts.join(" ")), "f");
+    let f = |p: [f64; 3]| eval_point(&t, &CTX, p);
+    let (a, b) = ([-0.8159, -1.976, 1.137], [-0.8161, -1.976, 1.137]);
+    assert!((f(a) - f(b)).abs() < 2e-4, "across the closing seam: {} and {}", f(a), f(b));
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut r = || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
+    for c in corners {
+        for _ in 0..4000 {
+            let p = [c[0] + 3.0 * r(), c[1] + 3.0 * r(), c[2] + 3.0 * r()];
+            let d = [r(), r(), r()];
+            let k = 2e-4 / (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let q = [p[0] + k * d[0], p[1] + k * d[1], p[2] + k * d[2]];
+            assert!((f(p) - f(q)).abs() <= 1.1 * 2e-4, "near {c:?}: {} at {p:?}, {} at {q:?}", f(p), f(q));
+        }
+    }
+}
+
 #[test]
 fn sweep_of_a_circle_matches_a_tube() {
     // A circle swept along a gently bent path encloses the same solid as a tube,
@@ -725,7 +755,7 @@ fn sweep_of_a_circle_matches_a_tube() {
 /// last) has no ends.
 #[test]
 fn swept_paths_that_overlap_themselves_are_reported() {
-    let failures = |src: &str, params: &[(String, f64)]| {
+    let failures = |src: &str, params: &[(String, ink::lang::Given)]| {
         let d = ink::load_str_with(&format!("(import \"std\")\n{src}"), "test", Path::new(ROOT), params).unwrap_or_else(|e| panic!("{e:?}"));
         let ctx = d.ctx(params, 0.0).unwrap();
         let v = ink::view::ModelView::new(d, ctx);
@@ -736,7 +766,7 @@ fn swept_paths_that_overlap_themselves_are_reported() {
     // above it at k = 2: clear for a 0.9 mm rod, not for k = 1.
     let l = "(param k 2) (body hose (shape (tube (vec (vec 0 0 0) (vec 10 0 0) (vec 10 10 k) (vec 5 10 k) (vec 5 -5 k)) 0.9)))";
     assert_eq!(failures(l, &[]), none);
-    let w = failures(l, &[("k".into(), 1.0)]);
+    let w = failures(l, &[("k".into(), 1.0.into())]);
     assert!(w.len() == 1 && w[0].contains("runs through itself") && w[0].contains("(5, 0, 0) and (5, 0, 1)") && w[0].contains("k = 1"), "{w:?}");
     // A hairpin: the 2 mm middle segment cannot hold two right-angle
     // mitres of a 1.5 mm section (it needs 3).
@@ -780,7 +810,7 @@ fn a_loop_is_a_loop_to_the_sweep_and_its_check() {
         let d = ink::load_str(&src, "test", Path::new(ROOT)).unwrap();
         let closes =
             d.g.as_const(match d.def("c") {
-                Some(Value::Field(f)) => *f,
+                Some(Value::Field(f, _)) => *f,
                 _ => panic!(),
             })
             .unwrap()
@@ -798,7 +828,7 @@ fn profile_reach_is_the_farthest_point() {
         let d = ink::load_str(&format!("(import \"std\") (def r (profile-reach {profile}))"), "test", Path::new(ROOT)).unwrap();
         let r =
             d.g.as_const(match d.def("r") {
-                Some(Value::Field(f)) => *f,
+                Some(Value::Field(f, _)) => *f,
                 _ => panic!(),
             })
             .unwrap();
@@ -896,7 +926,7 @@ fn provenance_names_the_construction_under_a_point() {
         Path::new(ROOT),
     )
     .unwrap();
-    let Value::Field(f) = d.def("both").unwrap().clone() else { panic!() };
+    let Value::Field(f, _) = d.def("both").unwrap().clone() else { panic!() };
     let t = Tape::new(&d.g, f);
     let names = |p: [f64; 3]| -> Vec<String> { ink::eval::provenance(&t, &CTX, p).iter().map(|&i| d.g.tag_names[i as usize].clone()).collect() };
     assert_eq!(names([-10.0, 0.0, 0.0]), vec!["both", "left"]);
@@ -1105,7 +1135,7 @@ fn solve_finds_constrained_values_and_follows_time() {
     let c = d.ctx(&[], 0.1).unwrap();
     assert!((c.params[0].sin() - (0.2 * std::f64::consts::PI).sin()).abs() < 1e-9);
     // Solved params cannot be overridden directly.
-    assert!(d.ctx(&[("a".into(), 1.0)], 0.0).is_err());
+    assert!(d.ctx(&[("a".into(), 1.0.into())], 0.0).is_err());
 }
 
 #[test]
@@ -1128,9 +1158,9 @@ fn extension_forms_go_to_their_packages() {
     // A solve is a param provider: the core applies it to every context
     // and refuses overrides of what it owns.
     assert_eq!(d.providers().owned().collect::<Vec<_>>(), fit.unknowns);
-    let e = d.ctx(&[("a".into(), 3.0)], 0.0).err().unwrap();
+    let e = d.ctx(&[("a".into(), 3.0.into())], 0.0).err().unwrap();
     assert!(e.contains("'a' is solved by 'fit'"), "{e}");
-    assert!((d.ctx(&[("w".into(), 12.0)], 0.0).unwrap().params[fit.unknowns[0]] - 2.0).abs() < 1e-9);
+    assert!((d.ctx(&[("w".into(), 12.0.into())], 0.0).unwrap().params[fit.unknowns[0]] - 2.0).abs() < 1e-9);
     // Unknown heads list every package's forms; the kernel's has no study.
     let e = ink::load_str("(solv x)", "test", Path::new(ROOT)).err().unwrap();
     assert!(e.hint.as_deref().is_some_and(|h| h.contains("'solve'")), "{e:?}");
@@ -1190,7 +1220,7 @@ fn packages_bring_their_own_metrics() {
             None
         }
         fn metric(&self, m: &str) -> Option<Measured> {
-            (m == "reading").then(|| Measured { value: Ok(self.0), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None })
+            (m == "reading").then(|| Measured { value: Ok(self.0), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false })
         }
         fn failure(&self) -> Option<String> {
             (self.0 < 0.0).then(|| "the gauge reads below its range".into())
@@ -1351,7 +1381,7 @@ fn grad_lists_the_derivatives_along_x_y_z() {
     let got: Vec<f64> = g
         .iter()
         .map(|v| match v {
-            Value::Field(f) => eval_point(&Tape::new(&d.g, *f), &CTX, [1.0, 7.0, 0.0]),
+            Value::Field(f, _) => eval_point(&Tape::new(&d.g, *f), &CTX, [1.0, 7.0, 0.0]),
             _ => panic!("{v:?}"),
         })
         .collect();
@@ -1396,12 +1426,13 @@ fn a_ray_finds_the_first_crossing_and_ends_when_it_lies_in_a_face() {
     let (_d, t) = field("(def two (min (box 10 10 1) (move (box 10 10 1) 0 0 1.001)))", "two");
     let t = Arc::new(t);
     let local = ink::octree::Local::new(&t, &ctx, [-6.0; 3], 0.5);
-    let out = ray_to(&local, [0.3, 0.2, -0.499], [0.0, 0.0, 1.0], (0.0, 10.0), Side::Outside, 1e-4).unwrap();
+    let sure = |h: Option<ink::query::RayHit>| h.filter(|h| h.rounding.is_none()).unwrap().t;
+    let out = sure(ray_to(&local, [0.3, 0.2, -0.499], [0.0, 0.0, 1.0], (0.0, 10.0), Side::Outside, 1e-4));
     assert!((out - 0.999).abs() < 1e-12, "left at {out}");
     // And back in: the second slab's face, then its far face.
-    let back = ray_to(&local, [0.3, 0.2, -0.499], [0.0, 0.0, 1.0], (out, 10.0), Side::Inside, 1e-4).unwrap();
+    let back = sure(ray_to(&local, [0.3, 0.2, -0.499], [0.0, 0.0, 1.0], (out, 10.0), Side::Inside, 1e-4));
     assert!((back - 1.0).abs() < 1e-12, "entered at {back}");
-    let out = ray_to(&local, [0.3, 0.2, -0.499], [0.0, 0.0, 1.0], (back, 10.0), Side::Outside, 1e-4).unwrap();
+    let out = sure(ray_to(&local, [0.3, 0.2, -0.499], [0.0, 0.0, 1.0], (back, 10.0), Side::Outside, 1e-4));
     assert!((out - 2.0).abs() < 1e-12, "left at {out}");
     // A ray in a turned box's face, where only rounding decides the sign:
     // the search ends (its cost is the length over eps), with nothing or a
@@ -1413,7 +1444,7 @@ fn a_ray_finds_the_first_crossing_and_ends_when_it_lies_in_a_face() {
     let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
     let (o, dir) = ([20.0 * c + 15.0 * s, 20.0 * s - 15.0 * c, 0.0], [-s, c, 0.0]);
     for side in [Side::Inside, Side::Outside] {
-        if let Some(at) = ray_to(&local, o, dir, (0.0, 30.0), side, 1e-3) {
+        if let Some(ink::query::RayHit { t: at, .. }) = ray_to(&local, o, dir, (0.0, 30.0), side, 1e-3) {
             let p = [o[0] + at * dir[0], o[1] + at * dir[1], o[2] + at * dir[2]];
             assert!(eval_point(&t, &CTX, p).abs() < 1e-9, "{side:?} at {at}");
         }
@@ -1436,6 +1467,62 @@ fn a_ray_finds_the_first_crossing_and_ends_when_it_lies_in_a_face() {
     assert!(ink::eval::eval_interval(&t, &CTX, seg(20.0, 30.0), None).lo >= 0.0);
     let local = ink::octree::Local::new(&t, &ctx, [-60.0; 3], 120.0 / 256.0);
     assert_eq!(ray_to(&local, o, dir, (0.0, 70.0), Side::Inside, 7e-8), None);
+}
+
+#[test]
+fn a_ray_grazing_a_face_into_material_is_a_sure_hit() {
+    // At 5e-9 to a cube's face, the ray's stretch where it crosses is flat
+    // to rounding, but bounds show a point eps (`ink ray`'s, 1e-9 of the
+    // ray) after it inside: a sure hit where it crosses, not one said only
+    // to rounding.
+    use ink::query::{Side, ray_to};
+    let ctx = Ctx::new(0.0, Vec::new());
+    let (_d, t) = field("(def b (box 20 20 20))", "b");
+    let t = std::sync::Arc::new(t);
+    let local = ink::octree::Local::new(&t, &ctx, [-30.0; 3], 60.0 / 256.0);
+    let h = ray_to(&local, [-20.0, -10.00000007871675, 0.0], [1.0, 4.903941923740832e-9, 0.0], (0.0, 520.0), Side::Inside, 5.2e-7);
+    assert!(h.is_some_and(|h| h.rounding.is_none() && (h.t - 16.05172961950302).abs() < 1e-6), "{h:?}");
+}
+
+#[test]
+fn a_ray_ending_just_before_material_finds_none_past_its_end() {
+    // A box with a tilted cut: along the ray the field stays above 0 to
+    // t = 16, its end, and material starts just after. A hit's certainty
+    // probe past t1 found it and called a hit inside the ray sure.
+    use ink::query::{Side, ray_to};
+    let ctx = Ctx::new(0.0, Vec::new());
+    let (_d, t) = field("(def b (max (- (abs x) 10) (- (abs y) 20) (- (abs z) 20) (- (- (* 0.8660254037844387 z) (* 0.49999999999999994 y)) 1.5)))", "b");
+    let t = std::sync::Arc::new(t);
+    let local = ink::octree::Local::new(&t, &ctx, [-30.0; 3], 60.0 / 256.0);
+    let h = ray_to(&local, [-20.0, -9.61378377305627, -3.818468241736015], [1.0, 0.0, -1e-7], (0.0, 16.0), Side::Inside, 1.6e-8);
+    assert!(h.is_none_or(|h| h.rounding.is_some()), "a sure hit inside the ray, where material starts after it: {h:?}");
+}
+
+#[test]
+fn a_ray_in_a_tilted_face_ends_at_rounding_and_says_so() {
+    // A box turned 30 degrees about x, the ray in its top face (box frame
+    // (-25, 2, 1.5) turned): the face's bounds hold 0 by rounding all
+    // along it, and halving to 1e-9 of the ray took minutes. Now it ends
+    // where it meets the face, a hit within rounding of 0; 1e-7 inside
+    // the face, a sure hit at the same t.
+    use ink::query::{RayHit, Side, ray_to};
+    let ray = |o: [f64; 3]| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ctx = Ctx::new(0.0, Vec::new());
+            let (_d, t) = field("(def b (rotate-x (box 40 30 3) 30))", "b");
+            let t = std::sync::Arc::new(t);
+            let local = ink::octree::Local::new(&t, &ctx, [-30.0; 3], 60.0 / 256.0);
+            tx.send(ray_to(&local, o, [1.0, 0.0, 0.0], (0.0, 60.0), Side::Inside, 6e-8))
+        });
+        // A minute: the fixed ray answers in milliseconds, the old one took
+        // minutes; 5 s timed out once in a loaded gate.
+        rx.recv_timeout(std::time::Duration::from_secs(60)).expect("still refining after 60 s")
+    };
+    let face = ray([-25.0, 2.482050807568877, -0.2990381056766581]);
+    assert!(face.is_some_and(|h| (h.t - 5.0).abs() < 1e-6 && h.rounding.is_some_and(|w| w < 1e-12)), "{face:?}");
+    let inset = ray([-25.0, 2.482050757568877, -0.29903801907411776]);
+    assert!(matches!(inset, Some(RayHit { t, rounding: None }) if (t - 5.0).abs() < 1e-9), "{inset:?}");
 }
 
 #[test]
@@ -1608,7 +1695,7 @@ fn derivative_bounds_hold_every_value_the_rules_give() {
     for i in 0..fields.len() {
         let Some(Value::Vec(g)) = d.def(&format!("g{i}")) else { panic!() };
         for (axis, gk) in g.iter().enumerate() {
-            let Value::Field(gk) = gk else { panic!() };
+            let Value::Field(gk, _) = gk else { panic!() };
             let t = Tape::new(&d.g, *gk);
             for trial in 0..200 {
                 // Boxes about the origin's planes, so points on them (ties)
@@ -1635,7 +1722,7 @@ fn derivative_bounds_hold_every_value_the_rules_give() {
         }
     }
     for (i, &(f, p, real, floats)) in extreme.iter().enumerate() {
-        let Some(Value::Field(e)) = d.def(&format!("e{i}")) else { panic!() };
+        let Some(Value::Field(e, _)) = d.def(&format!("e{i}")) else { panic!() };
         let t = Tape::new(&d.g, *e);
         if floats {
             assert_eq!(eval_point(&t, &CTX, p), real, "{f} at {p:?}");
@@ -1769,7 +1856,7 @@ fn a_clearance_refines_the_way_round_that_decides() {
 (def skirt (max lid (- z 9.8)))";
     let (d, _) = field(src, "box");
     let tape = |n: &str| {
-        let Value::Field(f) = d.def(n).unwrap().clone() else { panic!() };
+        let Value::Field(f, _) = d.def(n).unwrap().clone() else { panic!() };
         Arc::new(Tape::new(&d.g, f))
     };
     let (bx, sk) = (tape("box"), tape("skirt"));
@@ -1860,7 +1947,7 @@ fn promises_never_outlive_the_field_they_were_made_for() {
     assert!(kept("(def f (warp (lipschitz 1 (- (abs (- x (* 5 t))) 1)) x y z (* 2 t)))", "(def f (warp (- (abs (- x (* 5 t))) 1) x y z (* 2 t)))"));
     let (d, _) = field(src, "slab");
     let tape = |n: &str| {
-        let Value::Field(f) = d.def(n).unwrap().clone() else { panic!() };
+        let Value::Field(f, _) = d.def(n).unwrap().clone() else { panic!() };
         Arc::new(Tape::new(&d.g, f))
     };
     let (lo, hi) = ([-6.0, -11.0, -11.0], [6.0, 11.0, 11.0]);
@@ -1873,7 +1960,7 @@ fn bounds_never_claim_a_box_the_domain_cut() {
     // are all of it, not the box the window cut (which would disprove
     // (value bx > 900) "exactly"). A shape that is not bounded has none.
     let d = ink::load_str("(import \"std\")\n(def b (bounds (box 2000 10 10)))\n(def bx (nth (nth b 1) 0))\n", "t", Path::new(ROOT)).unwrap();
-    let Some(ink::lang::Value::Field(bx)) = d.def("bx") else { panic!("no bx") };
+    let Some(ink::lang::Value::Field(bx, _)) = d.def("bx") else { panic!("no bx") };
     let bx = d.g.as_const(*bx).unwrap();
     // All of it, tight to within the last pass's cell (1/256 of the box).
     assert!((1000.0..1000.0 + 2.0 * 2000.0 / 256.0).contains(&bx), "{bx}");
@@ -2067,7 +2154,7 @@ fn coincident_faces_both_form_surface() {
     assert_eq!(eval_point(&t, &CTX, p), 0.0);
     assert_eq!(names(&ink::eval::provenance(&t, &CTX, p)), vec!["rail", "section"]);
     let t = std::sync::Arc::new(t);
-    let formed = ink::feature::surface_names(&t, &CTX, [-1.0, -7.0, -1.0], [301.0, 7.0, 9.0], 128.0);
+    let formed = ink::feature::surface_names(&t, &CTX, [-1.0, -7.0, -1.0], [301.0, 7.0, 9.0], 128.0).0;
     assert_eq!(names(&formed), vec!["bottom", "rail", "section"]);
 }
 
@@ -2084,11 +2171,72 @@ fn thin_faces_form_surface() {
     let hidden = |body: &str, lo: [f64; 3], hi: [f64; 3]| -> Vec<String> {
         let shape = d.body(body).unwrap().shape;
         let t = std::sync::Arc::new(Tape::new(&d.g, shape));
-        let formed = ink::feature::surface_names(&t, &CTX, lo, hi, 128.0);
+        let formed = ink::feature::surface_names(&t, &CTX, lo, hi, 128.0).0;
         d.named_parts(body, shape).into_iter().filter(|t| !formed.contains(t)).map(|i| d.g.tag_names[i as usize].clone()).collect()
     };
     assert!(hidden("sheet", [-175.0, -175.0, 0.0], [175.0, 175.0, 0.5]).is_empty());
     assert_eq!(hidden("capped", [-20.0, -20.0, -2.0], [20.0, 20.0, 2.0]), vec!["buried"]);
+}
+
+/// A name that reaches the surface only where it ties with what covers it
+/// (an edge) or weighted out of a blend is not seen forming it, though
+/// intervals keep it on the field's path there: `check` reports it as
+/// undecided. A face it shares with another is seen (coincident_faces).
+/// Scaling either side, or the whole field, by any positive factor changes
+/// none of it: each side's tie is read by its own slope.
+#[test]
+fn edge_only_and_weighted_out_names_are_unseen() {
+    let scales = ["1", "1e-9", "1e9"];
+    for kb in scales {
+        for kc in scales {
+            let src = format!(
+                "(import \"std\")\n\
+                (body edged (shape (max (tag block (* {kb} (box 10 10 10))) (tag cut (* {kc} (- (+ x z) 10))))))\n\
+                (body weighed (shape (let ((h (clamp (- x 50) 0 1))) (+ (* (- 1 h) (tag cube (* {kb} (box 10 10 10)))) (* h (tag ghost (* {kc} (sphere 3))))))))\n"
+            );
+            let d = ink::load_str(&src, "test", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
+            for (body, unseen) in [("edged", "cut"), ("weighed", "ghost")] {
+                let shape = d.body(body).unwrap().shape;
+                let t = std::sync::Arc::new(Tape::new(&d.g, shape));
+                let (formed, maybe) = ink::feature::surface_names(&t, &CTX, [-5.0; 3], [5.0; 3], 128.0);
+                let maybe: Vec<u32> = maybe.iter().map(|u| u.0).collect();
+                let names = |v: Vec<u32>| -> Vec<String> { d.named_parts(body, shape).into_iter().filter(|t| v.contains(t)).map(|i| d.g.tag_names[i as usize].clone()).collect() };
+                assert_eq!(names(maybe), vec![unseen], "{body}, its sides scaled by {kb} and {kc}");
+                assert_eq!(names(formed).len(), 1, "{body}, its sides scaled by {kb} and {kc}: the box is seen");
+            }
+        }
+    }
+}
+
+/// An unseen name is sought finer in up to 64 of the cells it is on a path
+/// in, spread over them, and says how many: an edge 2 mm long is on a path
+/// in over 64 cells (212 here), and sought finer in 64 of them (a stride of
+/// 4 picked 53).
+#[test]
+fn an_unseen_name_says_in_how_many_cells_it_was_sought() {
+    let src = "(import \"std\")\n(body edged (shape (max (tag block (box 10 2 10)) (tag cut (- (+ x z) 10)))))\n";
+    let d = ink::load_str(src, "test", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
+    let shape = d.body("edged").unwrap().shape;
+    let t = std::sync::Arc::new(Tape::new(&d.g, shape));
+    let (_, unseen) = ink::feature::surface_names(&t, &CTX, [-5.0, -1.0, -5.0], [5.0, 1.0, 5.0], 128.0);
+    let &(_, on, finer) = unseen.first().expect("cut is unseen");
+    assert!(on > 64 && finer == 64, "on a path in {on} cells, sought finer in {finer}");
+}
+
+/// A name's cells searched finer are all those picked on its paths, for it
+/// or for another name: a tag wrapping two unseen edge planes is searched
+/// finer in its parts' cells too, more than the 64 picked for it alone.
+#[test]
+fn an_unseen_names_count_includes_cells_picked_for_others() {
+    let src = "(import \"std\")\n(body solid (shape (max (tag block (box 10 10 10)) (tag group (max (tag a (- (+ x z) 10)) (tag b (- (+ x y) 10)))))))\n";
+    let d = ink::load_str(src, "test", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
+    let shape = d.body("solid").unwrap().shape;
+    let t = std::sync::Arc::new(Tape::new(&d.g, shape));
+    let (_, unseen) = ink::feature::surface_names(&t, &CTX, [-5.0, -5.0, -5.0], [5.0, 5.0, 5.0], 128.0);
+    let group = d.g.tag_names.iter().position(|n| n == "group").unwrap() as u32;
+    let &(_, _, finer) = unseen.iter().find(|u| u.0 == group).expect("group is unseen");
+    let parts: usize = unseen.iter().filter(|u| u.0 != group).map(|u| u.2).max().unwrap_or(0);
+    assert!(finer > 64 && finer >= parts, "group sought finer in {finer}, its parts in up to {parts}");
 }
 
 /// `check`'s hidden-construction warning does not look inside other
@@ -2106,7 +2254,7 @@ fn hidden_constructions_stop_at_other_bodies() {
     let hidden = |body: &str| -> Vec<String> {
         let shape = d.body(body).unwrap().shape;
         let t = std::sync::Arc::new(Tape::new(&d.g, shape));
-        let formed = ink::feature::surface_names(&t, &CTX, [-16.0, -16.0, -6.0], [16.0, 16.0, 6.0], 128.0);
+        let formed = ink::feature::surface_names(&t, &CTX, [-16.0, -16.0, -6.0], [16.0, 16.0, 6.0], 128.0).0;
         let hidden = d.named_parts(body, shape).into_iter().filter(|t| !formed.contains(t));
         let mut v: Vec<String> = hidden.map(|i| d.g.tag_names[i as usize].clone()).collect();
         v.sort();
@@ -2244,7 +2392,7 @@ fn clearance_bounds_round_outward_at_any_scale() {
     );
     let (d, _) = field(&src, "a");
     let tape = |n: &str| {
-        let Value::Field(f) = d.def(n).unwrap().clone() else { panic!() };
+        let Value::Field(f, _) = d.def(n).unwrap().clone() else { panic!() };
         Arc::new(Tape::new(&d.g, f))
     };
     match clearance_of(&tape("a"), &tape("b"), &CTX, r / 16.0, [0.0; 3], [r; 3], r) {
@@ -2287,7 +2435,7 @@ fn clearance_over_ranged_params_grows_its_boxes_outward() {
     for (src, span, gap, lo, hi, h) in cases {
         let (d, _) = field(&format!("(param p {}) {src}", ink::eval::span_mid(span)), "a");
         let tape = |n: &str| {
-            let Value::Field(f) = d.def(n).unwrap().clone() else { panic!() };
+            let Value::Field(f, _) = d.def(n).unwrap().clone() else { panic!() };
             Arc::new(Tape::new(&d.g, f))
         };
         let k = d.param_index("p").unwrap();
@@ -3033,7 +3181,7 @@ fn ranged_view(src: &str, bands: &[(&str, f64, f64)]) -> ink::view::ModelView {
 }
 
 fn def_field(v: &ink::view::ModelView, name: &str) -> u32 {
-    let Value::Field(f) = v.doc.def(name).unwrap_or_else(|| panic!("no def {name}")).clone() else { panic!("{name} is not a field") };
+    let Value::Field(f, _) = v.doc.def(name).unwrap_or_else(|| panic!("no def {name}")).clone() else { panic!("{name} is not a field") };
     f
 }
 
@@ -3495,7 +3643,7 @@ fn a_solved_enclosure_holds_the_root_at_every_value_and_narrows_at_points() {
         // px = (1 + sqrt(2 r^2 - 1)) / 2, from (x - 1)^2 + x^2 = r^2.
         let x = (1.0 + (2.0 * r * r - 1.0).sqrt()) / 2.0;
         // The solver at the values: a numerical answer, near the root.
-        let lx = v.doc.ctx(&[("r".into(), r)], 0.0).unwrap().params[px];
+        let lx = v.doc.ctx(&[("r".into(), r.into())], 0.0).unwrap().params[px];
         assert!((lx - x).abs() < 1e-9 && bx.0 <= x && x <= bx.1 && by.0 <= x - 1.0 && x - 1.0 <= by.1, "{r}: {x} {bx:?} {by:?}");
         // At the point: an enclosure a few ulps wide around the root (x in
         // floats is within an ulp or two of it), its value inside.
@@ -3538,7 +3686,7 @@ fn a_four_bar_solved_over_tolerances_holds_its_root_everywhere() {
     let holds = |s: (f64, f64), x: f64| s.0 - 1e-12 <= x && x <= s.1 + 1e-12;
     for _ in 0..40 {
         let at: Vec<f64> = bands.iter().map(|b| b.0 + (b.1 - b.0) * rnd()).collect();
-        let overrides: Vec<(String, f64)> = ["phi", "b", "c", "d"].iter().zip(&at).map(|(n, &x)| (n.to_string(), x)).collect();
+        let overrides: Vec<(String, ink::lang::Given)> = ["phi", "b", "c", "d"].iter().zip(&at).map(|(n, &x)| (n.to_string(), x.into())).collect();
         let solved = v.doc.ctx(&overrides, 0.0).unwrap();
         let root = us.map(|u| solved.params[u]);
         // The band's enclosure, a piece of the bands around the point, and
@@ -3674,7 +3822,7 @@ fn a_solve_reading_what_a_later_one_sets_comes_after_it() {
     let st: Vec<Status> = r.asserts.iter().map(|a| a.check.status).collect();
     assert_eq!(st, [Status::Fails, Status::Holds], "{r:?}");
     // At a single value: late first, then early.
-    let ctx = v.doc.ctx(&[("p".into(), 1.0)], 0.0).unwrap();
+    let ctx = v.doc.ctx(&[("p".into(), 1.0.into())], 0.0).unwrap();
     assert!((ctx.params[a] - 2.0).abs() < 1e-9 && (ctx.params[b] - 3.0).abs() < 1e-9, "{:?}", ctx.params);
     let e = ink::load_str("(param p 0) (param a 0) (solve one (unknowns (b 0)) (== b (+ a p))) (solve two (unknowns a) (== a (- 1 b)))", "test", Path::new(ROOT))
         .err()
@@ -3886,7 +4034,7 @@ fn an_attained_bound_in_the_window_says_nothing_past_it() {
 (def b (min (tiny 3.133 3.244) (ball 59) (- 2000 x)))";
     let doc = ink::load_str(src, "window", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
     let field = |n: &str| match doc.def(n).unwrap() {
-        Value::Field(f) => *f,
+        Value::Field(f, _) => *f,
         _ => panic!("{n}"),
     };
     let (a, b) = (field("a"), field("b"));
@@ -3976,6 +4124,119 @@ fn clearance_slope_is_bounded_where_the_shapes_meet() {
     assert_eq!(c[1].1.status, Status::Fails, "{:?}", c[1].1);
 }
 
+/// A profile drawn from x = 0, as every revolve is, has an edge on the
+/// axis; turned, that edge is no surface: the axis is inside where the
+/// profile touches it (here 3 from the wall, its distance), and outside
+/// across a notch between two such edges.
+#[test]
+fn a_revolve_is_inside_along_its_axis() {
+    use ink::claims::Status;
+    let src = "(def rod (revolve-z (polygon (vec (vec 0 0) (vec 3 0) (vec 3 10) (vec 0 10)))))\n\
+               (def notched (revolve-z (polygon (vec (vec 0 0) (vec 3 0) (vec 3 10) (vec 0 10) (vec 0 7) (vec 2 5) (vec 0 3)))))\n\
+               (assert rod-axis (subset (probe 0 0 5) rod))\n\
+               (assert rod-axis-depth (value (warp rod 0 0 5) < -2.999))\n\
+               (assert notched-axis (subset (probe 0 0 1) notched))\n\
+               (assert notch-on-axis (disjoint (probe 0 0 5) notched))\n";
+    for (name, c) in run_claims(src) {
+        assert_eq!(c.status, Status::Holds, "{name}: {c:?}");
+    }
+}
+
+/// revolve-z leaves out a term only where its coefficients are proven: a
+/// is y in real numbers, though its float coefficients round to 0, so
+/// a - x is a wall, not an edge on the axis. The turned field is the
+/// profile read at the radius, unchanged, and at (1, 0, 3), outside in
+/// real numbers, never reads inside.
+#[test]
+fn a_revolve_keeps_a_wall_whose_floats_look_like_its_axis() {
+    use ink::claims::Status;
+    let src = "(def a (- (+ (* 1e16 y) y) (* 1e16 y)))\n\
+               (def p (max (- a x) (- x 5) (- (abs y) 10)))\n\
+               (def turned (revolve-z p))\n\
+               (def same (- (revolve-z p) (warp p (len2 x y) z 0)))\n\
+               (assert wall-kept (disjoint (probe 1 0 3) turned))\n";
+    let (d, _) = field(src, "same");
+    let Some(Value::Field(f, _)) = d.def("same") else { panic!("same is a field") };
+    assert_eq!(d.g.as_const(*f), Some(0.0), "the turned field differs from the profile read at the radius");
+    let c = &run_claims(src)[0].1;
+    assert_ne!(c.status, Status::Fails, "{c:?}");
+}
+
+/// Axis terms grouped in a max of their own are left out too.
+#[test]
+fn a_revolve_leaves_out_grouped_axis_terms() {
+    use ink::claims::Status;
+    let src = "(def turned (revolve-z (max (max (neg x) (* -2 x)) (- x 3) (- (abs y) 5))))\n\
+               (assert axis-in (subset (probe 0 0 0) turned))\n\
+               (assert axis-depth (value (warp turned 0 0 0) < -2.999))\n";
+    for (name, c) in run_claims(src) {
+        assert_eq!(c.status, Status::Holds, "{name}: {c:?}");
+    }
+}
+
+/// Axis terms wrapped in a name or written as neg of a min are left out
+/// too: each reads 3 deep on the axis, as the bare max does.
+#[test]
+fn a_revolve_leaves_out_wrapped_axis_groups() {
+    use ink::claims::Status;
+    let src = "(def tagged (revolve-z (max (tag axis (max (neg x) (* -2 x))) (- x 3) (- (abs y) 5))))\n\
+               (def negmin (revolve-z (max (neg (min x (* 2 x))) (- x 3) (- (abs y) 5))))\n\
+               (assert tagged-depth (value (warp tagged 0 0 0) < -2.999))\n\
+               (assert negmin-depth (value (warp negmin 0 0 0) < -2.999))\n";
+    for (name, c) in run_claims(src) {
+        assert_eq!(c.status, Status::Holds, "{name}: {c:?}");
+    }
+}
+
+/// std's ways to write a profile reaching the axis: a polygon scaled (a
+/// division under a positive factor) and polygon-distance (a select).
+#[test]
+fn a_revolve_of_std_profiles_is_inside_along_its_axis() {
+    use ink::claims::Status;
+    let src = "(def pts (vec (vec 0 0) (vec 3 0) (vec 3 10) (vec 0 10)))\n\
+               (def scaled (revolve-z (scale (polygon pts) 2)))\n\
+               (def exact (revolve-z (polygon-distance pts)))\n\
+               (assert scaled-axis (subset (probe 0 0 10) scaled))\n\
+               (assert exact-axis (subset (probe 0 0 5) exact))\n\
+               (assert exact-depth (value (warp exact 0 0 5) < -2.999))\n";
+    for (name, c) in run_claims(src) {
+        assert_eq!(c.status, Status::Holds, "{name}: {c:?}");
+    }
+}
+
+/// revolve-z reads each shared expression once: a40 = a39 + a39 ... over
+/// -x is 2^40 terms written out, 41 nodes shared.
+#[test]
+fn a_revolve_reads_a_shared_profile_once() {
+    let mut src = String::from("(def a0 (neg x))\n");
+    for k in 1..=40 {
+        src += &format!("(def a{k} (+ a{} a{}))\n", k - 1, k - 1);
+    }
+    src += "(def turned (revolve-z (max a40 (- x 3) (- (abs y) 5))))\n";
+    let start = std::time::Instant::now();
+    let (_, t) = field(&src, "turned");
+    assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
+    let v = eval_point(&t, &CTX, [0.0, 0.0, 0.0]);
+    assert!(v < -2.999, "{v}");
+}
+
+/// A shared min tree is rewritten once per node, not once per path: a44,
+/// the min of a43 and a42 down to x and 2x, is about 10^9 paths over 46
+/// nodes.
+#[test]
+fn a_revolve_reads_a_shared_min_tree_once() {
+    let mut binds = String::from("(a0 x) (a1 (* 2 x))");
+    for k in 2..=44 {
+        binds += &format!(" (a{k} (min a{} a{}))", k - 1, k - 2);
+    }
+    let src = format!("(def turned (let ({binds}) (revolve-z (neg (min a44 (- 3 x) (- 5 (abs y)))))))\n");
+    let start = std::time::Instant::now();
+    let (_, t) = field(&src, "turned");
+    assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
+    let v = eval_point(&t, &CTX, [0.0, 0.0, 0.0]);
+    assert!(v < -2.999, "{v}");
+}
+
 #[test]
 fn fits_beside_a_keyway_are_proven() {
     // A hub's bore 0.01 clear of a shaft with a
@@ -4025,7 +4286,7 @@ fn clearance_search_grows_either_shape() {
 /// std's sweeps take a path's tangents and normals with (unit v).
 #[test]
 fn a_direction_without_a_length_is_refused() {
-    let load = |src: &str, overrides: &[(String, f64)]| ink::load_str_with(&format!("(import \"std\")\n{src}"), "axis.ink", Path::new(ROOT), overrides);
+    let load = |src: &str, overrides: &[(String, ink::lang::Given)]| ink::load_str_with(&format!("(import \"std\")\n{src}"), "axis.ink", Path::new(ROOT), overrides);
     let err = |src: &str| load(src, &[]).err().unwrap_or_else(|| panic!("loads: {src}"));
     let ball = "(body ball (shape (sphere 1)))\n";
     // A constant axis, refused at the step.
@@ -4035,8 +4296,8 @@ fn a_direction_without_a_length_is_refused() {
     let at_a = format!("(param a 0)\n{ball}(assembly root (instance b ball (at (rot a 0 0 60))))");
     let e = err(&at_a);
     assert!(e.message.contains("(rot a 0 0 60) at axis.ink:4 (assembly root ...) has zero length at a = 0"), "{e:?}");
-    let mut d = load(&at_a, &[("a".into(), 2.0)]).unwrap();
-    let ctx = d.ctx(&[("a".into(), 2.0)], 0.0).unwrap();
+    let mut d = load(&at_a, &[("a".into(), 2.0.into())]).unwrap();
+    let ctx = d.ctx(&[("a".into(), 2.0.into())], 0.0).unwrap();
     let b = d.items("root/b").unwrap().remove(0);
     let world = d.placed_field(&b);
     assert!((eval_point(&Tape::new(&d.g, world), &ctx, [1.5, 0.0, 0.0]) - 0.5).abs() < 1e-12);
@@ -4121,8 +4382,8 @@ fn a_search_ends_where_a_box_stays_undecided_at_its_finest_cells() {
 fn nums(d: &Doc, name: &str) -> Vec<f64> {
     let v = |f: ink::graph::NodeId| eval_point(&Tape::new(&d.g, f), &Ctx::new(0.0, d.params.iter().map(|p| p.default).collect()), [0.0; 3]);
     match d.def(name).unwrap_or_else(|| panic!("no def {name}")) {
-        Value::Field(f) => vec![v(*f)],
-        Value::Vec(items) => items.iter().map(|i| if let Value::Field(f) = i { v(*f) } else { panic!("{name}: not fields") }).collect(),
+        Value::Field(f, _) => vec![v(*f)],
+        Value::Vec(items) => items.iter().map(|i| if let Value::Field(f, _) = i { v(*f) } else { panic!("{name}: not fields") }).collect(),
         _ => panic!("{name}: not a field or vec"),
     }
 }
@@ -4183,7 +4444,7 @@ fn select_chooses_between_frames() {
     let d = ink::load_str(&format!("(import \"std\")\n{src}"), "test", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
     let at = |name: &str, t: f64| -> Vec<f64> {
         let Some(Value::Vec(items)) = d.def(name) else { panic!("{name}: not a vec") };
-        items.iter().map(|i| if let Value::Field(f) = i { eval_point(&Tape::new(&d.g, *f), &Ctx::new(t, Vec::new()), [0.0; 3]) } else { panic!() }).collect()
+        items.iter().map(|i| if let Value::Field(f, _) = i { eval_point(&Tape::new(&d.g, *f), &Ctx::new(t, Vec::new()), [0.0; 3]) } else { panic!() }).collect()
     };
     assert!(near(&at("o", 0.5), &[40.0, 0.0, 20.0]) && near(&at("xa", 0.5), &[1.0, 0.0, 0.0]), "{:?} {:?}", at("o", 0.5), at("xa", 0.5));
     assert!(near(&at("o", 1.5), &[0.0, 0.0, 3.0]) && near(&at("xa", 1.5), &[0.0, 1.0, 0.0]), "{:?} {:?}", at("o", 1.5), at("xa", 1.5));
@@ -4304,8 +4565,8 @@ fn nums_at(d: &Doc, name: &str, set: &[(&str, f64)]) -> Vec<f64> {
     }
     let v = |f: ink::graph::NodeId| eval_point(&Tape::new(&d.g, f), &Ctx::new(0.0, params.clone()), [0.0; 3]);
     match d.def(name).unwrap_or_else(|| panic!("no def {name}")) {
-        Value::Field(f) => vec![v(*f)],
-        Value::Vec(items) => items.iter().map(|i| if let Value::Field(f) = i { v(*f) } else { panic!() }).collect(),
+        Value::Field(f, _) => vec![v(*f)],
+        Value::Vec(items) => items.iter().map(|i| if let Value::Field(f, _) = i { v(*f) } else { panic!() }).collect(),
         _ => panic!("{name}: not a field or vec"),
     }
 }
@@ -4422,7 +4683,7 @@ fn joint_limits_are_claims() {
     assert!(eval_point(&t, &Ctx::new(0.0, vec![100.0]), [100.0 + 24.0, 0.0, 12.0]) > 0.0);
     let run = |set: f64, span: Option<(f64, f64)>, ranged: bool, name: &str| {
         let d = ink::load_str(&format!("(import \"std\")\n{src}"), "test", Path::new(ROOT)).unwrap();
-        let mut ctx = d.ctx(&[("s".into(), set)], 0.0).unwrap();
+        let mut ctx = d.ctx(&[("s".into(), set.into())], 0.0).unwrap();
         if ranged {
             ctx.p_spans = ink::eval::ParamSpans::new([(d.param_index("s").unwrap() as u32, (set - 0.5, set + 0.5))]);
         }
@@ -4491,7 +4752,7 @@ fn assemblies_take_arguments() {
     // The rotor turns by its argument (the file's own `angle` is not the parameter).
     let at = |name: &str, t: f64| {
         let Some(Value::Vec(v)) = d.def(name) else { panic!() };
-        v.iter().map(|f| if let Value::Field(f) = f { eval_point(&Tape::new(&d.g, *f), &Ctx::new(t, vec![9000.0]), [0.0; 3]) } else { panic!() }).collect::<Vec<_>>()
+        v.iter().map(|f| if let Value::Field(f, _) = f { eval_point(&Tape::new(&d.g, *f), &Ctx::new(t, vec![9000.0]), [0.0; 3]) } else { panic!() }).collect::<Vec<_>>()
     };
     assert!(near(&at("still-tip", 0.3), &[6.0, 0.0, 14.0]), "{:?}", at("still-tip", 0.3));
     let deg = 0.5f64 * 54000.0 * 0.01;
@@ -4503,7 +4764,7 @@ fn assemblies_take_arguments() {
     // spin-up passes 6000 rpm at t = 2/3 of a second (at top-rpm 9000).
     let run = |top: f64, name: &str| {
         let d = ink::load_str(&format!("(import \"std\")\n{src}"), "test", Path::new(ROOT)).unwrap();
-        let ctx = d.ctx(&[("top-rpm".into(), top)], 0.0).unwrap();
+        let ctx = d.ctx(&[("top-rpm".into(), top.into())], 0.0).unwrap();
         let mut v = ink::view::ModelView::new(d, ctx.into_scope());
         v.set_motion(Some((0.0, 1.0))).unwrap();
         run_asserts(&mut v, Some(name), false, ClaimOptions::default()).unwrap().asserts.remove(0).check
@@ -4563,7 +4824,7 @@ fn bodies_take_arguments() {
     let inside = |t: f64, p: [f64; 3]| eval_point(&all, &Ctx::new(t, vec![]), p) < 0.0;
     assert!(!inside(0.0, [0.0, 0.0, 25.0]) && inside(1.0, [0.0, 0.0, 25.0]) && inside(0.0, [30.0, 0.0, 25.0]));
     let Some(Value::Vec(v)) = d.def("tip") else { panic!() };
-    let z = |t: f64| if let Value::Field(f) = v[2] { eval_point(&Tape::new(&d.g, f), &Ctx::new(t, vec![]), [0.0; 3]) } else { panic!() };
+    let z = |t: f64| if let Value::Field(f, _) = v[2] { eval_point(&Tape::new(&d.g, f), &Ctx::new(t, vec![]), [0.0; 3]) } else { panic!() };
     assert!((z(0.0) - 20.0).abs() < 1e-12 && (z(1.0) - 30.0).abs() < 1e-12);
     for (bad, msg) in [
         ("(assembly e (instance r (rod 1 2 3)))", "'rod' takes 2 argument(s) (h w), got 3"),

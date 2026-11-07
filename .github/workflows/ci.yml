@@ -7,7 +7,9 @@
 name: ci
 
 on:
+  # Branches only: a release's tag is a commit main's push already checked.
   push:
+    branches: ['**']
   pull_request:
 
 permissions:

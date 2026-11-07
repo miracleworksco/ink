@@ -205,7 +205,7 @@ impl Doc {
                     f = d.g.max(f, above);
                 }
             }
-            Value::Field(f)
+            Value::Field(f, None)
         };
         if let Some(c) = crate::cache::load::<Snap>("grids", key) {
             crate::cache::served();
@@ -495,7 +495,7 @@ impl Doc {
                         None => Err(self.err(e, "bounds of an empty shape")),
                     };
                 };
-                let v3 = |d: &mut Doc, p: V3| Value::Vec(p.iter().map(|c| Value::Field(d.g.constant(*c))).collect());
+                let v3 = |d: &mut Doc, p: V3| Value::Vec(p.iter().map(|c| Value::Field(d.g.constant(*c), None)).collect());
                 let (a, b) = (v3(self, blo), v3(self, bhi));
                 return Ok(Value::Vec(vec![a, b]));
             }
@@ -529,7 +529,7 @@ impl Doc {
                 // (where a section's farthest point is, to bound a sweep).
                 let size = (hi[0] - lo[0]).max(hi[1] - lo[1]);
                 let r = crate::query::radial_extent(&tape, &ctx, lo, hi, reads_z, 1e-3 * size, 1 << 16).map_or(0.0, |e| e.1);
-                return Ok(Value::Field(self.g.constant(r)));
+                return Ok(Value::Field(self.g.constant(r), None));
             }
             _ => {}
         }

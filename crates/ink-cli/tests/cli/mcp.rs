@@ -14,14 +14,32 @@ use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-/// f(0..n), each on a thread of its own: the calls of a test that do not
-/// depend on each other run side by side.
+/// f(0..n) in order, the calls of a test that do not depend on each other
+/// run side by side, as many at once as the machine has cores: on a small
+/// one (a 2-core CI runner) each call keeps its own time, so a reply's
+/// minute still means a hang.
 pub fn par<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
-    std::thread::scope(|s| {
-        let f = &f;
-        let hs: Vec<_> = (0..n).map(|i| s.spawn(move || f(i))).collect();
-        hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-    })
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map_or(4, |c| c.get()).min(n);
+    let mut done: Vec<(usize, T)> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..workers)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= n {
+                            break out;
+                        }
+                        out.push((i, f(i)));
+                    }
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    });
+    done.sort_by_key(|d| d.0);
+    done.into_iter().map(|d| d.1).collect()
 }
 
 /// A number in an answer (NaN where it is none).
@@ -370,7 +388,7 @@ fn mcp_a_target_path_is_asked_as_its_definition() {
     let contact = s.model("ancestor-contact.ink", crate::assemblies::ANCESTOR_CONTACT);
     for (id, target) in ["root/carried", "root/m/q"].into_iter().enumerate() {
         let (err, c) = srv.answer(100 + id as u64, json!({"command": "interfere", "file": contact, "options": {"target": target}}));
-        assert!(!err && c["overlapping_pairs"] == 0 && c["pairs"].as_array().unwrap().iter().all(|p| p["accuracy"] == 0.1), "{target}: {}", pretty(&c));
+        assert!(!err && c["overlapping_pairs"] == 0 && c["pairs"].as_array().unwrap().iter().all(|p| p["accuracy"] == 0.05), "{target}: {}", pretty(&c));
     }
 }
 
@@ -754,45 +772,39 @@ fn a_rewrite_keeps_spatial_arithmetic_real() {
     let s = Scratch::new("mcp-subst-real");
     // The cases side by side, each with its own server: one after another,
     // they are this binary's longest test.
-    let wrong: Vec<String> = std::thread::scope(|scope| {
-        let runs: Vec<_> = cases
-            .iter()
-            .map(|(name, text, opts, right, exact)| {
-                let s = &s;
-                scope.spawn(move || {
-                    let tmp = s.join(format!("srv-{name}"));
-                    std::fs::create_dir_all(&tmp).unwrap();
-                    let mut srv = Server::start(ROOT, &tmp, &[("INK_NO_CACHE", "1")]);
-                    let (mut id, mut wrong) = (100, Vec::new());
-                    let file = s.model(&format!("{name}.ink"), text);
-                    let check = s.ink(["check", file.as_str()]).env("INK_NO_CACHE", "1").ok();
-                    // The bodies' disc warns that its bounds are loose (a performance
-                    // note); nothing else warns.
-                    let loose = |w: &Value| name.contains("bodies") && w.as_str().is_some_and(|w| w.contains("interval bounds of its field are"));
-                    assert!(check["warnings"].as_array().is_none_or(|ws| ws.iter().all(loose)), "{name}: {}", pretty(&check));
-                    for (claim, answer) in right.iter() {
-                        let mut args: Vec<&str> = vec!["assert", file.as_str(), "--name", claim];
-                        args.extend(opts.iter());
-                        let cli = verdict(&s.ink(args).env("INK_NO_CACHE", "1").any()["asserts"][0]);
-                        let mut o = serde_json::Map::new();
-                        o.insert("name".into(), json!(claim));
-                        for kv in opts.chunks(2) {
-                            o.insert(kv[0].trim_start_matches("--").into(), kv[1].parse::<f64>().map_or(json!(kv[1]), |v| json!(v)));
-                        }
-                        id += 1;
-                        let (err, mcp) = srv.answer(id, json!({"command": "assert", "file": file, "options": o}));
-                        let mcp = verdict(&mcp["asserts"][0]);
-                        assert!(!err && cli == mcp, "{name} {claim}: the command line says {cli}, MCP {mcp}");
-                        let ok = if *exact { cli == *answer } else { cli == *answer || cli == "unknown" || cli == format!("{answer} estimate") };
-                        if !ok {
-                            wrong.push(format!("{name} {claim}: {cli}, where it is {answer}{}", if *exact { "" } else { " or unknown" }));
-                        }
-                    }
-                    wrong
-                })
-            })
-            .collect();
-        runs.into_iter().flat_map(|r| r.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-    });
+    let wrong: Vec<String> = par(cases.len(), |i| {
+        let (name, text, opts, right, exact) = &cases[i];
+        let s = &s;
+        let tmp = s.join(format!("srv-{name}"));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut srv = Server::start(ROOT, &tmp, &[("INK_NO_CACHE", "1")]);
+        let (mut id, mut wrong) = (100, Vec::new());
+        let file = s.model(&format!("{name}.ink"), text);
+        let check = s.ink(["check", file.as_str()]).env("INK_NO_CACHE", "1").ok();
+        // The bodies' disc warns that its bounds are loose (a performance
+        // note); nothing else warns.
+        let loose = |w: &Value| name.contains("bodies") && w.as_str().is_some_and(|w| w.contains("interval bounds of its field are"));
+        assert!(check["warnings"].as_array().is_none_or(|ws| ws.iter().all(loose)), "{name}: {}", pretty(&check));
+        for (claim, answer) in right.iter() {
+            let mut args: Vec<&str> = vec!["assert", file.as_str(), "--name", claim];
+            args.extend(opts.iter());
+            let cli = verdict(&s.ink(args).env("INK_NO_CACHE", "1").any()["asserts"][0]);
+            let mut o = serde_json::Map::new();
+            o.insert("name".into(), json!(claim));
+            for kv in opts.chunks(2) {
+                o.insert(kv[0].trim_start_matches("--").into(), kv[1].parse::<f64>().map_or(json!(kv[1]), |v| json!(v)));
+            }
+            id += 1;
+            let (err, mcp) = srv.answer(id, json!({"command": "assert", "file": file, "options": o}));
+            let mcp = verdict(&mcp["asserts"][0]);
+            assert!(!err && cli == mcp, "{name} {claim}: the command line says {cli}, MCP {mcp}");
+            let ok = if *exact { cli == *answer } else { cli == *answer || cli == "unknown" || cli == format!("{answer} estimate") };
+            if !ok {
+                wrong.push(format!("{name} {claim}: {cli}, where it is {answer}{}", if *exact { "" } else { " or unknown" }));
+            }
+        }
+        wrong
+    })
+    .concat();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

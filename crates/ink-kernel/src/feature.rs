@@ -6,11 +6,11 @@
 use crate::octree::{Cell, Grid, Local, descend_padded, root_for};
 use crate::query::{Side, ray_to};
 use ink_core::V3;
-use ink_core::eval::{Ctx, eval_grads, eval_interval, names_on_paths};
+use ink_core::eval::{Ctx, decided_names, eval_grads, eval_interval, names_on_paths};
 use ink_core::tape::{BOTH, Tape};
 use ink_core::v3::{add, cross, direction, dot, norm, scale, sub, unit};
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// How close to the zero set surface() puts its points, for a region of
@@ -134,9 +134,11 @@ pub fn surface(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec
 pub struct Survey {
     /// The samples' spacing.
     pub h: f64,
-    /// The names (tags) that can form the surface (`surface_names`), if
-    /// asked.
+    /// The names (tags) seen forming the surface, and those on a path it
+    /// can take that none was seen to, with in how many cells, and in how
+    /// many of those it was sought finer (`surface_names`), if asked.
     pub formed: Vec<u32>,
+    pub unseen: Vec<(u32, usize, usize)>,
     /// Where interval bounds are much wider than the field varies
     /// (`Loose`), if they are.
     pub loose: Option<Loose>,
@@ -200,9 +202,9 @@ pub fn survey(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64, names: b
             let interior = interior(shape, ctx, &samples, h);
             let pts: Vec<V3> = samples.into_iter().map(|p| p.0).collect();
             let (undefined, points) = undefined(shape, ctx, &pts, lo, hi);
-            let formed = if names { surface_names(shape, ctx, lo, hi, cells) } else { Vec::new() };
+            let (formed, unseen) = if names { surface_names(shape, ctx, lo, hi, cells) } else { Default::default() };
             let loose = loose(shape, ctx, &pts, crate::query::max_extent(lo, hi) / cells);
-            Survey { h, formed, loose, undefined, points, interior }
+            Survey { h, formed, unseen, loose, undefined, points, interior }
         },
     )
 }
@@ -231,30 +233,77 @@ fn interior(shape: &Tape, ctx: &Ctx, samples: &[(V3, V3, f64)], h: f64) -> bool 
     })
 }
 
-/// The names (tags) that can form the surface of `shape` in `lo..hi`: those
-/// on the paths (eval::names_on_paths) of the tape interval arithmetic
-/// simplifies for each cell, `cells` across, the surface can cross. A name
-/// that forms surface at a point is on the path the value takes there, so
-/// in that cell's tape: a name not listed is proven to form none. A listed
-/// one may still form none, where intervals cannot rule its branch out (the
-/// sides inside a smooth blend), or only an edge (where it ties with what
-/// covers it).
-pub fn surface_names(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> Vec<u32> {
-    let h = crate::query::max_extent(lo, hi) / cells;
-    let (grid, top) = root_for(sub(lo, [h; 3]), add(hi, [h; 3]), h, 1);
-    let found = Mutex::new(HashSet::new());
+/// The names (tags) that form the surface of `shape` in `lo..hi`, and those
+/// that may: (formed, unseen). A name that forms surface at a point is on
+/// the path the value takes there, so on the paths (eval::names_on_paths)
+/// of the tape interval arithmetic simplifies for each cell, `cells`
+/// across, the surface can cross: a name on none is proven to form none.
+/// One on a path is formed where it is seen deciding a patch of surface:
+/// at a point projected onto it in such a cell, and at four points across
+/// the surface around it (eval::decided_names at each), so not only at an
+/// edge, where it ties with what covers it, nor as a side a blend weighs
+/// out. A name on a path not seen at 27 points in any cell is then sought
+/// so in the eighths (still on a path) of up to SOUGHT of those cells,
+/// spread evenly over them, down to an eighth of a cell. Unseen is a
+/// sample's answer, not a bound: with how many cells it was on a path in,
+/// and in how many it was searched finer.
+pub fn surface_names(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec<u32>, Vec<(u32, usize, usize)>) {
+    let ext = crate::query::max_extent(lo, hi);
+    let h = ext / cells / FINER as f64;
+    let (grid, top) = root_for(sub(lo, [h * FINER as f64; 3]), add(hi, [h * FINER as f64; 3]), h, 1);
+    let found = Found { tol: surface_tolerance(ext), names: Mutex::new((HashMap::new(), HashSet::new())), later: Mutex::new(Vec::new()) };
     names_below(shape, ctx, &grid, top, &found);
-    let mut out: Vec<u32> = found.into_inner().unwrap().into_iter().collect();
-    out.sort_unstable();
-    out
+    // Up to SOUGHT cells for each name still unseen, spread over those it
+    // is on a path in (in a fixed order).
+    let mut later = std::mem::take(&mut *found.later.lock().unwrap());
+    later.sort_by_key(|(c, _)| c.i);
+    let (on, seen) = found.names.lock().unwrap().clone();
+    let paths: Vec<Vec<u32>> = later.iter().map(|(_, sub)| names_on_paths(sub)).collect();
+    let mut pick = vec![false; later.len()];
+    let unseen_names: Vec<u32> = on.keys().filter(|t| !seen.contains(t)).copied().collect();
+    for t in &unseen_names {
+        let mine: Vec<usize> = (0..later.len()).filter(|&k| paths[k].contains(t)).collect();
+        let m = mine.len().min(SOUGHT);
+        (0..m).for_each(|k| pick[mine[k * mine.len() / m]] = true);
+    }
+    // How many cells each was sought finer in: those picked on its paths,
+    // for it or for another name.
+    let sought: HashMap<u32, usize> = unseen_names.iter().map(|t| (*t, (0..later.len()).filter(|&k| pick[k] && paths[k].contains(t)).count())).collect();
+    let later: Vec<_> = later.into_iter().zip(pick).filter_map(|(c, p)| p.then_some(c)).collect();
+    later.par_iter().for_each(|(cell, sub)| cell.children().par_iter().for_each(|k| names_below(sub, ctx, &grid, *k, &found)));
+    let (on, seen) = found.names.into_inner().unwrap();
+    let sorted = |s: HashSet<u32>| {
+        let mut v: Vec<u32> = s.into_iter().collect();
+        v.sort_unstable();
+        v
+    };
+    let mut unseen: Vec<(u32, usize, usize)> = on.into_iter().filter(|(t, _)| !seen.contains(t)).map(|(t, n)| (t, n, sought.get(&t).copied().unwrap_or(0))).collect();
+    unseen.sort_unstable();
+    (sorted(seen), unseen)
+}
+
+/// How much finer than its cells surface_names searches for a name it has
+/// not seen, and in how many of the cells it is on a path in, at most.
+const FINER: i64 = 8;
+const SOUGHT: usize = 64;
+
+/// What surface_names has found: the names on a path (with how many cells
+/// of FINER fine cells) and those seen, and the cells left with a name
+/// unseen, with their tapes.
+struct Found {
+    tol: f64,
+    names: Mutex<(HashMap<u32, usize>, HashSet<u32>)>,
+    later: Mutex<Vec<(Cell, Arc<Tape>)>>,
 }
 
 /// Add to `found` the names on the paths of the tapes simplified for the
-/// leaf cells under `cell` the surface can cross (as `descend` simplifies
-/// them). A cell whose own tape's paths hold no name not found yet is not
-/// descended: its leaves' tapes are simplified from that one, so their
-/// paths are among its own.
-fn names_below(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, found: &Mutex<HashSet<u32>>) {
+/// cells under `cell` the surface can cross (as `descend` simplifies them):
+/// of cells of FINER fine cells, as on a path, and in every cell, those
+/// seen. A cell whose own tape's paths hold no name not seen yet is not
+/// descended: its cells' tapes are simplified from that one, so their
+/// paths are among its own. A cell of FINER left with one is kept for the
+/// search below it, a fine cell's is searched below at once.
+fn names_below(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, found: &Found) {
     let mut ch = vec![BOTH; tape.len()];
     let r = eval_interval(tape, ctx, grid.cell_box(cell), Some(&mut ch));
     if r.lo > 0.0 || r.hi < 0.0 {
@@ -263,16 +312,90 @@ fn names_below(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, found: &Mut
     let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
     let names = names_on_paths(&sub);
     {
-        let mut f = found.lock().unwrap();
-        if names.iter().all(|t| f.contains(t)) {
+        let mut f = found.names.lock().unwrap();
+        if names.iter().all(|t| f.1.contains(t)) {
             return;
         }
-        if cell.size <= 1 {
-            f.extend(names);
-            return;
+        if cell.size == FINER {
+            names.iter().for_each(|&t| *f.0.entry(t).or_default() += 1);
         }
     }
-    cell.children().par_iter().for_each(|k| names_below(&sub, ctx, grid, *k, found));
+    if cell.size > FINER {
+        cell.children().par_iter().for_each(|k| names_below(&sub, ctx, grid, *k, found));
+    } else if !seen_in(&sub, ctx, grid, cell, &names, found) {
+        if cell.size == FINER {
+            found.later.lock().unwrap().push((cell, sub));
+        } else if cell.size > 1 {
+            cell.children().par_iter().for_each(|k| names_below(&sub, ctx, grid, *k, found));
+        }
+    }
+}
+
+/// Look for `names` (on the paths of `sub`, the cell's tape) forming
+/// surface in the cell: points on the surface, each with four around it
+/// across the surface, a thousandth of the cell away. Whether all of them
+/// are seen.
+fn seen_in(sub: &Tape, ctx: &Ctx, grid: &Grid, cell: Cell, names: &[u32], found: &Found) -> bool {
+    let tol = found.tol;
+    let (lo, hi) = grid.cell_bounds(cell);
+    let h = hi[0] - lo[0];
+    let starts: Vec<V3> = (0..27).map(|i| std::array::from_fn(|k| lo[k] + h * ((i / [1, 3, 9][k]) % 3) as f64 / 3.0 + h / 6.0)).collect();
+    let e = 1e-3 * h;
+    for (p, n) in onto(sub, ctx, starts, tol).into_iter().flatten() {
+        if (0..3).any(|k| p[k] < lo[k] - 0.5 * h || p[k] > hi[k] + 0.5 * h) {
+            continue;
+        }
+        let mut here = decided_names(sub, ctx, p, tol);
+        here.retain(|t| !found.names.lock().unwrap().1.contains(t));
+        if here.is_empty() {
+            continue;
+        }
+        let u = unit(cross(n, if n[0].abs() < 0.6 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] }));
+        let v = cross(n, u);
+        let around: Vec<V3> = [u, v, scale(u, -1.0), scale(v, -1.0)].iter().map(|d| add(p, scale(*d, e))).collect();
+        for q in onto(sub, ctx, around, tol) {
+            match q {
+                Some((q, _)) => {
+                    let there = decided_names(sub, ctx, q, tol);
+                    here.retain(|t| there.contains(t));
+                }
+                None => here.clear(),
+            }
+        }
+        let mut f = found.names.lock().unwrap();
+        f.1.extend(here);
+        if names.iter().all(|t| f.1.contains(t)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// `pts` moved onto the zero set by Newton steps, up to 8: each that ends
+/// within `tol` of it by the local slope, with its unit normal.
+fn onto(t: &Tape, ctx: &Ctx, mut pts: Vec<V3>, tol: f64) -> Vec<Option<(V3, V3)>> {
+    let mut g = eval_grads(t, ctx, &pts);
+    for _ in 0..8 {
+        let mut moved = false;
+        for (q, g) in pts.iter_mut().zip(&g) {
+            let gg = g[1] * g[1] + g[2] * g[2] + g[3] * g[3];
+            if gg > 0.0 && g[0].is_finite() && g[0].abs() > 1e-3 * tol * gg.sqrt() {
+                *q = sub(*q, scale([g[1], g[2], g[3]], g[0] / gg));
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+        g = eval_grads(t, ctx, &pts);
+    }
+    pts.into_iter()
+        .zip(g)
+        .map(|(p, g)| {
+            let n = direction([g[1], g[2], g[3]])?;
+            ((g[0] / norm([g[1], g[2], g[3]])).abs() < tol).then_some((p, n))
+        })
+        .collect()
 }
 
 fn loose(tape: &Tape, ctx: &Ctx, pts: &[V3], h: f64) -> Option<Loose> {
@@ -396,7 +519,7 @@ pub fn thickness(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> Ve
     let (pts, h) = surface(shape, ctx, lo, hi, cells);
     let diag = norm(sub(hi, lo)) + 4.0 * h;
     let local = Local::new(shape, ctx, sub(lo, [h; 3]), 4.0 * h);
-    let exits: Vec<Option<f64>> = pts.par_iter().map(|(p, n, _)| ray_to(&local, *p, scale(*n, -1.0), (1e-3 * h, diag), Side::Outside, 0.05 * h)).collect();
+    let exits: Vec<Option<f64>> = pts.par_iter().map(|(p, n, _)| ray_to(&local, *p, scale(*n, -1.0), (1e-3 * h, diag), Side::Outside, 0.05 * h).map(|x| x.t)).collect();
     // The field's gradient where each ray left, in one batch.
     let far: Vec<V3> = pts.iter().zip(&exits).filter_map(|((p, n, _), t)| t.map(|t| sub(*p, scale(*n, t)))).collect();
     let mut g = local.grads(&far).into_iter();

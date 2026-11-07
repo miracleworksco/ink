@@ -292,8 +292,7 @@ fn a_numerical_claims_integral_and_mean_are_estimates_their_parts_with_them() {
 fn a_mass_claims_number_is_its_value_and_an_imported_params_default_is_refused_saying_what_to_do() {
     // The Results table says a claim's number is `value`: a mass claim
     // gives it there, not only under integral.estimate. And an importer
-    // giving an imported param a new default is told more than that names
-    // are immutable.
+    // redefining an imported param is told to give it at the import.
     let s = Scratch::new("premise2-docs");
     s.model("a.ink", "(import \"std\")\n(param base-t 5)\n(body plate (shape (box 10 10 base-t)) (attr density 2.7g/cm3))\n");
     let m = s.model("mass.ink", "(import \"a.ink\")\n(assert light (integral plate (attr density) < 2))\n(assert low (mean plate z (weight (attr density)) < 1))\n");
@@ -303,8 +302,111 @@ fn a_mass_claims_number_is_its_value_and_an_imported_params_default_is_refused_s
     assert!((mass - 1.35).abs() < 0.03 && mass == n(&a["light"]["integral"]["estimate"]) && low.abs() < 0.01 && low == n(&a["low"]["mean"]["estimate"]), "{mass} {low}");
     let b = s.model("b.ink", "(import \"a.ink\")\n(param base-t 3.2)\n");
     let e = s.ink(["check", &b]).err();
-    let e = e.to_string();
-    assert!(e.contains("--param base-t=V") && e.contains("copy the file"), "{e}");
+    assert!(e["error"]["hint"].as_str().is_some_and(|h| h.ends_with("a.ink\" (base-t V))")), "{}", pretty(&e));
+}
+
+// ---------------------------------------------------------------- import values
+
+/// A design with a claim, a body, a study and an optimization, all reading
+/// its param base-t (5 mm, +-0.1), and a range of the question.
+const DESIGN: &str = "(import \"std\")\n(param base-t 5mm (tol -0.1 0.1))\n(def reach (ranged 0 1))\n(def w 3)\n\
+(body plate (shape (box 10 10 base-t)))\n(assert thin (value base-t < 4))\n\
+(solve twice (unknowns (a 1)) (== a (* 2 base-t)))\n\
+(optimize lighter (vary base-t 1 6) (minimize (value base-t)) (budget 2))\n";
+
+#[test]
+fn an_imports_value_is_its_params_default_for_the_whole_load() {
+    let num = |v: &Value| v.as_f64().unwrap_or(f64::NAN);
+    let s = Scratch::new("import-values");
+    let ink = |args: &[&str]| s.ink(args).cwd(&s);
+    s.model("a.ink", DESIGN);
+    s.model("b.ink", "(import \"a.ink\" (base-t 3.2))\n");
+    let b = "b.ink";
+    // The claim, the body, the study and optimize's start all read 3.2;
+    // check says what was written and where it was set.
+    let a = by_name(&ink(&["assert", b]).ok());
+    assert!(a["thin"]["status"] == "holds" && band(&a["thin"]["param_spans"]["base-t"], 3.1, 3.3), "{}", pretty(&a["thin"]));
+    let top = ink(&["eval", b, "--target", "plate", "--points", "[[0,0,0]]"]).ok();
+    assert!((num(&records(&top["targets"][0]["results"])[0]["value"]) + 1.6).abs() < 1e-9, "the plate is 3.2 thick: {}", pretty(&top));
+    let c = ink(&["check", b, "--imports"]).ok();
+    let param = |name: &str| c["params"].as_array().unwrap().iter().find(|p| p["name"] == name).cloned().unwrap_or_else(|| panic!("{name}: {}", pretty(&c)));
+    let base = param("base-t");
+    assert!(base["default"] == 3.2 && base["written"] == 5.0 && base["set_at"] == "b.ink:1", "{}", pretty(&base));
+    assert!((num(&param("a")["value"]) - 6.4).abs() < 1e-9, "the study solves at 3.2: {}", pretty(&param("a")));
+    let o = ink(&["optimize", b]).ok();
+    assert!(o["start"]["design"]["base-t"] == 3.2, "{}", pretty(&o));
+    // --param beats it, for one command.
+    let a = by_name(&ink(&["assert", b, "--param", "base-t=4.5"]).ok());
+    assert!(a["thin"]["status"] == "fails" && a["thin"]["value"] == 4.5, "{}", pretty(&a["thin"]));
+    // `as ns` gives a second copy, with its own value; (tol lo hi) replaces
+    // the band, given with a unit of the param's quantity.
+    s.model("two.ink", "(import \"a.ink\" (base-t 0.125in (tol 0 0.2)))\n(import \"a.ink\" as thin (base-t 2))\n");
+    let a = by_name(&ink(&["assert", "two.ink"]).ok());
+    assert!(band(&a["thin"]["param_spans"]["base-t"], 3.175, 3.375), "{}", pretty(&a["thin"]));
+    assert!(band(&a["thin.thin"]["param_spans"]["thin.base-t"], 1.9, 2.1), "{}", pretty(&a["thin.thin"]));
+}
+
+/// What `ink check` of `src` (as m.ink, beside a.ink: a 5 mm param p) says
+/// is wrong, and the line.
+fn import_refused(src: &str) -> (String, u64) {
+    let s = Scratch::new("import-units");
+    s.model("a.ink", "(import \"std\")\n(param p 5mm)\n");
+    s.model("m.ink", src);
+    let e = s.ink(["check", "m.ink"]).cwd(&s).err();
+    (e["error"]["message"].as_str().unwrap_or("").to_string(), e["error"]["at"]["line"].as_u64().unwrap_or(0))
+}
+
+#[test]
+fn an_imports_band_is_said_in_its_params_quantity() {
+    // A band in MPa for a length, the value given bare: refused at the
+    // import, as the param written so is.
+    let (e, line) = import_refused("\n(import \"a.ink\" (p 3 (tol -1MPa 1MPa)))\n");
+    assert!(e.contains("a.ink's p takes a length") && e.contains("MPa is a pressure") && line == 2, "{e} (line {line})");
+}
+
+#[test]
+fn a_repeated_imports_value_is_said_in_its_params_quantity() {
+    // 3MPa is not the 3mm the first import gave, though the numbers match.
+    let (e, line) = import_refused("(import \"a.ink\" (p 3mm))\n(import \"a.ink\" (p 3MPa))\n");
+    assert!(e.contains("a.ink's p takes a length") && e.contains("MPa is a pressure") && line == 2, "{e} (line {line})");
+}
+
+#[test]
+fn an_imports_value_is_refused_where_the_load_cannot_give_it() {
+    let s = Scratch::new("import-values-refused");
+    let ink = |args: &[&str]| s.ink(args).cwd(&s);
+    s.model("a.ink", DESIGN);
+    s.model("b.ink", "(import \"a.ink\" (base-t 3.2))\n");
+    s.model("c.ink", "(import \"std\")\n(param base-t 5)\n");
+    s.model("via.ink", "(import \"c.ink\")\n");
+    let refused = |src: &str| {
+        s.model("m.ink", src);
+        let e = ink(&["check", "m.ink"]).err();
+        let e = &e["error"];
+        (format!("{} | {}", e["message"].as_str().unwrap_or(""), e["hint"].as_str().unwrap_or("")), e["at"]["line"].as_u64().unwrap_or(0))
+    };
+    for (src, says, line) in [
+        // Two importers asking two values of one load's file.
+        ("(import \"b.ink\")\n(import \"a.ink\" (base-t 2.5))\n", "a.ink's base-t is already 3.2mm, set by b.ink:1; this import asks 2.5", 2),
+        ("(import \"b.ink\")\n(import \"a.ink\" (base-t 2.5))\n", "(import \"a.ink\" as NS (base-t 2.5))", 2),
+        // A value after a plain import ran the file at its default.
+        ("(import \"a.ink\")\n(import \"a.ink\" (base-t 2.5))\n", "a.ink was read at m.ink:1 with base-t 5mm | give the value at a.ink's first import (m.ink:1)", 2),
+        // A unit of another quantity, cited at the import.
+        ("\n(import \"a.ink\" (base-t 3psi))\n", "a.ink's base-t takes a length", 2),
+        // What is not one of the file's params.
+        ("(import \"a.ink\" (reach 0.5))\n", "'reach' is a (ranged ...), a range of the question: an import sets params", 1),
+        ("(import \"a.ink\" (w 2))\n", "'w' is a def, not a param", 1),
+        ("(import \"a.ink\" (a 2))\n", "'a' is made by a package form", 1),
+        ("(import \"a.ink\" (bse-t 2))\n", "a.ink has no param 'bse-t' | did you mean 'base-t'?", 1),
+        ("(import \"via.ink\" (base-t 2))\n", "base-t is c.ink's: import c.ink with it, before via.ink", 1),
+    ] {
+        let (e, at) = refused(src);
+        assert!(e.contains(says) && at == line, "{src}: {e} (line {at})");
+    }
+    // The same value twice, and a plain import after a valued one, read
+    // the one run.
+    s.model("same.ink", "(import \"b.ink\")\n(import \"a.ink\" (base-t 3.2))\n(import \"a.ink\")\n");
+    assert!(by_name(&ink(&["assert", "same.ink"]).ok())["thin"]["status"] == "holds");
 }
 
 #[test]

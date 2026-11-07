@@ -3,6 +3,7 @@
 
 use super::*;
 use serde_json::json;
+use std::collections::HashMap;
 
 #[test]
 fn an_error_in_a_model_says_its_line() {
@@ -188,6 +189,153 @@ fn a_dxf_slice_is_one_closed_polyline_per_loop_at_the_models_accuracy() {
     let (b0, b1) = (&loops[0]["min"], &loops[0]["max"]);
     let inside = |x: f64, y: f64| num(&b0[0]) - 1e-9 <= x && x <= num(&b1[0]) + 1e-9 && num(&b0[1]) - 1e-9 <= y && y <= num(&b1[1]) + 1e-9;
     assert!(!verts.is_empty() && verts.iter().all(|&(x, y)| inside(x, y)), "vertices outside the outline's bounds {b0} {b1}");
+}
+
+/// A DXF's entities (table entries included), in order: each its type
+/// and its group codes, the first of each.
+fn dxf_entities(path: &str) -> Vec<(String, HashMap<String, String>)> {
+    let text = std::fs::read_to_string(path).unwrap();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut ents: Vec<(String, HashMap<String, String>)> = vec![];
+    for &[c, v] in lines.as_chunks::<2>().0 {
+        if c == "0" {
+            ents.push((v.to_string(), HashMap::new()));
+        } else if let Some(e) = ents.last_mut() {
+            e.1.entry(c.to_string()).or_insert_with(|| v.to_string());
+        }
+    }
+    ents
+}
+
+/// A model of one 40 x 20 x 2 box (x -20..20, y -10..10) marked by MARK.
+fn marked_box(s: &Scratch, name: &str, mark: &str) -> String {
+    s.model(name, &format!("(import \"std\")\n(body flat (shape (box 40 20 2)) {mark})\n"))
+}
+
+#[test]
+fn a_mark_sharing_a_cut_layer_is_refused() {
+    // A cut layer and a mark's are told apart by name, as DXF reads them
+    // (any case, its forbidden characters as _): sharing one would cut a
+    // mark or dash an outline.
+    let s = Scratch::new("dxf-clash");
+    let out = s.path("clash.dxf");
+    for mark in ["(mark flat (vec x -1))", "(mark FLAT (vec x -1))"] {
+        let m = marked_box(&s, "clash.ink", mark);
+        refused(&["slice", &m, "--target", "flat", "--out", &out], "would share DXF layer FLAT", Some("rename the mark"));
+    }
+}
+
+#[test]
+fn a_mark_ends_at_its_parts_bounds() {
+    // Its region is everywhere: the line x = 0 runs across the part, y -10..10.
+    let s = Scratch::new("dxf-mark-bounds");
+    let m = marked_box(&s, "scribe.ink", "(mark scribe (vec x -1))");
+    let d = ink(["slice", &m, "--target", "flat", "--keys", "kind,points"]);
+    let marks: Vec<Value> = records(&d["loops"]).into_iter().filter(|l| l["kind"] == "mark").collect();
+    let ys: Vec<f64> = marks.iter().flat_map(|l| l["points"].as_array().unwrap().iter().map(|p| num(&p[1])).collect::<Vec<_>>()).collect();
+    let (lo, hi) = ys.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &y| (a.min(y), b.max(y)));
+    assert!(marks.len() == 1 && (lo + 10.0).abs() < 0.1 && (hi - 10.0).abs() < 0.1, "the mark from y {lo} to {hi}: {}", pretty(&d));
+}
+
+#[test]
+fn a_curved_marks_dashes_run_on_across_its_vertices() {
+    // A polyline's dash pattern restarts at each vertex unless its flags
+    // carry 128 (continuous linetype generation): short chords draw solid.
+    let s = Scratch::new("dxf-mark-circle");
+    let m = s.model("circle.ink", "(import \"std\")\n(body flat (shape (box 60 60 2)) (mark circle (vec (- (len2 x y) 20) -1)))\n");
+    let out = s.path("circle.dxf");
+    ink(["slice", &m, "--target", "flat", "--out", &out]);
+    let ents = dxf_entities(&out);
+    let flags: Vec<(&str, &str)> = ents.iter().filter(|(t, _)| t == "POLYLINE").map(|(_, e)| (e["8"].as_str(), e["70"].as_str())).collect();
+    assert_eq!(flags, [("flat", "1"), ("circle", "129")], "the outline closed; the mark closed, its linetype continuous");
+}
+
+/// x = C lies on a column of the slicing grid's corners for a 40 x 20 x 2
+/// box sliced at z = 0, res 0.125: fields 0 there are 0 at the corners.
+const GRID_X: &str = "-0.019531249999989342";
+
+#[test]
+fn a_field_touching_zero_on_grid_corners_draws_no_curve_and_one_crossing_there_draws_one() {
+    // -(x - C)^2 is 0 on the corners at x = C and negative beside them:
+    // it touches 0 there, never crossing, so no mark; a corner at exactly
+    // 0 read as outside made two crossings, two coincident lines. x - C
+    // crosses there: one line through the corners.
+    let s = Scratch::new("dxf-mark-corner");
+    for (g, lines) in [(format!("(neg (square (- x {GRID_X})))"), 0), (format!("(- x {GRID_X})"), 1)] {
+        let m = marked_box(&s, "corner.ink", &format!("(mark m (vec {g} -1))"));
+        let out = s.path("corner.dxf");
+        ink(["slice", &m, "--target", "flat", "--at", "0", "--res", "0.125", "--out", &out]);
+        let on: Vec<(String, String)> = dxf_entities(&out).into_iter().filter(|(t, _)| t == "POLYLINE" || t == "LINE").map(|(t, e)| (t, e["8"].clone())).collect();
+        let marks = on.iter().filter(|(_, l)| l == "m").count();
+        assert!(marks == lines && on.iter().all(|(t, l)| l == "m" && t == "LINE" || l == "flat" && t == "POLYLINE"), "{g}: {on:?}");
+    }
+}
+
+#[test]
+fn an_outline_touching_zero_on_grid_corners_stays_one_loop() {
+    // The plate's field is 0 on the corners at x = C, negative beside
+    // them: material on both sides, so one outline, not two halves cut
+    // apart along a slit of zero width.
+    let s = Scratch::new("slice-corner");
+    let m = s.model("slit.ink", &format!("(import \"std\")\n(body flat (shape (max (box 40 20 2) (neg (square (- x {GRID_X}))))))\n"));
+    let d = ink(["slice", &m, "--target", "flat", "--at", "0", "--res", "0.125"]);
+    let kinds: Vec<Value> = records(&d["loops"]).iter().map(|l| l["kind"].clone()).collect();
+    assert!(kinds == [json!("outer")] && (num(&d["area"]) - 800.0).abs() < 1.0, "{}", pretty(&d));
+}
+
+#[test]
+fn a_mark_in_the_slice_plane_draws_nothing_and_leaves_the_cut() {
+    // g = z is 0 over the slice at z = 0: no sign changes there, so no
+    // curve, as a field touching 0 makes no material; the outline is cut.
+    let s = Scratch::new("dxf-mark-plane");
+    let m = marked_box(&s, "plane.ink", "(mark level (vec z -1))");
+    let out = s.path("plane.dxf");
+    let d = ink(["slice", &m, "--target", "flat", "--at", "0", "--out", &out]);
+    let ents = dxf_entities(&out);
+    let on: Vec<(&str, &str)> = ents.iter().filter(|(t, _)| t == "POLYLINE" || t == "LINE").map(|(t, e)| (t.as_str(), e["8"].as_str())).collect();
+    assert!(on == [("POLYLINE", "flat")] && d["loop_count"] == 1, "{on:?}: {}", pretty(&d));
+}
+
+#[test]
+fn a_sheets_dxf_has_its_bend_lines_dashed_on_a_layer_of_their_own() {
+    // A flat 60 wide, its top edge from (0, 30) up to (60, 40), bent along
+    // x = 30 and x = 45. Each bend's line is marked from y = 0 to the
+    // slanted edge, at y = 30 + x / 6: 35 and 37.5.
+    let s = Scratch::new("dxf-bends");
+    let m = s.model(
+        "u.ink",
+        "(import \"std\")\n\
+         (def S (sheet (polygon (vec (vec 0 0) (vec 60 0) (vec 60 40) (vec 0 30))) (vec (move (circle-2d 2) 10 15 0)) 2 0.4\n\
+           (vec (sheet-bend (vec 30 50) (vec 30 0) 90 2) (sheet-bend (vec 45 50) (vec 45 0) 90 2))))\n\
+         (body flat (shape (sheet-flat S)) (mark bend (sheet-bend-lines S)))\n",
+    );
+    let dxf = s.path("u.dxf");
+    let d = ink(["slice", &m, "--target", "flat", "--out", &dxf]);
+    let ents = dxf_entities(&dxf);
+    let f = |e: &HashMap<String, String>, c: &str| e[c].trim().parse::<f64>().unwrap();
+    let layer = |n: &str| ents.iter().find(|(t, e)| t == "LAYER" && e.get("2").map(String::as_str) == Some(n)).map(|(_, e)| e["6"].as_str());
+    let polys: Vec<&str> = ents.iter().filter(|(t, _)| t == "POLYLINE").map(|(_, e)| e["8"].as_str()).collect();
+    let mut bends: Vec<[f64; 4]> = ents.iter().filter(|(t, e)| t == "LINE" && e["8"] == "bend").map(|(_, e)| [f(e, "10"), f(e, "20"), f(e, "11"), f(e, "21")]).collect();
+    bends.iter_mut().for_each(|b| {
+        if b[1] > b[3] {
+            *b = [b[2], b[3], b[0], b[1]]
+        }
+    });
+    bends.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    let near = |a: f64, b: f64| (a - b).abs() < 0.05;
+    let at = |b: &[f64; 4], x, top| near(b[0], x) && near(b[2], x) && near(b[1], 0.0) && near(b[3], top);
+    assert!(
+        polys == ["flat", "flat"]
+            && layer("flat") == Some("CONTINUOUS")
+            && layer("bend") == Some("DASHED")
+            && bends.len() == 2
+            && at(&bends[0], 30.0, 35.0)
+            && at(&bends[1], 45.0, 37.5),
+        "outline and hole on flat, a dashed line per bend: polylines {polys:?}, bends {bends:?}\n{}",
+        pretty(&d)
+    );
+    let marks: Vec<_> = records(&d["loops"]).into_iter().filter(|l| l["kind"] == "mark").collect();
+    assert!(marks.len() == 2 && marks.iter().all(|l| l["mark"] == "bend" && l["closed"] == false), "{}", pretty(&d));
 }
 
 #[test]

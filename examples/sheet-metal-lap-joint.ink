@@ -16,6 +16,8 @@
 ; part is the drawing's at any K.
 ;
 ; ink slice examples/sheet-metal-lap-joint.ink --target flat --out REV-21-2359.dxf
+; writes the outline and holes to cut, and the two bend lines, dashed on
+; layer bend.
 (import "std")
 
 (def th 3)
@@ -51,7 +53,7 @@
   (frame back (sheet-frame S 0 25.4 -1))
   (frame left (sheet-frame S (neg (fx 12.7)) 63.5 -1))
   (frame right (sheet-frame S (fx 12.7) 63.5 -1)))
-(body flat (shape flat-shape) (attr material "aluminum-5052"))
+(body flat (shape flat-shape) (attr material "aluminum-5052") (mark bend (sheet-bend-lines S)))
 
 (assert outside-in (subset (probe 15.69 25 30) part-shape))
 (assert outside-out (disjoint part-shape (probe 15.71 25 30)))

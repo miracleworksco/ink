@@ -11,22 +11,33 @@ use rayon::prelude::*;
 /// The usual cause of a body that is unexpectedly empty, for its warnings.
 const EMPTY_CAUSE: &str = "(max a b) is the intersection of a and b, (min a b) their union. Shapes that only touch don't intersect";
 
-/// Named constructions (defs, tags) in a body's field that form none of its
-/// surface: hidden inside another shape, or cut away entirely. Usually an
-/// authoring slip (a mirrored half that vanished, a hole outside the part).
-/// Proven, not sampled (feature::surface_names): one that may form some is
-/// not reported. Then fields interval arithmetic cannot bound tightly, and
-/// undefined cases (feature::survey). `named`: the body's named parts.
+/// Named constructions (defs, tags) in a body's field not seen forming any
+/// of its surface (feature::surface_names): proven to form none (hidden
+/// inside another shape, or cut away entirely), or never seen deciding a
+/// patch of it where it was sought (only an edge, a blend's covered side,
+/// or a face the search missed). Usually an authoring slip (a mirrored
+/// half that vanished, a hole outside the part). Then fields interval
+/// arithmetic cannot bound tightly, and undefined cases (feature::survey).
+/// `named`: the body's named parts.
 fn survey_warnings(s: &Session, body: &str, mut named: Vec<u32>, survey: &ink::feature::Survey) -> Vec<String> {
     named.retain(|t| !survey.formed.contains(t));
     let mut out: Vec<String> = named
         .into_iter()
         .map(|t| {
-            format!(
-                "body '{body}': '{}' is in its field but forms none of its surface. It is hidden inside another shape or cut away \
-                 (fine for an envelope intersected on purpose)",
-                s.doc.g.tag_names[t as usize]
-            )
+            let name = &s.doc.g.tag_names[t as usize];
+            if let Some(&(_, n, finer)) = survey.unseen.iter().find(|u| u.0 == t) {
+                format!(
+                    "body '{body}': '{name}' was not seen forming any of its surface where it was sought: in the {n} cells it is on the \
+                     field's path in, finer in {} of them. It may form only an edge (where it ties with what covers it) or a blend's \
+                     covered side, or a face the search missed. Undecided, not proven",
+                    finer
+                )
+            } else {
+                format!(
+                    "body '{body}': '{name}' is in its field but forms none of its surface. It is hidden inside another shape or cut away \
+                     (fine for an envelope intersected on purpose)"
+                )
+            }
         })
         .collect();
     if let Some(l) = &survey.loose {
@@ -158,11 +169,12 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
             None => {}
         }
     }
-    // Every published mass, measured: one that cannot be (lighter than
-    // its own-density bodies, over an unbounded body) is refused where it
-    // is weighed, so say so here. Not with --load, nor in other commands.
-    let unweighed = if load { Vec::new() } else { s.weigh_all() };
-    warnings.extend(unweighed.iter().map(|(_, e)| format!("{}:{}: {}", e.file, e.line, e.message)));
+    // Every published mass that cannot be measured (lighter than its
+    // own-density bodies, over an unbounded body) is refused where it is
+    // weighed, so say so here (without weighing it). Not with --load, nor
+    // in other commands.
+    let refused_masses = if load { Vec::new() } else { s.mass_refusals() };
+    warnings.extend(refused_masses.iter().map(|(_, e)| format!("{}:{}: {}", e.file, e.line, e.message)));
     // A tolerance a proof cannot cover (its value is used at load time, or
     // a solve over it cannot be certified) is refused by assert and
     // interfere: say so here. Solves over the bands are certified once.
@@ -227,6 +239,9 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
             }
             if let Some((_, (lo, hi))) = d.ranged.iter().find(|r| r.0 == k) {
                 j["ranged"] = bounds(*lo, *hi);
+            }
+            if let Some((written, at)) = d.set_at.get(&k) {
+                (j["written"], j["set_at"]) = (n(*written), json!(at));
             }
             j
         })
@@ -357,16 +372,17 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
                 let mut o = json!({"published": n(d.scalar(m.mass, &s.ctx))});
                 match m.density {
                     None => (o["met"], o["why"]) = (J::Null, json!(ink::lang::materials::UNUSED_MASS)),
-                    Some(f) if !d.unmeasured(&[f]).is_empty() => (o["met"], o["why"]) = (J::Null, json!("measured by ink check, not with --load")),
+                    Some(_) if load => (o["met"], o["why"]) = (J::Null, json!("checked by ink check, not with --load")),
                     Some(f) => {
-                        // The derived param the density is.
+                        // The derived param the density is, measured where
+                        // a mass is read; where it was (another mass reads
+                        // it), how it settled.
                         let k = d.params_read(&[f])[0];
-                        match unweighed.iter().find(|(owns, _)| owns.contains(&k)) {
+                        match refused_masses.iter().find(|(owns, _)| owns.contains(&k)) {
                             Some((_, e)) => (o["met"], o["why"]) = (json!(false), json!(e.message)),
                             None => {
-                                o["met"] = json!(true);
-                                o["density"] = json!(d.params[k].name);
-                                let unsettled = d.inexact(&[f], &[]).unsettled;
+                                (o["met"], o["density"]) = (json!(true), json!(d.params[k].name));
+                                let unsettled = if d.unmeasured(&[f]).is_empty() { d.inexact(&[f], &[]).unsettled } else { Default::default() };
                                 if !unsettled.is_empty() {
                                     o["unsettled"] = J::Object(unsettled.into_iter().map(|(k, why)| (d.params[k as usize].name.clone(), json!(why))).collect());
                                 }
@@ -600,7 +616,8 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
         return Err(InkError::msg(format!("--out {o}: a slice writes .dxf")));
     }
     let (mut total, mut lj, mut hmin, mut tmax) = (0.0, Vec::new(), f64::INFINITY, 0.0f64);
-    let mut cut: Vec<(String, Vec<[f64; 2]>, bool)> = Vec::new();
+    // Each outline's layer, points, whether it closes and whether a mark.
+    let mut cut: Vec<(String, Vec<[f64; 2]>, bool, bool)> = Vec::new();
     for ((it, &f), b) in items.iter().zip(&fields).zip(&bounds) {
         let Some((lo, hi, _)) = b else { continue };
         if at < lo[axis] || at > hi[axis] {
@@ -630,9 +647,28 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
                 if shape.names("points") {
                     r["points"] = pts.iter().map(|p| json!([n(p[0]), n(p[1])])).collect();
                 }
-                cut.push((it.label.clone(), pts, l.closed));
+                cut.push((it.label.clone(), pts, l.closed, false));
             }
             lj.push(r);
+        }
+        // Its body's marks (a sheet's bend lines), within its bounds:
+        // open curves on their own layers, to draw, not to cut.
+        let body = it.instance.as_ref().map_or(it.label.as_str(), |(b, _)| b.as_str());
+        let marks = s.doc.body(body).map(|b| b.marks.clone()).unwrap_or_default();
+        for (name, g, rg) in marks {
+            let (g, rg) = (s.doc.place(g, it), s.doc.place(rg, it));
+            let (gt, rt) = (Arc::new(Tape::new(&s.doc.g, g)), Tape::new(&s.doc.g, rg));
+            for l in query::slice_mark(&gt, &rt, &s.ctx, axis, at, *lo, *hi, h) {
+                let mut r = json!({"target": it.label, "kind": "mark", "mark": name, "closed": l.closed, "length": n(l.perimeter)});
+                if shape.names("points") || out.is_some() {
+                    let pts = simplify_polyline(&l.pts, l.closed, tol);
+                    if shape.names("points") {
+                        r["points"] = pts.iter().map(|p| json!([n(p[0]), n(p[1])])).collect();
+                    }
+                    cut.push((name.clone(), pts, l.closed, true));
+                }
+                lj.push(r);
+            }
         }
     }
     // Each target sliced on its own; outer loops counter-clockwise
@@ -640,9 +676,10 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
     let mut r = json!({"axis": names[axis], "at": n(at), "plane_axes": [names[u], names[v]], "res": n(hmin),
               "area": n(total), "loop_count": lj.len(), "loops": shape.shape(lj, &[])?});
     if let Some(o) = out {
-        let outlines: Vec<export::Outline> = cut.iter().map(|(l, p, c)| export::Outline { layer: l, pts: p, closed: *c }).collect();
+        let outlines: Vec<export::Outline> = cut.iter().map(|(l, p, c, m)| export::Outline { layer: l, pts: p, closed: *c, mark: *m }).collect();
         let note = format!("ink {}: slice {}={} in {}{} mm, res {} accuracy {}", s.stem(), names[axis], measured(at), names[u], names[v], measured(hmin), measured(tmax));
-        let bytes = export::dxf(&outlines, &note);
+        let hint = "DXF reads a layer's name in any case, its <>/\\\":;?*|=' and spaces as _: rename the mark, (mark NAME ...) with a NAME no target has";
+        let bytes = export::dxf(&outlines, &note).map_err(|m| InkError { hint: Some(hint.into()), ..InkError::msg(m) })?;
         export::write(o, &bytes).map_err(|e| InkError::msg(format!("cannot write {o}: {e}")))?;
         r["out"] = json!(o);
         r["accuracy"] = json!(n(tmax));
@@ -1590,7 +1627,7 @@ pub fn glb_attrs(s: &Session, attrs: &ink::lang::Attrs) -> J {
     for (k, v) in attrs.iter() {
         let j = match v {
             Value::Str(x) => json!(x),
-            Value::Field(f) => match s.doc.g.as_const(*f) {
+            Value::Field(f, _) => match s.doc.g.as_const(*f) {
                 Some(c) => n(c),
                 None => continue,
             },
@@ -1603,7 +1640,8 @@ pub fn glb_attrs(s: &Session, attrs: &ink::lang::Attrs) -> J {
 }
 
 pub(crate) fn cmd_components(s: &mut Session, a: &Args) -> Result<J, InkError> {
-    // Each target's mesh as the `cavities` claim reads it (ModelView::components).
+    // Each target's shells, from a mesh (an estimate), and its cavities
+    // counted as the `cavities` claim counts them (ModelView::components).
     let res = a.cell("res")?;
     let mut out = Vec::new();
     let mut warnings = Vec::new();
@@ -1631,7 +1669,15 @@ pub(crate) fn cmd_components(s: &mut Session, a: &Args) -> Result<J, InkError> {
                 measured(m.res)
             ));
         }
-        out.push(json!({"target": it.label, "res": n(m.res), "solids": solids, "cavities": an.shells.len() - solids,
+        let c = &m.voids;
+        if let Some((what, decide)) = c.why_undecided() {
+            let at = c.at.map_or(String::new(), |p| format!(" (one at [{:.3}, {:.3}, {:.3}])", p[0], p[1], p[2]));
+            let most = c.at_most.map_or("unbounded".into(), |n| n.to_string());
+            warnings.push(format!("{}: its cavities are proven between {} and {most}: {what}{at}. To decide it: {decide}", it.label, c.at_least));
+        }
+        out.push(json!({"target": it.label, "res": n(m.res), "solids": solids, "cavities": c.count(),
+                        "proven": {"cavities": {"at_least": c.at_least, "at_most": c.at_most, "at": c.at.map(v3), "cells": c.cells, "finest": n(c.finest),
+                                               "undecided": c.undecided.map(|(a, b)| json!([n(a), n(b)])), "ended": c.ended}},
                         "watertight": an.boundary_edges == 0 && an.nonmanifold_edges == 0, "shells": shells,
                         "unresolved": {"cells": m.unresolved.cells, "at": m.unresolved.at.map(v3)}}));
     }
@@ -1697,7 +1743,7 @@ pub(crate) fn cmd_ray(s: &mut Session, a: &Args) -> Result<J, InkError> {
             for ((label, _, raw), local) in targets.iter().zip(&locals) {
                 // Where the ray enters material. One starting inside says
                 // so, at its origin: it has entered nowhere, so no normal.
-                if let Some(t) = query::ray_to(local, o, dir, (0.0, tmax), query::Side::Inside, 1e-9 * tmax.abs().max(1.0)) {
+                if let Some(query::RayHit { t, rounding }) = query::ray_to(local, o, dir, (0.0, tmax), query::Side::Inside, 1e-9 * tmax.abs().max(1.0)) {
                     let p = [o[0] + t * dir[0], o[1] + t * dir[1], o[2] + t * dir[2]];
                     let g = ink::eval::eval_grads(raw, ctx, &[p])[0];
                     let normal = match t == 0.0 {
@@ -1709,6 +1755,9 @@ pub(crate) fn cmd_ray(s: &mut Session, a: &Args) -> Result<J, InkError> {
                         "name": names.last().cloned().unwrap_or_default(), "path": names});
                     if t == 0.0 {
                         hit["starts_inside"] = json!(true);
+                    }
+                    if let Some(w) = rounding {
+                        hit["rounding"] = json!(n(w));
                     }
                     hits.push((t, hit));
                 }

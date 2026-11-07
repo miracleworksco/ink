@@ -84,7 +84,7 @@ impl Doc {
             component,
         };
         let at = [self.g.var(Var::X), self.g.var(Var::Y), self.g.var(Var::Z)];
-        Ok(Value::Field(self.g.grid(std::sync::Arc::new(data.with_source(source)), at)))
+        Ok(Value::Field(self.g.grid(std::sync::Arc::new(data.with_source(source)), at), None))
     }
 }
 

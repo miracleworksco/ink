@@ -18,10 +18,13 @@
 
 ; The hump and the thumb scoop lie wholly inside their smooth blends, so the
 ; surface there is the blend's, not theirs. `check` proves it for the hump;
-; the thumb scoop is unknown, not reported: interval bounds cannot rule out
-; its plain-subtract side of the blend over any cell of the scoop's surface.
+; the thumb scoop is not seen forming surface, but undecided: interval
+; bounds cannot rule out its plain-subtract side of the blend over any cell
+; of the scoop's surface. The redistanced shell names neither.
 ; expect-warning: body 'mouse': 'hump' is in its field but forms none of its surface
 ; expect-warning: body 'naive-shell': 'hump' is in its field but forms none of its surface
+; expect-warning: body 'mouse': 'thumb-scoop' was not seen forming any of its surface
+; expect-warning: body 'naive-shell': 'thumb-scoop' was not seen forming any of its surface
 
 ; The shells stand beside the solid body they are cut from.
 

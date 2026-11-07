@@ -262,7 +262,7 @@ impl Doc {
                 let mut pts = Vec::with_capacity(items.len());
                 for it in &items {
                     let c: Option<Vec<NodeId>> = match it {
-                        Value::Vec(c) if (2..=3).contains(&c.len()) => c.iter().map(|x| if let Value::Field(f) = x { Some(*f) } else { None }).collect(),
+                        Value::Vec(c) if (2..=3).contains(&c.len()) => c.iter().map(|x| if let Value::Field(f, _) = x { Some(*f) } else { None }).collect(),
                         _ => None,
                     };
                     let Some(c) = c else { return Err(self.err_hint(arg, "a path's point is a (vec x y z) or (vec x y) of numbers", Some(usage.into()))) };

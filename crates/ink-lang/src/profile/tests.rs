@@ -489,7 +489,7 @@ static CORE: crate::Registry = crate::Registry::new(&[]);
 /// The field `src` evaluates to, at points.
 fn field(src: &str) -> impl Fn([f64; 3]) -> f64 + use<> {
     let d = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
-    let Value::Field(f) = d.def("f").unwrap().clone() else { panic!() };
+    let Value::Field(f, _) = d.def("f").unwrap().clone() else { panic!() };
     let t = crate::tape::Tape::new(&d.g, f);
     move |p| crate::eval::eval_point(&t, &crate::eval::Ctx::new(0.0, vec![]), p)
 }
@@ -1233,7 +1233,7 @@ fn a_drafted_field_reads_the_distance_to_its_walls() {
     let ds: Vec<String> = d.iter().map(|d| d.to_string()).collect();
     let src = format!("(polygon {} (vec {}) {z0} {z1})", ink_points(&p), ds.join(" "));
     let doc = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
-    let Value::Field(fid) = doc.def("f").unwrap().clone() else { panic!() };
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
     let tape = crate::tape::Tape::new(&doc.g, fid);
     assert!(tape.len() <= 4000, "{} instructions", tape.len());
     let w = walls::Walls::new(&p, &d.iter().map(|d| d.to_radians().tan()).collect::<Vec<_>>()).unwrap();
@@ -1278,7 +1278,7 @@ fn a_mesh_of_a_drafted_chamfer_lies_on_its_walls() {
     let ds: Vec<String> = d.iter().map(|d| d.to_string()).collect();
     let src = format!("(max (polygon {} (vec {}) {z0} {z1}) (- (abs z) {z1}))", ink_points(&p), ds.join(" "));
     let doc = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
-    let Value::Field(fid) = doc.def("f").unwrap().clone() else { panic!() };
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
     let tape = std::sync::Arc::new(crate::tape::Tape::new(&doc.g, fid));
     let h = 0.05;
     let m = ink_kernel::mesh::mesh(&tape, &crate::eval::Ctx::new(0.0, vec![]), [-8.0, -52.5, -0.3], [-5.0, -50.5, 0.3], h);
@@ -1298,7 +1298,7 @@ fn a_drafted_wall_has_its_normal_on_it() {
     // vertices lose the wall's normal: 0.42 off at cells of 0.45).
     let src = "(polygon (vec (vec 23.7109 66.675) (vec 3.9751 66.675) (vec 3.9751 69.85) (vec 23.7109 69.85 -0.414214) (vec 28.1051 65.4558) (vec 28.1051 34.925) (vec 24.9301 34.925) (vec 24.9301 65.4558 0.414214)) (vec 0 -45 0 0 0 -45 0 0) -3.175 3.175)";
     let d = Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).unwrap();
-    let Value::Field(fid) = d.def("f").unwrap().clone() else { panic!() };
+    let Value::Field(fid, _) = d.def("f").unwrap().clone() else { panic!() };
     let t = crate::tape::Tape::new(&d.g, fid);
     let pts: Vec<[f64; 3]> = [10.0, 15.115, 20.0].iter().flat_map(|&x| [-2.5, 0.0, 2.667534].map(|z| [x, 66.675, z])).collect();
     for (p, g) in pts.iter().zip(crate::eval::eval_grads(&t, &crate::eval::Ctx::new(0.0, vec![]), &pts)) {
@@ -1410,4 +1410,52 @@ fn a_contact_s_identities_are_taken_only_where_lowering_keeps_them() {
     assert!(fixed.0.iter().all(|x| matches!(**x, curve::Ex::K(_))), "folded to constants: {:?}", fixed.0);
     let moving = curve::touch(&pk([0.0, 0.0]), &kx(1.0), &[xlin(3.0, 4.0), kx(1.0)], &kx(0.0), 1.0);
     assert!(!moving.1, "a moving point does not");
+}
+
+#[test]
+fn a_polygon_that_crosses_itself_is_refused_where_it_does() {
+    // An arc crossing the line beside it, near (0.08, 0): its chords do not
+    // cross, and no corner is inside its segment.
+    let pts = [[5.04004, -1.33967668, 0.132669958832], [0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, -5.0, 0.0], [5.04004, -5.0, 0.0]];
+    let e = polygon(&pts).expect_err("refused");
+    assert!(e.contains("crosses itself at (0.08"), "{e}");
+    // A fillet's outside, as STEP data writes it: a line, then a quarter
+    // arc leaving tangent to it, back along it. Its bulge rounded to 1e-6
+    // lifts the arc over the line, meeting it again 3.6e-6 from the corner
+    // across a sliver 1e-12 thick, far within the allowance. Accepted.
+    let cusp = [[-8.045452, 2.4257, 0.0], [-5.619752, 2.4257, 0.414214], [-8.045452, 0.0, 0.0]];
+    if let Err(e) = polygon(&cusp) {
+        panic!("a rounded cusp: {e}");
+    }
+    // A quarter arc crossing the line beside it far out on a profile 1e6
+    // across, whose allowance (100 eps) is 0.1 and then 0.21: its sliver
+    // (the arc's sag over the chord to the crossing) is 0.1056 and 0.2401,
+    // over the allowance though d^2 / 8 r reads 0.1 and 0.2113. Refused.
+    let q = -(std::f64::consts::PI / 8.0).tan();
+    for (pts, what) in [
+        (vec![[1.0, 1.0, q], [0.0, 0.0, 0.0], [2.0, 1.0, 0.0], [1e6, 1.0, 0.0], [1e6, 100.0, 0.0], [1.0, 100.0, 0.0]], "sag 0.1056"),
+        (
+            vec![[1.0, 1.0, q], [0.0, 0.0, 0.0], [1.9758289399641862, 1.6900000000000002, 0.0], [2112500.0, 1.6900000000000002, 0.0], [2112500.0, 100.0, 0.0], [1.0, 100.0, 0.0]],
+            "sag 0.2401",
+        ),
+    ] {
+        let e = polygon(&pts).expect_err(what);
+        assert!(e.contains("crosses itself"), "{what}: {e}");
+    }
+    // Stars with arcs whose edges, densely sampled, cross: every one is
+    // refused.
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut tried = 0;
+    while tried < 300 {
+        let n = 3 + (rng.f() * 12.0) as usize;
+        let (r0, bulge, cw) = (rng.range(1.0, 9.0), rng.range(0.2, 1.5), rng.f() < 0.5);
+        let pts = star(&mut rng, n, r0, 12.0, bulge, cw);
+        if simple(&pts) {
+            continue;
+        }
+        tried += 1;
+        if let Ok(t) = polygon(&pts) {
+            panic!("accepted a crossing polygon: {pts:?}: {:?}", ev(&t, 0.0, 0.0));
+        }
+    }
 }

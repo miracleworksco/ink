@@ -42,7 +42,7 @@
   ; the vertical leg's outside face at its hole, z out of the part (+x)
   (frame upright (sheet-frame l 48 20 -1)))
 (def lf (sheet-flat l))
-(body l-flat (shape lf))
+(body l-flat (shape lf) (mark bend (sheet-bend-lines l)))   ; the cut file, its bend line dashed
 (assert l-outside-x-in (subset (probe 31.79 20 10) lb))
 (assert l-outside-x-out (disjoint lb (probe 31.81 20 10)))
 (assert l-inside-x-in (subset (probe 29.81 20 10) lb))

@@ -5,13 +5,20 @@ use std::fmt;
 
 #[derive(Clone, Debug)]
 pub enum SK {
-    /// A number in the language's unit of its quantity, and the unit and
-    /// number it was written as, if in a unit (`1in`: 25.4, and in, 1). It
-    /// prints as written.
-    Num(f64, Option<(&'static Unit, f64)>),
+    /// A number in the language's unit of its quantity, and the unit it
+    /// says, if any (`Written`). It prints as written.
+    Num(f64, Option<Written>),
     Sym(String),
     Str(String),
     List(Vec<Sexp>),
+}
+
+/// The unit a number says: written in it (`1in`: in, and 1), or a value
+/// a `for` made a number of, said by an earlier one (units::Said).
+#[derive(Clone, Debug)]
+pub enum Written {
+    Here(&'static Unit, f64),
+    From(Box<units::Said>),
 }
 
 #[derive(Clone, Debug)]
@@ -63,7 +70,8 @@ impl fmt::Display for Sexp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.k {
             SK::Num(v, None) => write!(f, "{v}"),
-            SK::Num(_, Some((u, w))) => write!(f, "{w}{}", u.name),
+            SK::Num(_, Some(Written::Here(u, w))) => write!(f, "{w}{}", u.name),
+            SK::Num(v, Some(Written::From(s))) => write!(f, "{}{}", units::to(*v, s.unit), s.unit.name),
             SK::Sym(s) => write!(f, "{s}"),
             SK::Str(s) => write!(f, "{s:?}"),
             SK::List(v) => {
@@ -209,7 +217,7 @@ impl Reader {
                 let k = if looks_numeric(&s) {
                     let (v, u) = number(&s).map_err(|m| self.err(m, line, col))?;
                     let digits = &s[..s.len() - u.map_or(0, |u| u.name.len())];
-                    SK::Num(v, u.map(|u| (u, digits.parse().unwrap_or(v))))
+                    SK::Num(v, u.map(|u| Written::Here(u, digits.parse().unwrap_or(v))))
                 } else {
                     SK::Sym(s)
                 };

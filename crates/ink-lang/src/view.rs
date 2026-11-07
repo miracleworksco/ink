@@ -4,7 +4,7 @@
 //! claim runner (`claims`) and every command work on one.
 
 use crate::InkError;
-use crate::{Doc, FormMetric, Item, Measured, Outcome, Reach, Registry, RunOpts};
+use crate::{Doc, FormMetric, Given, Item, Measured, Outcome, Reach, Registry, RunOpts};
 use ink_core::V3;
 use ink_core::eval::Ctx;
 use ink_core::graph::{Node, Var};
@@ -17,36 +17,25 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// The most cells across a shape `ModelView::components` meshes it at, as
-/// for any mesh a query makes at a res asked for.
+/// The most cells across a shape `ModelView::components` meshes it at, or
+/// counts its voids down to, as for any mesh a query makes at a res asked
+/// for.
 pub const COMPONENT_CELLS: f64 = 20000.0;
 /// The most triangles `ModelView::components` predicts a mesh made again
 /// to sample: `ink render`'s and `ink components`' budget (25 M, about 65
 /// CPU s on 6 vCPU of a Ryzen AI Max+ 395).
 pub const COMPONENT_TRIANGLES: f64 = 25e6;
 
-/// A shape's mesh as `ink components` and the `cavities` claim read it.
+/// A shape's shells as `ink components` reads them: its mesh's (an
+/// estimate, at cells `res`, with what it still leaves out), and its
+/// enclosed voids, counted by proof as the `cavities` claim counts them.
 #[derive(Clone, Debug)]
 pub struct Components {
     pub analysis: ink_kernel::mesh::Analysis,
-    /// What the last mesh still leaves out.
     pub unresolved: ink_kernel::mesh::Unresolved,
-    /// Its cells.
+    pub voids: ink_kernel::voids::Voids,
+    /// The mesh's cells.
     pub res: f64,
-}
-
-impl Components {
-    /// The shells whose triangles face inward: enclosed voids.
-    pub fn voids(&self) -> Vec<&ink_kernel::mesh::Shell> {
-        self.analysis.shells.iter().filter(|s| s.volume < 0.0).collect()
-    }
-    /// Closed (no open or non-manifold edge) and missing no sign change:
-    /// which side of each shell is air is then known, and no wall thinner
-    /// than the cells (which can seal a void) or gap thinner than them
-    /// (which can close an opening) was missed.
-    pub fn resolved(&self) -> bool {
-        self.analysis.boundary_edges == 0 && self.analysis.nonmanifold_edges == 0 && self.unresolved.cells == 0
-    }
 }
 
 /// A contact zone excuses every overlap inside it: one not proven bounded
@@ -89,7 +78,7 @@ pub struct ModelView {
     /// The file the document was loaded from, if any, and the param
     /// overrides it was loaded with.
     pub path: Option<PathBuf>,
-    pub overrides: Vec<(String, f64)>,
+    pub overrides: Vec<(String, Given)>,
     /// The motion claims that read t are checked over, t ranged over it
     /// (crate::motion): `--t-span`, else the file's `(t-span A B)`.
     pub motion: Option<(f64, f64)>,
@@ -158,7 +147,7 @@ impl ModelView {
     /// `t`. A solve that does not solve at t leaves the view, with what
     /// rests on it refused (`unsolved`, `refusal`). Err: a direction with
     /// no length at t (Doc::check_conditions).
-    pub fn load_in(registry: &'static Registry, path: &Path, overrides: &[(String, f64)], t: f64) -> Result<ModelView, InkError> {
+    pub fn load_in(registry: &'static Registry, path: &Path, overrides: &[(String, Given)], t: f64) -> Result<ModelView, InkError> {
         let doc = Doc::load_file_in(registry, path, overrides)?;
         let (ctx, unsolved) = doc.ctx_at(overrides, t)?;
         doc.check_conditions(&ctx, None, &unsolved.iter().map(|u| u.0).collect::<Vec<_>>(), false)?;
@@ -168,12 +157,19 @@ impl ModelView {
 
     /// The same file loaded again, with the same packages, moment and
     /// solver, its overrides changed by `changes` (a design of the
-    /// optimizer, a param stepped for a difference). Analysis starts over.
+    /// optimizer, a param stepped for a difference). A change that says no
+    /// unit keeps the one its param was given in: the number is in the
+    /// language's unit of the same quantity. Analysis starts over.
     /// Err: a solve that does not solve there.
-    pub fn reload(&self, changes: &[(String, f64)]) -> Result<ModelView, InkError> {
+    pub fn reload(&self, changes: &[(String, Given)]) -> Result<ModelView, InkError> {
         let path = self.path.as_ref().ok_or_else(|| InkError::msg("only a model loaded from a file can be reloaded with other params"))?;
-        let mut overrides: Vec<(String, f64)> = self.overrides.iter().filter(|(k, _)| !changes.iter().any(|c| &c.0 == k)).cloned().collect();
-        overrides.extend_from_slice(changes);
+        let mut overrides = self.overrides.clone();
+        for (k, g) in changes {
+            match overrides.iter_mut().find(|(n, _)| n == k) {
+                Some((_, was)) => *was = Given { value: g.value, unit: g.unit.or(was.unit) },
+                None => overrides.push((k.clone(), *g)),
+            }
+        }
         let v = ModelView::load_in(self.doc.registry, path, &overrides, self.ctx.t)?;
         if let Some((_, e)) = v.unsolved.first() {
             return Err(e.clone());
@@ -236,16 +232,24 @@ impl ModelView {
         Ok(())
     }
 
-    /// Measure every published mass (every solve on demand) in this
-    /// view's context, as `ink check` does: those that cannot be measured
-    /// (a mass less than what its own-density bodies weigh, an unbounded
-    /// body), each by the params it sets, with the error at its form.
-    pub fn weigh_all(&mut self) -> Vec<(Vec<usize>, InkError)> {
-        let ks: Vec<usize> = self.doc.solves.iter().filter(|s| s.on_demand).flat_map(|s| s.owns.clone()).collect();
-        self.doc.want_params(&ks);
+    /// Every solve on demand (a published mass) that would fail in this
+    /// view's context, as `ink check` asks (ParamProvider::refusal: a mass
+    /// is not measured to say so), each by the params it sets, with the
+    /// error at its form. What they read is provided first.
+    pub fn mass_refusals(&mut self) -> Vec<(Vec<usize>, InkError)> {
+        let demand: Vec<usize> = (0..self.doc.solves.len()).filter(|&i| self.doc.solves[i].on_demand).collect();
+        let reads: Vec<usize> = demand.iter().flat_map(|&i| self.doc.solves[i].reads.clone()).collect();
+        self.doc.want_params(&reads);
         let mut failed = Vec::new();
-        for i in (0..self.doc.solves.len()).filter(|&i| self.doc.solves[i].on_demand) {
-            if let Err(m) = self.doc.provide_one(i, &mut self.ctx.params, self.ctx.t) {
+        for i in demand {
+            // What it reads that is on demand (an inner assembly's mass),
+            // provided; one that fails says so at its own form.
+            let read = self.doc.solves[i].reads.clone();
+            for j in self.doc.solves_under(&read).into_iter().filter(|&j| self.doc.solves[j].on_demand) {
+                let _ = self.doc.provide_one(j, &mut self.ctx.params, self.ctx.t);
+            }
+            let p = self.doc.ext[self.doc.solves[i].ext].form.provider(&self.doc).expect("a solve provides params");
+            if let Some(m) = p.refusal(&self.ctx.params, self.ctx.t) {
                 failed.push((self.doc.solves[i].owns.clone(), self.doc.solve_error(i, m)));
             }
         }
@@ -654,7 +658,7 @@ impl ModelView {
             return p.shape_metric(self, m.metric, f, opts.res);
         }
         if let Some(why) = self.doc.ext_form(Some(m.package), &m.form).and_then(|e| e.form.unavailable(m.metric)) {
-            return Ok(Measured { value: Err(why), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None });
+            return Ok(Measured { value: Err(why), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false });
         }
         let out = self.outcome(Some(m.package), &m.form, opts)?;
         let mut measured = out.metric(m.metric).ok_or_else(|| InkError::msg(format!("'{}' gave no '{}'", m.form, m.metric)))?;
@@ -967,17 +971,11 @@ impl ModelView {
         Some(if samples.is_empty() { Err(h) } else { Ok((samples, h)) })
     }
 
-    /// A field's solids and enclosed voids from a mesh, one way for `ink
-    /// components` and the `cavities` claim: meshed at cells `res`, used as
-    /// given; else at its box's longest side / 160, made again where it
-    /// leaves material out (mesh::Unresolved: a wall or sheet thinner than
-    /// the cells, which can seal a void the mesh then misses), each time at
-    /// cells finer than the thickest of what it left, while at most
-    /// COMPONENT_CELLS across and COMPONENT_TRIANGLES predicted. Its shells
-    /// (mesh::analyze: those whose triangles face inward are voids), what
-    /// it still leaves out, and its cells. None: the field is empty. More
-    /// than COMPONENT_CELLS across at `res` is an error.
-    pub fn components(&mut self, f: u32, res: Option<f64>) -> Result<Option<Components>, InkError> {
+    /// A field's enclosed voids, by proof (voids::voids): its cells halved
+    /// down to `res`, else to its box's longest side / COMPONENT_CELLS.
+    /// None: the field is empty. More than COMPONENT_CELLS across at `res`
+    /// is an error.
+    pub fn voids(&mut self, f: u32, res: Option<f64>) -> Result<Option<ink_kernel::voids::Voids>, InkError> {
         let Some((lo, hi, _)) = self.bounds(f) else { return Ok(None) };
         let ext = max_extent(lo, hi);
         if let Some(h) = res
@@ -985,6 +983,24 @@ impl ModelView {
         {
             return Err(InkError::msg(format!("res {h} gives {:.0} cells across the shape; the limit is {COMPONENT_CELLS}", ext / h)));
         }
+        let tape = self.clipped(f);
+        // Not cached: the claim reading it is computed.
+        ink_kernel::cache::computed();
+        Ok(Some(ink_kernel::voids::voids(&tape, &self.ctx, lo, hi, res.unwrap_or(ext / COMPONENT_CELLS))))
+    }
+
+    /// `ink components`: a field's shells (mesh::analyze: those whose
+    /// triangles face inward are voids; an estimate), meshed at cells
+    /// `res`, used as given; else at its box's longest side / 160, made
+    /// again where it leaves material out (mesh::Unresolved: a wall or
+    /// sheet thinner than the cells), each time at cells finer than the
+    /// thickest of what it left, while at most COMPONENT_CELLS across and
+    /// COMPONENT_TRIANGLES predicted; and its voids by proof (`voids`).
+    /// None: the field is empty.
+    pub fn components(&mut self, f: u32, res: Option<f64>) -> Result<Option<Components>, InkError> {
+        let Some(voids) = self.voids(f, res)? else { return Ok(None) };
+        let Some((lo, hi, _)) = self.bounds(f) else { return Ok(None) };
+        let ext = max_extent(lo, hi);
         let tape = self.clipped(f);
         let mut h = res.unwrap_or(ext / 160.0);
         let (mut m, mut unresolved) = ink_kernel::mesh::mesh_checked(&tape, &self.ctx, lo, hi, h);
@@ -997,7 +1013,7 @@ impl ModelView {
             h = finer;
             (m, unresolved) = ink_kernel::mesh::mesh_checked(&tape, &self.ctx, lo, hi, h);
         }
-        Ok(Some(Components { analysis: ink_kernel::mesh::analyze(&m), unresolved, res: h }))
+        Ok(Some(Components { analysis: ink_kernel::mesh::analyze(&m), unresolved, voids, res: h }))
     }
 
     /// Mass moments of a field (weighted by a density field, if any) and its

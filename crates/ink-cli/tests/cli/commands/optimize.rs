@@ -319,3 +319,47 @@ fn a_param_name_is_one_plain_name_the_command_line_sets_unquoted() {
     let d = ink(["optimize", &m]);
     assert!(d["feasible"] == true && d["apply"].as_str().is_some_and(|a| a.starts_with("--param child-2.p=")) && asserted_at(&m, &d) == ["holds"], "{}", pretty(&d));
 }
+
+/// A model whose design is a pressure (m, given in psi) that the
+/// requirement reads as a volume past m = 1, optimized: its answer and
+/// progress.
+fn refused_run(s: &Scratch) -> (Value, Vec<Value>) {
+    let src = "(param m 0)\n(body b (shape (- (max (abs x) (abs y) (abs z)) 0.5)))\n(optimize o (vary m 0 5) (maximize (value m))\n (require (volume (shape-of b) < (if (> m 1) m 2mm3))) (budget 40))\n";
+    let f = s.model("o.ink", src);
+    let log = s.path("o.progress");
+    let d = s.ink(["optimize", &f, "--param", "m=50psi"]).env("INK_PROGRESS", &log).ok();
+    (d, std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).collect())
+}
+
+/// A design the model refuses is no limit the answer hides: each one the
+/// search tried is in its answer and its progress (the answer so far, as a
+/// run stopped early gives it), with the error as the model gives it.
+#[test]
+fn designs_the_model_refuses_are_reported() {
+    let s = Scratch::new("optimize-refused");
+    let (d, lines) = refused_run(&s);
+    let refused = |e: &Value| e["message"].as_str().is_some_and(|m| m.starts_with("volume takes a volume") && m.contains("(--param m)")) && e["at"]["line"] == 4;
+    let failed = d["failed_designs"].as_array().cloned().unwrap_or_default();
+    assert!(!failed.is_empty() && failed.iter().all(|r| r["design"]["m"].as_f64().unwrap() > 1.0 && refused(&r["error"])), "{}", pretty(&d));
+    // Each design once.
+    assert!(failed.iter().enumerate().all(|(i, r)| failed[..i].iter().all(|q| q["design"] != r["design"])), "{}", pretty(&d));
+    assert!(d["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("could not be evaluated (failed_designs)")), "{}", pretty(&d));
+    assert!(lines.iter().any(|l| l["status"] == "failed" && refused(&l["row"]["error"])), "no refused design in progress");
+    assert!(lines.iter().any(|l| l["answer"]["failed_designs"].as_array().is_some_and(|f| !f.is_empty())), "no failed designs in the answer so far");
+    // A run stopped early answers what it has so far: its failed designs warned of too.
+    let warned = |l: &&Value| l["answer"]["warnings"].as_array().is_some_and(|w| w.iter().any(|w| w.as_str().is_some_and(|w| w.contains("could not be evaluated"))));
+    assert!(lines.iter().filter(|l| l["answer"]["failed_designs"].is_array()).all(|l| warned(&l)), "a failed design in the answer so far with no warning");
+}
+
+/// Every answer's `apply`, the finished one's and each in progress (what a
+/// run stopped early answers), gives a param in the unit it was given in:
+/// reused, m is still a pressure.
+#[test]
+fn every_answer_applies_a_param_in_its_unit() {
+    let s = Scratch::new("optimize-apply-unit");
+    let (d, lines) = refused_run(&s);
+    let in_unit = |a: &str| a.ends_with("MPa") || a.ends_with("psi");
+    assert!(in_unit(d["apply"].as_str().unwrap()), "{}", pretty(&d));
+    let applied: Vec<&str> = lines.iter().filter_map(|l| l["answer"]["apply"].as_str()).collect();
+    assert!(!applied.is_empty() && applied.iter().all(|a| in_unit(a)), "{applied:?}");
+}

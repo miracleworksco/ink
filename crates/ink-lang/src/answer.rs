@@ -7,6 +7,7 @@ use crate::command::{bounds, inexact_fields, measured, n, v3};
 use ink_core::V3;
 use ink_kernel::query::{Ended, Verdict};
 use ink_kernel::ranged::Proof;
+use ink_kernel::search::{Hunt, HuntEnd};
 use serde_json::{Value as J, json};
 
 /// How a claim's hint says to look finer.
@@ -69,9 +70,9 @@ fn proof_fields(r: &mut J, p: &Proof, names: &Names, attained: Option<(f64, bool
                 r["params"] = params_json(names, params);
             }
         }
-        Verdict::Unknown { cells, volume, ended, cell, .. } => {
+        Verdict::Unknown { cells, volume, ended, cell, hunt, .. } => {
             undecided_fields(r, *cells, *volume, *cell);
-            let holds = attained_fields(r, attained, "no point of what violates the claim is deeper than that");
+            let holds = attained_fields(r, attained, "no point of what violates the claim is deeper than that") + &hunt_fields(r, *hunt);
             r["hint"] = json!(undecided_hint(p.tol, *ended, &holds, !names.read.is_empty()));
         }
     }
@@ -94,6 +95,21 @@ fn attained_fields(r: &mut J, attained: Option<(f64, bool)>, means: &str) -> Str
         }
         None => String::new(),
     }
+}
+
+/// The hunt a search made for a violation once its proof ended, none
+/// found (search::Search::hunt): `hunt` (its cells, and what stopped it),
+/// and what a hint says of it.
+fn hunt_fields(r: &mut J, hunt: Option<Hunt>) -> String {
+    let Some(Hunt { cells, stopped }) = hunt else { return String::new() };
+    let (by, why) = match stopped {
+        HuntEnd::Cap => ("cap", "at its cap (as many cells as the proof tested)".to_string()),
+        HuntEnd::Budget => ("budget", format!("at the search's budget of {} cells", ink_kernel::query::BOXES)),
+        HuntEnd::Time => ("time limit", "by the call's time limit (a larger timeout_s hunts further)".to_string()),
+        HuntEnd::Stuck => ("refinement limit", "with every cell left at the refinement limit".to_string()),
+    };
+    r["hunt"] = json!({"cells": cells, "stopped_by": by});
+    format!(". It then tested {cells} more cells without finding a certified violation, stopped {why}")
 }
 
 /// A bound for a hint's prose: x rounded up to two significant figures,
@@ -126,25 +142,25 @@ fn undecided_fields(r: &mut J, cells: usize, volume: f64, cell: Option<[V3; 2]>)
 
 /// What can decide an emptiness proof left undecided, asked to accuracy
 /// `tol` (0: exactly, where the claim takes none or its shape is thin), by
-/// why its search ended (`ended`): a box at its finest cells stayed
+/// why its proof ended (`ended`): a box at its finest cells stayed
 /// undecided (the first the search, depth first, reached); it tested the
 /// boxes it may; or the time limit; `holds`, what it says of the
-/// accuracy it holds to (attained_fields); `ranged`, where the claim reads
+/// accuracy it holds to (attained_fields) and of its hunt (hunt_fields); `ranged`, where the claim reads
 /// ranged params (each is halved at most PARAM_SPLITS times in a box).
 fn undecided_hint(tol: f64, ended: Ended, holds: &str, ranged: bool) -> String {
     let params = narrower(ranged);
     let first = "undecided_cell, the first cell the search refined to its finest size, stays undecided";
     match (tol > 0.0, ended) {
         (true, Ended::Finest) => format!(
-            "{first} at half the claim's accuracy. What violates it there is about as deep as the accuracy, or too thin to hold a cube twice that size. The search ends there, the rest unrefined{holds}. {ASK_FINER}{params}"
+            "{first} at half the claim's accuracy. What violates it there is about as deep as the accuracy, or too thin to hold a cube twice that size. The proof ends there{holds}. {ASK_FINER}{params}"
         ),
         (false, Ended::Finest) => format!(
-            "{first} at the finest cells (res), asked exactly. Its bounds there neither settle the claim nor show a point failing it, so the search ends there, the rest unrefined{holds}. \
+            "{first} at the finest cells (res), asked exactly. Its bounds there neither settle the claim nor show a point failing it, so the proof ends there{holds}. \
              A finer (res r) decides boxes whose bounds narrow with their size. No res decides a claim whose value reaches its bound (surfaces that touch), or one reading a slope (diff) \
              where its formula switches branch (min, max, abs, clamp): there the bounds span every rate between the branches', at any size{params}"
         ),
         (_, Ended::Limit) => format!(
-            "the search stopped at its limit of {} boxes, or would have passed four times that at its rate (surfaces within the accuracy of each other over a large area){holds}. A larger (accuracy x) decides it sooner{params}",
+            "the proof stopped at the search's limit of {} boxes, or would have passed four times that at its rate (surfaces within the accuracy of each other over a large area){holds}. A larger (accuracy x) decides it sooner{params}",
             ink_kernel::query::BOXES
         ),
         (_, Ended::Stopped) => STOPPED.into(),
@@ -209,18 +225,18 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
                         r["params"] = params_json(names, params);
                     }
                 }
-                Verdict::Unknown { cells, volume, ended, cell, .. } => {
+                Verdict::Unknown { cells, volume, ended, cell, hunt, .. } => {
                     undecided_fields(&mut r, *cells, *volume, *cell);
                     // What it holds to (no pair closer than the clearance
                     // less that), over all of the shapes or in the window
                     // (Check::attained).
-                    let holds = attained_fields(&mut r, c.attained(), "no pair of points is closer than the clearance less that");
+                    let holds = attained_fields(&mut r, c.attained(), "no pair of points is closer than the clearance less that") + &hunt_fields(&mut r, *hunt);
                     let near = "the gap is too close to the clearance to decide, or the shapes' bounds cannot separate them";
                     let smaller = "If the fit allows, claim a slightly smaller clearance: coarser cells decide it";
                     let finest = up((*cell).map_or(*res, |[lo, hi]| ink_kernel::query::max_extent(lo, hi)));
                     r["hint"] = json!(match ended {
                         Ended::Limit => format!(
-                            "The search stopped at its limit of {} boxes, or would have passed four times that at its rate. On the cells it reached, {near}{holds}. {smaller}{}",
+                            "The proof stopped at the search's limit of {} boxes, or would have passed four times that at its rate. On the cells it reached, {near}{holds}. {smaller}{}",
                             ink_kernel::query::BOXES,
                             narrower(!names.read.is_empty())
                         ),
@@ -316,6 +332,18 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
         Evidence::ValueSpan(result) => {
             r["bounds_over_scope"] = bounds(result.range.0, result.range.1);
             r["pieces"] = json!(result.pieces);
+            if let Some(ended) = result.ended {
+                let proof = match ended {
+                    Ended::Finest => format!(
+                        "a piece of the ranged params stays undecided at the refinement limit ({} halvings of each ranged param): narrower ranges halve finer",
+                        result.halvings
+                    ),
+                    Ended::Limit => format!("the proof stopped at the search's limit of {} pieces", ink_kernel::query::BOXES),
+                    Ended::Stopped => STOPPED.into(),
+                };
+                let hint = proof + &hunt_fields(&mut r, result.hunt);
+                r.as_object_mut().expect("an answer").entry("hint").or_insert(json!(hint));
+            }
             if let Some((at, v)) = &result.witness {
                 if !at.params.is_empty() {
                     r["params"] = params_json(names, &at.params);
@@ -363,15 +391,19 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
     // The answer's accuracy: null, unknown or an estimate.
     accuracy_fields(&mut r, c.status, c.asked);
     // How a guaranteed emptiness held: outright, or only to the accuracy
-    // (with the deepest violating point its loose cells' centres showed).
-    match c.held.filter(|_| c.holds_guaranteed()) {
+    // (with the deepest violating point its loose cells showed, and the
+    // ranged params' values, t's over a motion, it was found at).
+    match c.held.as_ref().filter(|_| c.holds_guaranteed()) {
         Some(crate::claims::Held::Outright) => r["held"] = json!("outright"),
         Some(crate::claims::Held::ToAccuracy { near }) => {
             r["held"] = json!("to the accuracy");
             if let Some((depth, at)) = near {
                 r["near"] = json!({"depth": depth});
-                if let Some(p) = at {
-                    r["near"]["at"] = v3(p);
+                if let Some((p, at)) = at {
+                    r["near"]["at"] = v3(*p);
+                    if at.params.iter().any(|(k, _)| names.read.contains(k)) {
+                        r["near"]["params"] = params_json(names, &at.params);
+                    }
                 }
             }
         }
@@ -514,5 +546,26 @@ mod tests {
                 x = x.next_up();
             }
         }
+    }
+
+    /// A hunt says what stopped it, each reason in plain words: a deadline
+    /// is never read as its cap, nor a cap as a search with nothing left.
+    #[test]
+    fn a_hunt_says_what_stopped_it() {
+        use super::{Hunt, HuntEnd, hunt_fields};
+        use serde_json::json;
+        for (stopped, by, says) in [
+            (HuntEnd::Cap, "cap", "stopped at its cap (as many cells as the proof tested)"),
+            (HuntEnd::Budget, "budget", "stopped at the search's budget"),
+            (HuntEnd::Time, "time limit", "stopped by the call's time limit"),
+            (HuntEnd::Stuck, "refinement limit", "stopped with every cell left at the refinement limit"),
+        ] {
+            let mut r = json!({});
+            let hint = hunt_fields(&mut r, Some(Hunt { cells: 7, stopped }));
+            assert!(hint.contains("tested 7 more cells without finding a certified violation") && hint.contains(says), "{hint}");
+            assert_eq!(r["hunt"], json!({"cells": 7, "stopped_by": by}));
+        }
+        let mut r = json!({});
+        assert_eq!((hunt_fields(&mut r, None), r), (String::new(), json!({})));
     }
 }

@@ -46,7 +46,7 @@ impl Package for Gauge {
         let k = r.derived(&format!("gauge:{mode}"));
         r.solved(k);
         r.keep("gauge", "gauge", e, Arc::new(Reading { mode, owns: [k] }))?;
-        Ok(Value::Field(r.graph().var(Var::Param(k as u32))))
+        Ok(Value::Field(r.graph().var(Var::Param(k as u32)), None))
     }
     fn clauses(&self) -> &'static [&'static str] {
         &["mark"]
