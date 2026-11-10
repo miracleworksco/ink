@@ -55,11 +55,24 @@ pub trait Package: Sync {
     fn shape_accuracy(&self, _metric: &str) -> bool {
         false
     }
+    /// Whether shape metric `metric` of a 2D profile (a prism, the same at
+    /// every height) is the same asked in the plane (ModelView::in_plane):
+    /// a wall's thickness is, a height is not. None is unless it says so.
+    fn plane_metric(&self, _metric: &str) -> bool {
+        false
+    }
     /// Metric `metric` (one of `shape_metrics`) of shape `f`, proven
     /// bounded, at cell size `res` (None: its own), to `accuracy` where it
     /// is answered to one (`shape_accuracy`).
     fn shape_metric(&self, _v: &mut crate::view::ModelView, metric: &str, _f: NodeId, _res: Option<f64>, _accuracy: f64) -> Result<Measured, InkError> {
         Err(InkError::msg(format!("'{metric}' is no metric of a shape")))
+    }
+    /// The cells shape metric `metric` of `f` is measured on at `res`
+    /// (None: its own), where it is a grid's estimate whose error coarser
+    /// cells check (claims::metric_claim), nothing measured. None: it is
+    /// not, or the shape is empty.
+    fn shape_res(&self, _v: &mut crate::view::ModelView, _metric: &str, _f: NodeId, _res: Option<f64>) -> Option<f64> {
+        None
     }
     /// Read one of its forms, `(head name clause ...)` (`args` is everything
     /// after the head), through the reader (the document's scope).
@@ -542,6 +555,12 @@ impl Registry {
         self.metric(head).is_some_and(|(p, m)| p.shape_accuracy(m))
     }
 
+    /// Whether metric `head` of a 2D profile is the same asked in the
+    /// plane (Package::plane_metric).
+    pub fn plane_metric(&self, head: &str) -> bool {
+        self.metric(head).is_some_and(|(p, m)| p.plane_metric(m))
+    }
+
     /// What metric `head`'s package says its metrics may leave out.
     pub fn exclusions(&self, head: &str) -> &'static [(&'static str, &'static str)] {
         self.metric(head).map_or(&[], |(p, _)| p.exclusions())
@@ -885,12 +904,21 @@ impl Doc {
     /// solve provided at t, in order; and the solves that failed there
     /// (index in `solves`, the error at its form), whose params keep their
     /// load-time values: nothing reading them is decided at this moment
-    /// (ModelView::refusal). Err: an unknown param, or an override of a
-    /// solved one.
+    /// (ModelView::refusal). Err: an unknown param, an override of a
+    /// solved one, or a moment or value a load-time box does not hold at
+    /// (covers_t, Doc::covered).
     pub fn ctx_at(&self, overrides: &[(String, crate::Given)], t: f64) -> Result<(Ctx, Vec<(usize, InkError)>), String> {
+        self.covers_t(t, None).map_err(|e| format!("{} ({})", e.message, e.hint.unwrap_or_default()))?;
         let providers = self.providers();
         let mut params: Vec<f64> = self.params.iter().map(|p| p.default).collect();
         for (k, v) in overrides.iter().map(|(k, g)| (k, &g.value)) {
+            // A text param's value was read while loading (TextParam).
+            if self.texts.iter().any(|p| p.name == *k) {
+                continue;
+            }
+            if v.is_nan() {
+                return Err(crate::command::not_a_number(k, overrides.iter().find(|o| o.0 == *k).and_then(|o| o.1.text.as_deref()).unwrap_or("")));
+            }
             // A (ranged lo hi), by its def, is looked at at a value of its
             // range (a command answering claims refuses it: ink-cli's session).
             if self.param_index(k).is_none()
@@ -918,6 +946,13 @@ impl Doc {
             }
             params[i] = *v;
         }
+        // A value a load-time box was not found over (Doc::covered).
+        for (k, (lo, hi), site) in &self.covered {
+            let v = params[*k];
+            if !(*lo <= v && v <= *hi) {
+                return Err(format!("'{}' is {v}, beyond {lo}..{hi}, the values a box found at load at {site} holds over", self.params[*k].name));
+            }
+        }
         let failed = self.provide_each(&mut params, t);
         Ok((Ctx::new(t, params), failed.into_iter().map(|(i, m)| (i, self.solve_error(i, m))).collect()))
     }
@@ -940,7 +975,7 @@ impl Doc {
             }
         }
         for (k, by) in changed {
-            let Some(site) = self.materialized(k) else { continue };
+            let Some(site) = self.materialized(k).or_else(|| self.covered(k).map(|c| c.1.to_string())) else { continue };
             let p = &self.params[k].name;
             let what = match by {
                 None => format!("{} sets '{p}'", name(new)),

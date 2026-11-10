@@ -6,13 +6,12 @@
 ; straight approach reaches under the rim.
 ;
 ; The stock is the block the mount is cut from. An access claim says every
-; point of the stock's air, 0.5 mm clear of the part, sees out along a
-; setup's direction; std's hidden looks along it, ranged over every
-; distance to past the part's far side. One claim per setup, over the
-; region it cuts: the cross hole from the side, the rest from top or
-; bottom. Together they cover the stock's air; from top and bottom alone
-; the cross hole is hidden. They read only where material is, so a sealed
-; void is hidden however its field is written.
+; point of the stock's air, 0.5 mm clear of the part, sees out along one of
+; the setups' directions; std's hidden looks along each, ranged over every
+; distance to past the part's far side. The cross hole is reached from the
+; side, the rest from top or bottom; from top and bottom alone the cross
+; hole is hidden. They read only where material is, so a sealed void is
+; hidden however its field is written.
 (import "std")
 
 (def top (vec 0 0 1))
@@ -30,8 +29,7 @@
 (body mount-t-slot (shape t-slot) (attr material "aluminum-6061"))
 
 (def air (clear-air mount block 0.5))
-(assert top-and-bottom-reach (empty (hidden mount block (max air (neg cross)) (vec top bottom))))
-(assert side-reaches-cross (empty (hidden mount block (max air cross) (vec side))))
+(assert setups-reach (empty (hidden mount block air (vec top bottom side))))
 ; expect-status: cross-from-top-and-bottom fails
 (assert cross-from-top-and-bottom (empty (hidden mount block air (vec top bottom))))
 ; expect-status: t-slot-reaches fails

@@ -9,6 +9,9 @@
 //!   reach, `path_thickness`). A body made by moving a section along a path
 //!   is free of self-overlap when the thickness is at least the section's
 //!   reach from the path.
+//!
+//! `(offset F d)` states one of its own: that F's value is the distance it
+//! grows (or shrinks) the shape by (ink_core::distance).
 
 use super::*;
 use ink_core::v3::{dot, norm, sub};
@@ -42,6 +45,12 @@ pub enum Test {
         pts: Vec<[NodeId; 3]>,
         v: NodeId,
     },
+    /// `(offset F d)`: F (as it grows, distance::exact) is the distance on
+    /// the side d grows or shrinks it by.
+    Offset {
+        f: NodeId,
+        d: NodeId,
+    },
 }
 
 impl Test {
@@ -49,6 +58,16 @@ impl Test {
         match self {
             Test::Value { e, v, .. } => vec![*e, *v],
             Test::PathThickness { pts, v, .. } => pts.iter().flatten().copied().chain([*v]).collect(),
+            Test::Offset { f, d } => vec![*f, *d],
+        }
+    }
+
+    /// The nodes whose params and moment a warning names: an offset's
+    /// distance, not its shape's sizes.
+    fn shown(&self) -> Vec<NodeId> {
+        match self {
+            Test::Offset { d, .. } => vec![*d],
+            t => t.nodes(),
         }
     }
 
@@ -58,6 +77,7 @@ impl Test {
         match self {
             Test::Value { cmp, .. } => 1 + *cmp as u8,
             Test::PathThickness { .. } => 0,
+            Test::Offset { .. } => 10,
         }
     }
 }
@@ -260,7 +280,7 @@ impl Doc {
                 }
                 let Value::Vec(items) = self.eval(arg, env)? else { return Err(self.err_hint(arg, "path-thickness takes a list of points", Some(usage.into()))) };
                 let mut pts = Vec::with_capacity(items.len());
-                for it in &items {
+                for it in items.iter() {
                     let c: Option<Vec<NodeId>> = match it {
                         Value::Vec(c) if (2..=3).contains(&c.len()) => c.iter().map(|x| if let Value::Field(f, _) = x { Some(*f) } else { None }).collect(),
                         _ => None,
@@ -278,13 +298,35 @@ impl Doc {
             return Err(self.err_hint(e, "a check's test takes numbers (constants, params, t), not fields of x y z", Some(usage.into())));
         }
         let value = self.eval(value, env)?;
-        // The same test stated again (a part used twice) is one condition,
-        // reported where it was first stated.
-        if self.checks_seen.insert((test.kind(), nodes)) {
+        self.state(test, text);
+        Ok(value)
+    }
+
+    /// Keep a test, where it was stated. The same test stated again (a
+    /// part used twice) is one condition, reported where it was first.
+    fn state(&mut self, test: Test, text: String) {
+        if self.checks_seen.insert((test.kind(), test.nodes())) {
             let calls = self.calls.iter().filter(|c| c.0 != "lambda").map(|(f, file, line)| format!("{f} ({file}:{line})")).collect();
             self.checks.push(Check { test, text, site: self.form_at.clone(), calls });
         }
-        Ok(value)
+    }
+
+    /// `(offset F d)`: F's shape grown by d, everything within d of it
+    /// (shrunk for d < 0: what lies farther than -d inside it), as F - d
+    /// with F written to be the distance where it can be
+    /// (distance::exact); ink check warns where it is not.
+    pub(super) fn eval_offset(&mut self, e: &Sexp, args: &[Sexp], env: &mut Env) -> R<Value> {
+        let usage = "usage: (offset-shape F d): the shape of F grown by d, everything within d of it, or for d < 0 shrunk, what lies farther than -d inside \
+                     it; d a number (constants, params, t). ink check warns where F's value is not the distance this reads";
+        let [fe, de] = args else { return Err(self.err_hint(e, "bad offset-shape", Some(usage.into()))) };
+        let (f, d) = (self.field(fe, env)?, self.field(de, env)?);
+        if self.g.depends_on(d, |v| matches!(v, Var::X | Var::Y | Var::Z)) {
+            return Err(self.err_hint(de, "an offset's distance is a number (constants, params, t), not a field of x y z", Some(usage.into())));
+        }
+        let f = ink_core::distance::exact(&mut self.g, f);
+        let out = self.g.sub(f, d);
+        self.state(Test::Offset { f, d }, format!("(offset-shape {fe} {de})"));
+        Ok(Value::Field(out, None))
     }
 
     /// The checks that fail at `ctx`, each as a warning saying where it was
@@ -311,7 +353,7 @@ impl Doc {
         let mut tested = HashSet::new();
         let mut out = Vec::new();
         for x in reported {
-            let nodes = x.test.nodes();
+            let nodes = x.test.shown();
             let calls = if x.calls.is_empty() { String::new() } else { format!(", in {}", x.calls.join(" > ")) };
             let mut values: Vec<String> = self.params_read(&nodes).into_iter().map(|k| format!("{} = {}", self.params[k].name, ctx.params[k])).collect();
             if nodes.iter().any(|&n| self.g.depends_on(n, |v| matches!(v, Var::T))) {
@@ -324,6 +366,31 @@ impl Doc {
                     let (e, v) = (num(*e), num(*v));
                     if !cmp.holds(e, v) {
                         out.push(format!("{head}: check {} fails: {e} {} {v} is false", x.text, cmp_text(*cmp)));
+                    }
+                }
+                Test::Offset { d, .. } if self.g.as_const(*d) == Some(0.0) => {}
+                Test::Offset { f, d } => {
+                    // The real amount and slope, bounded outward in the
+                    // context proofs use (ctx: its ranges and solves over
+                    // them): a float of a real expression may not be it.
+                    // Where it lacks a range the model has (no scope could
+                    // be made), what reads one has no bound.
+                    let ranges = (0..self.params.len()).any(|k| self.has_range(k));
+                    let unscoped = |n: NodeId| {
+                        self.params_read(&[n])
+                            .into_iter()
+                            .any(|k| ctx.p_spans.get(k as u32).is_none() && (self.has_range(k) || (ranges && self.solves.iter().any(|s| s.owns.contains(&k)))))
+                    };
+                    let d = if unscoped(*d) {
+                        ink_core::interval::I::ENTIRE
+                    } else {
+                        ink_core::eval::eval_interval(&Tape::new(&self.g, *d), ctx, [ink_core::interval::I::point(0.0); 3], None)
+                    };
+                    let slope = if unscoped(*f) { f64::INFINITY } else { ink_core::distance::slope(&self.g, *f, ctx) };
+                    let grows = ink_core::distance::reach(&self.g, *f).grows((d.lo, d.hi), slope);
+                    let sampled = self.g.sources(&[*f]).into_iter().filter(|s| matches!(s.kind, "mesh" | "redistance")).collect::<Vec<_>>();
+                    if let Some(why) = offset_failure(grows, d.lo > 0.0, slope, &sampled) {
+                        out.push(format!("{head}: {}: {why}", x.text));
                     }
                 }
                 Test::PathThickness { pts, v } => {
@@ -365,6 +432,56 @@ impl Doc {
         }
         out
     }
+}
+
+/// What an offset gives, where it is not shown to be what it means:
+/// `grow`, its amount shown positive; `sampled`, the samples of a distance
+/// the field reads.
+fn offset_failure(g: ink_core::distance::Grows, grow: bool, slope: f64, sampled: &[std::sync::Arc<ink_core::grid::Source>]) -> Option<String> {
+    use ink_core::distance::Grows;
+    let fix = "ink shows a distance only from how it is built, of numbers written as constants: x, y and z moved by them, slabs, spheres, \
+               cylinders and boxes along the axes (std's), their unions to grow, their intersections and subtracts to shrink. Build it so, or write \
+               (- f d) for the field's own growth";
+    Some(match g {
+        Grows::Exact => return None,
+        Grows::Sampled => sampled_offset(grow, sampled),
+        Grows::Within(r) if grow => format!(
+            "the field is not shown to be the distance outside its shape; its slope is at most {slope}, so this holds everything within {r} of it, and may \
+             reach farther (corners grown sharp, a 0 the shape keeps out filled). {fix}"
+        ),
+        Grows::Within(r) => format!(
+            "the field is not shown to be the distance inside its shape; its slope is at most {slope}, so this keeps only what lies farther than {r} \
+             inside it, and may lose more. {fix}"
+        ),
+        Grows::Unknown => format!(
+            "the field is not shown to be the distance to its shape, nor its slope bounded (or the amount's sign is not shown), so this need not hold \
+             what lies near the shape, nor stay near it. {fix}"
+        ),
+    })
+}
+
+/// What an offset of samples of a distance (`sampled`) gives: the source's
+/// offset only to within their error and spacing.
+fn sampled_offset(grow: bool, sampled: &[std::sync::Arc<ink_core::grid::Source>]) -> String {
+    let each: Vec<String> = sampled
+        .iter()
+        .map(|s| {
+            let source = if s.kind == "mesh" { format!("the mesh {}", s.what) } else { format!("the surface of {}", s.what) };
+            let error = match s.measured {
+                Some((m, n)) => format!("error measured up to {} at {n} points, an estimate", (m * 1e4).round() / 1e4),
+                None => "error not known".into(),
+            };
+            let between = (ink_core::grid::Source::interpolation_bound(s.res, 1.0) * 1e4).ceil() / 1e4;
+            format!("{source}, sampled at {} every {} mm: {error}, plus {between}", s.at, s.res)
+        })
+        .collect();
+    let way = if grow { "grows" } else { "shrinks" };
+    format!(
+        "an offset of sampled data is approximate: the field reads samples of a distance, and between samples it is their trilinear \
+         interpolant, which is no distance (its slope reaches sqrt 3 times theirs). So this {way} what was sampled by the amount only to \
+         within the samples' error plus sqrt 3 / 2 of their spacing ({}). Sample finer to tighten it, or offset the shape before it is sampled",
+        each.join("; ")
+    )
 }
 
 fn cmp_text(c: Cmp) -> &'static str {

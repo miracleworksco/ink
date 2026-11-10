@@ -15,6 +15,16 @@ pub fn at(at: f64) {
     AT.store(at.to_bits(), Ordering::Relaxed);
 }
 
+/// Whether the call has a time limit: searches may stop.
+pub fn limited() -> bool {
+    f64::from_bits(AT.load(Ordering::Relaxed)) > 0.0
+}
+
+/// What a search the time limit stopped answers: nothing, as it did not
+/// finish.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Stopped;
+
 /// Whether the searches are to stop: the time limit has passed.
 pub fn reached() -> bool {
     if PASSED.load(Ordering::Relaxed) {

@@ -974,6 +974,38 @@ fn a_pulley_turned_by_t_about_its_axis_on_a_shaft_its_bore_touches_holds() {
 }
 
 #[test]
+fn a_shaft_tilted_by_its_placement_in_a_still_bore_is_one_still_question_about_any_axis() {
+    // A shaft as wide as its bore, turned about its own axis by a rot-y on
+    // its carrier (no joint), in a still block with a set screw 0.4 off the
+    // bore. In the block's frame the shaft's turn moves nothing of it, about
+    // y as about z: the claim is asked once, reading no t (no t in its
+    // spans), and proven. In the shaft's frame the screw sweeps round the
+    // contact: 166 s and left to samples. Oversize, it fails.
+    let s = Scratch::new("motion-tilted-shaft");
+    let model = |axis: &str, r: &str| {
+        let (bore, turn) = match axis {
+            "y" => ("(move (cylinder-y 4 12) 0 0 15)", "(rot-x -90)"),
+            _ => ("(move (cylinder-z 4 12) 0 0 15)", "(move 0 0 0)"),
+        };
+        let screw = if axis == "y" { "(move (cylinder-z 1.5 2) 0 0 20.4)" } else { "(move (cylinder-x 1.5 2) 5.4 0 15)" };
+        let block = if axis == "y" { "(box 30 10 20)" } else { "(box 30 20 10)" };
+        format!(
+            "(import \"std\")\n(t-span 0 12)\n(def tilt (* 35 (cos (* 30 t))))\n\
+             (body block (shape (min (subtract (move {block} 0 0 15) {bore}) {screw})))\n(body shaft (shape (cylinder-z {r} 300)))\n\
+             (assembly carrier (instance s shaft (at {turn})))\n\
+             (assembly root (instance b block (at (move 0 0 25))) (instance c carrier (at (rot-{axis} tilt) (move 0 0 40))))\n"
+        )
+    };
+    for axis in ["y", "z"] {
+        let p = row(s.ink(["interfere", &s.model(&format!("tilted-{axis}.ink"), &model(axis, "4"))]));
+        let still = p["motion"]["how"] == "t ranged" && !has(&p["param_spans"], "t");
+        assert!(verdict(&p) == "holds" && still, "about {axis}: {}", pretty(&p));
+        let p = row(s.ink(["interfere", &s.model(&format!("tilted-{axis}-fat.ink"), &model(axis, "4.2"))]));
+        assert!(verdict(&p) == "fails", "oversize, about {axis}: {}", pretty(&p));
+    }
+}
+
+#[test]
 fn a_pin_a_turning_hole_leaves_fails_whichever_way_the_turn_is_shared() {
     // The pin given the disc's own turn (not nested in it), or its carrier
     // turned so, or both on joints with the same drive: only the pin's own

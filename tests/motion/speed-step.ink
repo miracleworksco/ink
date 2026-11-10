@@ -2,8 +2,9 @@
 ; drive that may jump (a select or floor switching on t, an atan2's wrap)
 ; is unknown there, never held: however small the jump (a nudge, a blip),
 ; and whatever accuracy it is asked to. The same drive without one (a
-; pulse or a kink written with clamp and max) is decided: a pulse past the
-; limit fails at a moment inside it.
+; pulse or a kink written with clamp and max, a select whose branches meet
+; where it switches) is decided: a pulse past the limit fails at a moment
+; inside it.
 (import "std")
 (t-span 0 1)
 (body arm (shape (box 10 2 2)))
@@ -16,7 +17,8 @@
   (instance jump arm (at (move 0 40 0)) (turn z (select (- t 0.5) 0 30)) (limits -90 90) (speed-limits -300 300))
   ; 10 deg/s, nudged 0.004 degrees at t = 0.53: 0.0004 mm at the arm's end.
   (instance nudge arm (at (move 0 60 0)) (turn z (select (- t 0.53) (* 10 t) (+ 0.004 (* 10 t)))) (speed-limits -300 300 (accuracy 0.01)))
-  ; 50 deg/s, then 100 deg/s from t = 0.5, written as a select.
+  ; 50 deg/s, then 100 deg/s from t = 0.5, written as a select: 25
+  ; degrees both sides of the switch.
   (instance switch arm (at (move 0 80 0)) (turn z (select (- t 0.5) (* 50 t) (+ 25 (* 100 (- t 0.5))))) (speed-limits -300 300))
   ; 200 steps of 0.008 degrees, 1.6 in all (0.14 mm at the arm's end).
   (instance stairs arm (at (move 0 100 0)) (turn z (* 0.008 (floor (* 200 t)))) (speed-limits -1 1 (accuracy 0.01)))
@@ -38,7 +40,6 @@
 ; expect-status: speed-limits:root/pulse fails
 ; expect-status: speed-limits:root/jump unknown
 ; expect-status: speed-limits:root/nudge unknown
-; expect-status: speed-limits:root/switch unknown
 ; expect-status: speed-limits:root/stairs unknown
 ; expect-status: speed-limits:root/treads unknown
 ; expect-status: speed-limits:root/hop unknown

@@ -27,22 +27,41 @@ impl Ctx {
         Ctx { t, params, t_span: None, p_spans: ParamSpans::NONE }
     }
 
-    /// The context as evaluating `tapes` reads it: t, the spans, and the
-    /// values of the params they read or that are ranged; every other param
-    /// NaN, and none past the last kept. A cached answer is computed from
-    /// this context and keyed by all of it (`fingerprint`), so it cannot
-    /// read what its key leaves out. None: a scope with derived params,
-    /// whose derivations are code (`Derive`), not data.
-    pub fn project(&self, tapes: &[&Tape]) -> Option<Ctx> {
-        if !self.p_spans.derive.0.is_empty() {
-            return None;
+    /// What evaluating `tapes` reads of the context: the params they
+    /// read (Tape::params_read), and the derivations of those that are
+    /// derived, in order, with what each reads in turn (what it derives,
+    /// reads and its equations read), sorted.
+    pub fn read_by(&self, tapes: &[&Tape]) -> (Vec<u32>, Vec<std::sync::Arc<dyn Derive>>) {
+        let mut read: Vec<u32> = tapes.iter().flat_map(|t| t.params_read()).collect();
+        // Each derivation reads only those before it: one pass from the last.
+        let mut derive = Vec::new();
+        for d in self.p_spans.derive.0.iter().rev() {
+            if d.owns().iter().any(|k| read.contains(k)) {
+                read.extend(d.owns().iter().chain(d.reads()).copied().chain(d.tapes().iter().flat_map(|t| t.params_read())));
+                derive.insert(0, d.clone());
+            }
         }
-        let keep: Vec<u32> = tapes.iter().flat_map(|t| t.params_read()).chain(self.p_spans.list.iter().map(|s| s.k)).collect();
-        let mut params = vec![f64::NAN; keep.iter().max().map_or(0, |&k| k as usize + 1)];
-        for k in keep {
+        read.sort_unstable();
+        read.dedup();
+        (read, derive)
+    }
+
+    /// The context as evaluating `tapes` reads it (`read_by`): t and its
+    /// span, the ranged params read and what derives them, and the values
+    /// of the params read; every other param NaN and unranged, and none
+    /// past the last kept. A cached answer is computed from this context
+    /// and keyed by all of it (`fingerprint`), so it cannot read what its
+    /// key leaves out; a witness found in it names only the ranged params
+    /// read (the answer is the same at any value of the others).
+    pub fn project(&self, tapes: &[&Tape]) -> Ctx {
+        let (keep, derive) = self.read_by(tapes);
+        let mut params = vec![f64::NAN; keep.last().map_or(0, |&k| k as usize + 1)];
+        for &k in &keep {
             params[k as usize] = self.params.get(k as usize).copied().unwrap_or(f64::NAN);
         }
-        Some(Ctx { params, ..self.clone() })
+        let list: Vec<ParamSpan> = self.p_spans.list.iter().filter(|s| keep.binary_search(&s.k).is_ok()).copied().collect();
+        let mask = list.iter().fold(0, |m, s| m | 1 << (s.k % 64));
+        Ctx { params, p_spans: ParamSpans { mask, list, derive: Derivations(derive) }, ..self.clone() }
     }
 
     /// Hash all of the context a question reads into `fp` (of a projected
@@ -50,16 +69,13 @@ impl Ctx {
     /// names a moment gives the asker's: query::clearance), the
     /// params by their numbers in it
     /// (`names`); a ranged param by the model's number too, which a
-    /// witness's `params` give. False (nothing hashed): a scope with
-    /// derived params.
+    /// witness's `params` give; and what derives the derived ones, as data
+    /// (Derive::fingerprint). False: a derivation is not data.
     pub fn fingerprint(&self, fp: &mut crate::graph::Fingerprint, names: &crate::tape::Names) -> bool {
         // Every field, named: one added must be hashed too.
         let Ctx { t, params, t_span, p_spans } = self;
         // `mask` is the ranged params' numbers' bits, hashed with them.
         let ParamSpans { mask: _, list, derive } = p_spans;
-        if !derive.0.is_empty() {
-            return false;
-        }
         fp.word(names.reads_t as u64);
         if names.reads_t {
             fp.f64(*t).word(t_span.is_some() as u64);
@@ -73,7 +89,12 @@ impl Ctx {
         }
         fp.word(names.params().len() as u64);
         names.params().iter().for_each(|&k| _ = fp.f64(params.get(k as usize).copied().unwrap_or(f64::NAN)));
-        true
+        fp.word(derive.0.len() as u64);
+        derive.0.iter().all(|d| {
+            fp.word(d.tapes().len() as u64);
+            d.tapes().iter().for_each(|t| t.fingerprint(fp, names));
+            d.fingerprint(fp, names)
+        })
     }
 
     /// Param k's range: its span, else its value.
@@ -255,6 +276,19 @@ pub struct ParamSpan {
 pub trait Derive: Send + Sync {
     /// The params it derives.
     fn owns(&self) -> &[u32];
+    /// The equations it evaluates in a context: what it reads of one is
+    /// their params, `reads`, its own, and t where they read it.
+    fn tapes(&self) -> &[Tape] {
+        &[]
+    }
+    /// Hash everything else it derives from into `fp` (params numbered by
+    /// `names`), so that two derivations hashed alike derive alike from
+    /// what `tapes` says they read: a cached answer over its params is
+    /// keyed so (Ctx::fingerprint). False: it is not data (an answer
+    /// reading its params is not cached).
+    fn fingerprint(&self, _fp: &mut crate::graph::Fingerprint, _names: &crate::tape::Names) -> bool {
+        false
+    }
     /// The ranged params it reads (independent, or derived before it).
     fn reads(&self) -> &[u32];
     /// Set the spans of its params in `ctx.p_spans` to enclosures of their
@@ -268,6 +302,20 @@ pub trait Derive: Send + Sync {
     /// order), at ctx's values, in floats (0 where unknown): for searches
     /// that push params toward a witness, never for a bound.
     fn rates(&self, ctx: &Ctx) -> Vec<Vec<f64>>;
+    /// Whether it bounds its params' rates (`rate_bounds`): a first-order
+    /// bound then reads them through the params they are derived from
+    /// (scope_run), not as inputs of their own.
+    fn chains(&self) -> bool {
+        false
+    }
+    /// For each of its params, an enclosure of its value at the middle of
+    /// the spans of the params it reads in ctx, and bounds on its rate
+    /// along each of them (`reads` order) over all of their spans: it lies
+    /// in the first plus the rates times how far each read param is from
+    /// its middle. None: not bounded there.
+    fn rate_bounds(&self, _ctx: &Ctx) -> Option<Vec<(I, Vec<I>)>> {
+        None
+    }
 }
 
 /// A scope's derivations, compared by identity.
@@ -359,6 +407,17 @@ impl ParamSpans {
             return None;
         }
         self.list.iter().find(|s| s.k == k).map(|s| s.span)
+    }
+
+    /// What derives param k, where it is derived, bounds its rates
+    /// (Derive::chains) and reads only independent ranged params: a
+    /// first-order bound reads k through them.
+    pub fn chained(&self, k: u32) -> Option<&std::sync::Arc<dyn Derive>> {
+        if !self.is_derived(k) {
+            return None;
+        }
+        let d = self.derive.0.iter().find(|d| d.owns().contains(&k))?;
+        (d.chains() && d.reads().iter().all(|&r| self.get(r).is_some() && !self.is_derived(r))).then_some(d)
     }
 
     /// Whether param k is ranged and derived from the others.
@@ -501,6 +560,7 @@ fn run_lanes<const N: usize>(tape: &Tape, ctx: &Ctx, x: &[f64; N], y: &[f64; N],
                 (0..N).for_each(|k| r[k] = if c[k] < 0.0 { a[k] } else { b[k] });
             }
             Op::Tag(_) | Op::Lipschitz | Op::Read | Op::Deriv(_) | Op::Real => s[o] = s[ins.a as usize],
+            Op::Within(_) => s[o] = s[ins.c as usize],
             Op::Frame => s[o] = [0.0; N],
             Op::Grid(gi, m) => {
                 let (x, y, z) = (s[ins.a as usize], s[ins.b as usize], s[ins.c as usize]);
@@ -562,7 +622,7 @@ pub fn eval_interval_clamped(tape: &Tape, ctx: &Ctx, b: [I; 3], clamps: &[(usize
     let mut s = vec![I::point(0.0); tape.nslots];
     vals.clear();
     for (i, ins) in tape.code.iter().enumerate() {
-        let mut v = interval_ins(tape, ctx, i, ins, &s, b, None, None);
+        let mut v = interval_ins(tape, ctx, i, ins, &s, b, None, None, true);
         for &(k, c) in clamps {
             if k == i {
                 v = I { lo: v.lo.max(c.lo), hi: v.hi.min(c.hi) };
@@ -579,20 +639,60 @@ pub fn eval_interval_clamped(tape: &Tape, ctx: &Ctx, b: [I; 3], clamps: &[(usize
 
 /// `eval_interval` with the caller's storage for the slots (reused across
 /// calls that evaluate many small boxes or points).
-pub fn eval_interval_in(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: Option<&mut [u8]>, s: &mut Vec<I>) -> I {
+pub fn eval_interval_in(tape: &Tape, ctx: &Ctx, b: [I; 3], choices: Option<&mut [u8]>, s: &mut Vec<I>) -> I {
     s.clear();
     s.resize(tape.nslots, I::point(0.0));
     let (mut slopes, mut frames) = (Slopes::of(tape, tape.nslots), Vec::new());
+    let n = tape.code.len();
+    if tape.forked_steps() <= 2 * n as u64 {
+        return forked_now(tape, ctx, b, choices, s, &mut slopes, &mut frames, &[]);
+    }
+    // First every jump bounded across, the branches it decides kept (the
+    // caller's choices or our own): see forked_live.
+    let mut own = Vec::new();
+    let ch: &mut [u8] = match choices {
+        Some(c) => c,
+        None => {
+            own.resize(n, crate::tape::BOTH);
+            &mut own
+        }
+    };
+    let (mut i, mut straddled) = (0, Vec::new());
+    for &j in &tape.jumps {
+        let j = j as usize;
+        plain_run(tape, ctx, b, i, j, s, &mut slopes, &mut frames, Some(&mut *ch));
+        let mut run = Plain { tape, ctx, b, s, slopes: &mut slopes, frames: &mut frames };
+        let (y, x) = run.args(j);
+        let v = run.step(j, Some(&mut *ch));
+        if forks(tape, ctx, j, n, y, x, v).is_some() {
+            straddled.push(j);
+        }
+        i = j + 1;
+    }
+    plain_run(tape, ctx, b, i, n, s, &mut slopes, &mut frames, Some(&mut *ch));
+    if straddled.is_empty() {
+        return s[tape.out_slot()];
+    }
+    let live = tape.live(ch);
+    if !straddled.iter().any(|&j| live[j]) {
+        return s[tape.out_slot()];
+    }
+    forked_now(tape, ctx, b, Some(ch), s, &mut slopes, &mut frames, &live)
+}
+
+/// eval_interval_in's run forking the jumps `live` (all, where empty).
+#[allow(clippy::too_many_arguments)]
+fn forked_now(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: Option<&mut [u8]>, s: &mut Vec<I>, slopes: &mut Option<Slopes>, frames: &mut Vec<f64>, live: &[bool]) -> I {
     let (n, mut i) = (tape.code.len(), 0);
     for &j in &tape.jumps {
         let j = j as usize;
         // One inside the window of one before it was bounded there.
         if j >= i {
-            plain_run(tape, ctx, b, i, j, s, &mut slopes, &mut frames, choices.as_deref_mut());
-            i = fork(tape, &mut Plain { tape, ctx, b, s, slopes: &mut slopes, frames: &mut frames }, j, n, choices.as_deref_mut());
+            plain_run(tape, ctx, b, i, j, s, slopes, frames, choices.as_deref_mut());
+            i = fork(tape, &mut Plain { tape, ctx, b, s, slopes, frames }, j, n, choices.as_deref_mut(), live);
         }
     }
-    plain_run(tape, ctx, b, i, n, s, &mut slopes, &mut frames, choices);
+    plain_run(tape, ctx, b, i, n, s, slopes, frames, choices);
     s[tape.out_slot()]
 }
 
@@ -604,7 +704,7 @@ pub fn eval_interval_in(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: Option<&
 fn plain_run(tape: &Tape, ctx: &Ctx, b: [I; 3], from: usize, to: usize, s: &mut [I], slopes: &mut Option<Slopes>, frames: &mut Vec<f64>, mut choices: Option<&mut [u8]>) {
     for (i, ins) in tape.code[from..to].iter().enumerate() {
         let i = from + i;
-        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices.as_deref_mut(), Some(frames));
+        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices.as_deref_mut(), Some(frames), true);
         if let Some(sl) = slopes {
             v = sl.tighten(tape, ctx, i, ins, b, v);
         }
@@ -622,6 +722,10 @@ trait Fork {
     type Args;
     /// Instruction `i` bounded and stored.
     fn step(&mut self, i: usize, choices: Option<&mut [u8]>) -> I;
+    /// The instructions it runs (the tape's code, or its SSA form).
+    fn code(&self) -> &[crate::tape::Ins];
+    /// The bound slot `k` holds.
+    fn value(&self, k: u32) -> I;
     fn args(&self, i: usize) -> Self::Args;
     /// The bounds of the first two arguments.
     fn bounds(args: &Self::Args) -> (I, I);
@@ -635,6 +739,11 @@ trait Fork {
     fn put(&mut self, i: usize, o: Self::Out);
     /// Instruction `i`'s slot bounding a value either of two bound.
     fn join(&mut self, i: usize, a: Self::Out, b: Self::Out);
+    /// The sides of select `i` (its arguments `args`), as a jump, where
+    /// this evaluator forks one: None, but for scope_run's.
+    fn select_sides(&mut self, _i: usize, _args: &Self::Args) -> Option<[I; 2]> {
+        None
+    }
     /// Whether every value is read after the run (an evaluator over the
     /// tape's SSA form), not only the output: then every value a fork sets
     /// is joined (the jump's own, taken as each side, and each its window
@@ -654,8 +763,9 @@ trait Fork {
 /// anything between. A jump whose join lies past `to` (one also read
 /// outside the side it is in) is bounded across it, as is one straddled
 /// more than once (the cell is halved). A choice of a min, max or select
-/// holds where both sides make it.
-fn forked<F: Fork>(tape: &Tape, run: &mut F, from: usize, to: usize, mut choices: Option<&mut [u8]>) {
+/// holds where both sides make it. Only jumps `live` are forked (all,
+/// where it is empty; see forked_live).
+fn forked<F: Fork>(tape: &Tape, run: &mut F, from: usize, to: usize, mut choices: Option<&mut [u8]>, live: &[bool]) {
     let mut i = from;
     let first = tape.jumps.partition_point(|&j| (j as usize) < from);
     for &j in &tape.jumps[first..] {
@@ -665,41 +775,45 @@ fn forked<F: Fork>(tape: &Tape, run: &mut F, from: usize, to: usize, mut choices
         }
         if j >= i {
             (i..j).for_each(|k| _ = run.step(k, choices.as_deref_mut()));
-            i = fork(tape, run, j, to, choices.as_deref_mut());
+            i = fork(tape, run, j, to, choices.as_deref_mut(), live);
         }
     }
     (i..to).for_each(|k| _ = run.step(k, choices.as_deref_mut()));
 }
 
 /// `forked` from a jump instruction `i` (Tape::jumps): bounded, and where
-/// the region straddles it once (`jump_sides`), its window bounded once
+/// the region straddles it once (`jump_sides`; a select, `select_sides`), its window bounded once
 /// with each side and joined; unless its join lies past `to`. Where the run
 /// goes on. Out of line, as jumps are rare: the loop over the rest stays as
 /// tight as one with none.
 #[inline(never)]
-fn fork<F: Fork>(tape: &Tape, run: &mut F, i: usize, to: usize, mut choices: Option<&mut [u8]>) -> usize {
+fn fork<F: Fork>(tape: &Tape, run: &mut F, i: usize, to: usize, mut choices: Option<&mut [u8]>, live: &[bool]) -> usize {
     // Before the output's slot (which may be an argument's) is written.
     let args = run.args(i);
     let (y, x) = F::bounds(&args);
     let v = run.step(i, choices.as_deref_mut());
-    let Some(sides) = jump_sides(tape, run.ctx(), i, &tape.code[i], y, x, v) else { return i + 1 };
-    let r = tape.rejoin(i);
-    if r <= i || r >= to {
+    if live.get(i) == Some(&false) {
         return i + 1;
     }
+    let Some((sides, r)) = sides_of(tape, run, i, to, &args, y, x, v) else { return i + 1 };
+    FORKED.with(|c| c.set(c.get() + 1));
     // What the window's slots held before it: the values it reads from
-    // before the jump, which the first side may overwrite.
-    let keep: Vec<F::Out> = (i + 1..=r).map(|k| run.out(k)).collect();
+    // before the jump, which the first side may overwrite. One per slot
+    // (many of the window's instructions share one).
+    let mut slots: Vec<(u32, usize)> = (i + 1..=r).map(|k| (run.code()[k].out, k)).collect();
+    slots.sort_unstable();
+    slots.dedup_by_key(|x| x.0);
+    let keep: Vec<(usize, F::Out)> = slots.iter().map(|&(_, k)| (k, run.out(k))).collect();
     run.side(i, &args, 0, sides[0]);
-    forked(tape, run, i + 1, r + 1, choices.as_deref_mut());
+    forked(tape, run, i + 1, r + 1, choices.as_deref_mut(), live);
     // The value it joins at, and where every value is read, every value
     // the sides set: the jump's own (one side each) and its window's.
     let first = run.out(r);
     let window: Vec<F::Out> = if run.every_value() { (i..r).map(|k| run.out(k)).collect() } else { Vec::new() };
     let picked = choices.as_deref().map(|ch| ch[i + 1..=r].to_vec());
-    (i + 1..=r).zip(&keep).for_each(|(k, &o)| run.put(k, o));
+    keep.iter().for_each(|&(k, o)| run.put(k, o));
     run.side(i, &args, 1, sides[1]);
-    forked(tape, run, i + 1, r + 1, choices.as_deref_mut());
+    forked(tape, run, i + 1, r + 1, choices.as_deref_mut(), live);
     for (k, a) in (i..r).zip(window) {
         let b = run.out(k);
         run.join(k, a, b);
@@ -710,6 +824,94 @@ fn fork<F: Fork>(tape: &Tape, run: &mut F, i: usize, to: usize, mut choices: Opt
         ch[i + 1..=r].iter_mut().zip(p).for_each(|(c, p)| *c = if *c == p { p } else { crate::tape::BOTH });
     }
     r + 1
+}
+
+thread_local! {
+    static FORKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many jumps interval bounds have forked on this thread (each bounds
+/// its window twice): the work a fork costs, for tests to hold.
+pub fn forked_count() -> u64 {
+    FORKED.with(|c| c.get())
+}
+
+/// Where jump `i` (bounds of its arguments `y`, `x`, of its value `v`) is
+/// forked in a run up to `to`: its sides (jump_sides) and the instruction
+/// they join at, before `to`.
+fn forks(tape: &Tape, ctx: &Ctx, i: usize, to: usize, y: I, x: I, v: I) -> Option<([I; 2], usize)> {
+    let r = tape.rejoin(i);
+    if r <= i || r >= to {
+        return None;
+    }
+    jump_sides(tape, ctx, i, &tape.code[i], y, x, v).map(|s| (s, r))
+}
+
+/// `forks` for jump `i` of `run`, a select's sides from the run
+/// (Fork::select_sides): it joins at itself where it is the output, its
+/// sides' gap its jump.
+#[allow(clippy::too_many_arguments)]
+fn sides_of<F: Fork>(tape: &Tape, run: &mut F, i: usize, to: usize, args: &F::Args, y: I, x: I, v: I) -> Option<([I; 2], usize)> {
+    if !matches!(tape.code[i].op, Op::Select) {
+        return forks(tape, run.ctx(), i, to, y, x, v);
+    }
+    let r = tape.rejoin(i);
+    if r < i || r >= to {
+        return None;
+    }
+    run.select_sides(i, args).map(|s| (s, r))
+}
+
+/// `forked` over all of `run`'s code, its jumps forked only where the
+/// output reads them. A fork bounds its window twice, so forks inside it
+/// four times, and a window reaching the output (a jump's value read twice,
+/// one read through a negation: a screw's thread, and the same thread cut
+/// from its nut) holds every jump after it: a cell beside a row of tapped
+/// holes, on the half-plane each hole's atan2 cuts at, forks once per hole,
+/// nested. So the first pass bounds every jump across, noting the min, max
+/// and select branches it decides. A jump the output reads only through
+/// branches decided against it (Tape::live) is bounded across again: no
+/// value the output reads depends on it, and the bounds a fork narrows
+/// keep the same branches decided, so the output's bound is the forked
+/// one. The rest are forked in a second pass; where none straddled, the
+/// first is the run. Where forking every jump would take at most two runs
+/// (Tape::forked_steps), as many as the first pass and one more, all are
+/// forked at once.
+fn forked_live<F: Fork>(tape: &Tape, run: &mut F, mut choices: Option<&mut [u8]>) {
+    use crate::tape::BOTH;
+    let n = run.code().len();
+    if tape.forked_steps() <= 2 * n as u64 {
+        forked(tape, run, 0, n, choices, &[]);
+        return;
+    }
+    let (mut picks, mut straddled, mut next) = (vec![BOTH; n], Vec::new(), 0);
+    for i in 0..n {
+        let ins = run.code()[i];
+        let v = |k: u32| run.value(k);
+        match ins.op {
+            Op::Bin(op @ (BinOp::Min | BinOp::Max | BinOp::Emax)) => picks[i] = interval::bin(op, v(ins.a), v(ins.b)).1,
+            Op::Select => picks[i] = interval::select(v(ins.a), v(ins.b), v(ins.c)).1,
+            _ => {}
+        }
+        if tape.jumps.get(next) == Some(&(i as u32)) {
+            next += 1;
+            let args = run.args(i);
+            let (y, x) = F::bounds(&args);
+            let v = run.step(i, choices.as_deref_mut());
+            if sides_of(tape, run, i, n, &args, y, x, v).is_some() {
+                straddled.push(i);
+            }
+        } else {
+            run.step(i, choices.as_deref_mut());
+        }
+    }
+    if straddled.is_empty() {
+        return;
+    }
+    let live = tape.live(&picks);
+    if straddled.iter().any(|&j| live[j]) {
+        forked(tape, run, 0, n, choices, &live);
+    }
 }
 
 /// eval_interval's state.
@@ -728,7 +930,7 @@ impl Fork for Plain<'_> {
     #[inline(always)]
     fn step(&mut self, i: usize, choices: Option<&mut [u8]>) -> I {
         let ins = &self.tape.code[i];
-        let mut v = interval_ins(self.tape, self.ctx, i, ins, self.s, self.b, choices, Some(self.frames));
+        let mut v = interval_ins(self.tape, self.ctx, i, ins, self.s, self.b, choices, Some(self.frames), true);
         if let Some(sl) = self.slopes {
             v = sl.tighten(self.tape, self.ctx, i, ins, self.b, v);
         }
@@ -744,6 +946,12 @@ impl Fork for Plain<'_> {
     }
     fn ctx(&self) -> &Ctx {
         self.ctx
+    }
+    fn code(&self) -> &[crate::tape::Ins] {
+        &self.tape.code
+    }
+    fn value(&self, k: u32) -> I {
+        self.s[k as usize]
     }
     fn side(&mut self, i: usize, _: &(I, I), _: usize, side: I) {
         let o = self.tape.code[i].out as usize;
@@ -822,13 +1030,139 @@ pub fn eval_interval_scope(tape: &Tape, ctx: &Ctx, b: [I; 3], choices: Option<&m
     scope_run(tape, false, ctx, &inputs, b, choices, false).v[tape.out_slot()]
 }
 
+/// Where a select's condition changes sign over the box and the scope,
+/// found by its value: at `at`, a float, of the one input `var` of the
+/// scope it reads (time, or a ranged param that is not derived; anything
+/// spatial it reads a point of the box), along which it is strictly
+/// monotone throughout (its rate's bound keeps one sign: rising or
+/// falling) and exactly 0 there (bounded at that value alone: [0, 0], so
+/// 0 in real numbers). It is then negative on one side of `at` and
+/// positive on the other, at every point of the box and the scope: two
+/// conditions with one moment switch together, however they are written.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Moment {
+    pub var: Var,
+    pub at: f64,
+    pub rising: bool,
+}
+
+/// ctx with input `var` at `at` alone: time no span, a ranged param a
+/// span of one value (still ranged, so it keeps its meaning in real
+/// numbers: Inputs::centre).
+fn input_at(ctx: &Ctx, var: Var, at: f64) -> Ctx {
+    let mut c = ctx.clone();
+    match var {
+        Var::T => (c.t, c.t_span) = (at, None),
+        Var::Param(k) => {
+            c.params[k as usize] = at;
+            c.p_spans.list.iter_mut().filter(|s| s.k == k).for_each(|s| s.span = (at, at));
+        }
+        _ => unreachable!("an input of the scope"),
+    }
+    c
+}
+
+/// The Moment condition `c` (an ssa index) switches at, over the box `b`
+/// and ctx's scope; None where it is not one (it reads no input or more
+/// than one, or space along a side of the box, is not shown monotone, or
+/// has no float its bound at is [0, 0]).
+pub fn moment(tape: &Tape, ctx: &Ctx, c: usize, b: [I; 3]) -> Option<Moment> {
+    let sides = (0..3).filter(|&k| b[k].lo != b[k].hi).fold(0, |m, k| m | 1 << k);
+    if fixed(tape, ctx, c) || tape.axes_read(c) & sides != 0 {
+        return None;
+    }
+    let cone = tape.cone(c);
+    let mut var = None;
+    for ins in &cone.ssa {
+        let Op::Var(v) = ins.op else { continue };
+        let input = match v {
+            Var::X | Var::Y | Var::Z => {
+                let x = b[match v {
+                    Var::X => 0,
+                    Var::Y => 1,
+                    _ => 2,
+                }];
+                if x.lo != x.hi {
+                    return None;
+                }
+                continue;
+            }
+            Var::T => ctx.t_span.is_some_and(|(a, b)| a < b),
+            Var::Param(k) => ctx.p_spans.get(k).is_some_and(|(a, b)| a < b && !ctx.p_spans.is_derived(k)),
+        };
+        if input && var.replace(v).is_some_and(|w| w != v) {
+            return None;
+        }
+    }
+    let var = var?;
+    let span = match var {
+        Var::T => ctx.t_span?,
+        Var::Param(k) => ctx.p_spans.get(k)?,
+        _ => return None,
+    };
+    let inputs = match var {
+        Var::T => Inputs { t: true, params: Vec::new() },
+        Var::Param(k) => Inputs { t: false, params: vec![k] },
+        _ => return None,
+    };
+    let rate = eval_interval_rates(&cone, ctx, b, &inputs).1[0];
+    let rising = if rate.lo > 0.0 {
+        true
+    } else if rate.hi < 0.0 {
+        false
+    } else {
+        return None;
+    };
+    // Halved by its value in floats to a pair of neighbouring floats (or
+    // one where it is 0), then each float about them checked in bounds.
+    let p = [b[0].lo, b[1].lo, b[2].lo];
+    let f = |u: f64| eval_point(&cone, &input_at(ctx, var, u), p);
+    let (mut lo, mut hi) = span;
+    for _ in 0..2100 {
+        let m = span_mid((lo, hi));
+        if !(lo < m && m < hi) {
+            break;
+        }
+        let v = f(m);
+        if v.is_nan() {
+            return None;
+        }
+        if v == 0.0 {
+            (lo, hi) = (m, m);
+            break;
+        }
+        if (v < 0.0) == rising {
+            lo = m;
+        } else {
+            hi = m;
+        }
+    }
+    let exact = |u: f64| {
+        let v = eval_interval(&cone, &input_at(ctx, var, u), b, None);
+        v.lo == 0.0 && v.hi == 0.0
+    };
+    let near = [lo.next_down(), lo, hi, hi.next_up()];
+    let at = near.into_iter().find(|&u| span.0 <= u && u <= span.1 && exact(u))?;
+    Some(Moment { var, at, rising })
+}
+
+/// What eval_interval_cases groups selects' conditions by: their form
+/// (one value or its negation: the pair of a difference's operands, or
+/// the value and usize::MAX), or the Moment they switch at.
+#[derive(Clone, Copy, PartialEq)]
+enum Switch {
+    Form((usize, usize)),
+    At(Var, u64),
+}
+
 /// Conditions eval_interval_cases splits on at once (at most 3^3 cases).
 const MAX_CASE_CONDITIONS: usize = 3;
 
 /// eval_interval_scope, met with the hull of its bounds in each case of
 /// the selects it leaves undecided: those whose conditions are one value
-/// or its negation take their sides together at every point (c < 0, c =
-/// 0 or c > 0), so each case is bounded with the branches it takes alone;
+/// or its negation, or switch at one Moment, take their sides together at
+/// every point (c < 0, c = 0 or c > 0), so each case is bounded with the
+/// branches it takes alone;
 /// so are floors whose argument crosses one integer, one argument's alike.
 /// A switch read several times (a min's derivative, `Graph::diff`'s
 /// select, in each term of a product's; a trapezoid written as clamped
@@ -870,16 +1204,34 @@ pub fn eval_interval_cases(tape: &Tape, ctx: &Ctx, b: [I; 3]) -> I {
             args[..k].iter().for_each(|&a| read[a as usize] = true);
         }
     }
-    let mut groups: Vec<((usize, usize), Vec<(usize, bool)>)> = Vec::new();
+    let mut groups: Vec<(Switch, Vec<(usize, bool)>)> = Vec::new();
     for (i, ins) in ssa.iter().enumerate() {
         if !read[i] || !matches!(ins.op, Op::Select) || ch[i] != BOTH || fixed(tape, ctx, i) || same_branches(tape, i) {
             continue;
         }
         let (c, neg) = condition(ins.a as usize);
-        match groups.iter_mut().find(|g| g.0 == c) {
+        match groups.iter_mut().find(|g| g.0 == Switch::Form(c)) {
             Some(g) => g.1.push((i, neg)),
-            None => groups.push((c, vec![(i, neg)])),
+            None => groups.push((Switch::Form(c), vec![(i, neg)])),
         }
+    }
+    // Conditions written apart that switch at one Moment are one group,
+    // its sign that of the input less the moment (a condition falling
+    // through it reads it negated).
+    if groups.len() > 1 {
+        let mut by_value: Vec<(Switch, Vec<(usize, bool)>)> = Vec::new();
+        for (key, sel) in groups {
+            let (s, flip) = match moment(tape, ctx, ssa[sel[0].0].a as usize, b) {
+                Some(m) => (Switch::At(m.var, m.at.to_bits()), m.rising == sel[0].1),
+                None => (key, false),
+            };
+            let sel = sel.into_iter().map(|(i, neg)| (i, neg ^ flip));
+            match by_value.iter_mut().find(|g| g.0 == s) {
+                Some(g) => g.1.extend(sel),
+                None => by_value.push((s, sel.collect())),
+            }
+        }
+        groups = by_value;
     }
     // Each group's cases, as what they force: the side each of its selects
     // takes where the condition is negative, zero or positive (a select
@@ -1005,7 +1357,11 @@ pub const MAX_INPUTS: usize = 8;
 /// axes, time first. A ranged param that is not one (beyond MAX_INPUTS)
 /// keeps its span in the bound's centre, so the bound still holds for every
 /// value of it: the centre is then a box along it, and the bound is first
-/// order only in the axes.
+/// order only in the axes. A derived param whose rates are bounded
+/// (ParamSpans::chained: a solve on t's unknowns over a piece of t) is no
+/// input: it is read through those it is derived from, at its rates along
+/// them, so values it closes against them (a loop the solve closes) keep
+/// their dependency.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Inputs {
     /// Time (ctx.t_span).
@@ -1033,7 +1389,10 @@ impl Inputs {
                 for ins in &tape.ssa {
                     match ins.op {
                         Op::Var(Var::T) => t |= spans_t,
-                        Op::Var(Var::Param(k)) if ctx.p_spans.get(k).is_some() => params.push(k),
+                        Op::Var(Var::Param(k)) if ctx.p_spans.get(k).is_some() => match ctx.p_spans.chained(k).filter(|d| rated(d.as_ref(), ctx).is_some()) {
+                            Some(d) => params.extend(d.reads()),
+                            None => params.push(k),
+                        },
                         _ => {}
                     }
                 }
@@ -1110,9 +1469,11 @@ impl Inputs {
 /// each frame's extent over the box, the diagonal of its coordinates'
 /// bounds (set where a frame is bounded, read where a promise is): apart
 /// from the values, so no rule of theirs touches it. None: a promise is
-/// read as its value.
+/// read as its value. `slots`: `s` holds the tape's code's slots, so a
+/// min or max of a and a + c reads c's (Tape::apart) and is ordered by
+/// its sign.
 #[allow(clippy::too_many_arguments)]
-fn interval_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[I], b: [I; 3], choices: Option<&mut [u8]>, frames: Option<&mut Vec<f64>>) -> I {
+fn interval_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[I], b: [I; 3], choices: Option<&mut [u8]>, frames: Option<&mut Vec<f64>>, slots: bool) -> I {
     if fixed(tape, ctx, i) {
         return I::point(fixed_value(ins, |k| s[k as usize].lo, ctx));
     }
@@ -1127,7 +1488,25 @@ fn interval_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[I
         // A value times itself is its square (never negative).
         Op::Bin(BinOp::Mul) if ins.a == ins.b => interval::un(UnOp::Square, s[ins.a as usize]),
         Op::Bin(op) => {
-            let (v, c) = interval::bin(op, s[ins.a as usize], s[ins.b as usize]);
+            let (a, b) = (s[ins.a as usize], s[ins.b as usize]);
+            // a and a + c: ordered by c's sign, where bounds of each
+            // (both reading a) may overlap.
+            let order = tape.apart(i).filter(|_| slots).map_or(0.0, |(c, neg)| {
+                let c = s[c as usize];
+                let d = if neg { I::new(-c.hi, -c.lo) } else { c };
+                if d.lo > 0.0 {
+                    1.0
+                } else if d.hi < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                }
+            });
+            let (v, c) = match (op, order) {
+                (BinOp::Min, 1.0) | (BinOp::Max, -1.0) => (a, crate::tape::FIRST),
+                (BinOp::Min, -1.0) | (BinOp::Max, 1.0) => (b, crate::tape::SECOND),
+                _ => interval::bin(op, a, b),
+            };
             if let Some(ch) = choices {
                 ch[i] = c;
             }
@@ -1148,6 +1527,7 @@ fn interval_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[I
             if k.lo > 0.0 && extent.is_some_and(|e| v.hi - v.lo > k.lo * e) { promised(tape, ctx, i, b).map_or(v, |p| interval::meet(v, p)) } else { v }
         }
         Op::Tag(_) | Op::Read | Op::Deriv(_) | Op::Real => s[ins.a as usize],
+        Op::Within(_) => I::new(s[ins.a as usize].lo, s[ins.b as usize].hi),
         Op::Frame => {
             if let Some(f) = frames {
                 if f.len() < s.len() {
@@ -1219,7 +1599,7 @@ fn promised(tape: &Tape, ctx: &Ctx, i: usize, b: [I; 3]) -> Option<I> {
 fn cone_ins(tape: &Tape, ctx: &Ctx, j: u32, ins: &crate::tape::Ins, s: &[I], b: [I; 3]) -> I {
     match ins.op {
         Op::Lipschitz => s[ins.a as usize],
-        _ => interval_ins(tape, ctx, j as usize, ins, s, b, None, None),
+        _ => interval_ins(tape, ctx, j as usize, ins, s, b, None, None, false),
     }
 }
 
@@ -1269,6 +1649,43 @@ impl Region {
             Region::Sector { c, r, q, s } => std::array::from_fn(|k| add_o(I::point(c[k]), mul_o(I::point(r[k]), mul_o(s, q[k])))),
         }
     }
+    /// Over a sector with s > 0, 1 / s: the factor that takes a value
+    /// bounded as s^k w to one of lower degree (`Far`).
+    fn inverse(&self) -> Option<I> {
+        match *self {
+            Region::Sector { s, .. } if s.lo > 0.0 => Some(I::new((1.0 / s.hi).next_down().max(0.0), (1.0 / s.lo).next_up())),
+            _ => None,
+        }
+    }
+}
+
+/// A value over a far sector bounded by its growth with the sector's
+/// distance s: at every point at distance s it lies in s^k w (k >= 1).
+/// Where the linear forms stop (a radius, sqrt(x^2 + y^2); an angle, atan2
+/// of two coordinates) these go on: the radius of a sector is s times the
+/// radius of its directions, its angle that of its directions, both narrow
+/// however far it reaches, so a polar fold turns a narrow sector into a
+/// narrow one. A value of lower degree is lifted by 1 / s (its range times
+/// (1 / s)^j); one of degree 0 is its range.
+#[derive(Clone, Copy)]
+struct Far {
+    k: u8,
+    w: I,
+}
+
+/// The highest degree kept: a product of more coordinates is bounded by its
+/// range alone.
+const FAR_DEGREE: u8 = 4;
+
+impl Far {
+    /// A bound of degree `k` from one of degree `from` (`w`): w (1 / s)^(k - from).
+    fn lift(w: I, from: u8, k: u8, inv: I) -> I {
+        (from..k).fold(w, |w, _| mul_o(w, inv))
+    }
+    /// Its range over distances `s`: s^k w.
+    fn range(&self, s: I) -> I {
+        (0..self.k).fold(self.w, |w, _| mul_o(w, s))
+    }
 }
 
 impl Linear {
@@ -1305,12 +1722,23 @@ impl Linear {
 /// tighter bound. Plain interval arithmetic loses the dependency between
 /// such terms, which over an unbounded region loses everything (the far side
 /// of a rotated part); collected, and over a far sector, a rotation is exact
-/// up to the sector's width. Sound: both bounds hold for the real-number
-/// value.
+/// up to the sector's width. Over a far sector each value is also bounded
+/// by its growth with the distance (`Far`), so a radius and an angle stay
+/// narrow too. Sound: every bound holds for the real-number value.
 pub fn eval_interval_linear(tape: &Tape, ctx: &Ctx, region: &Region, choices: Option<&mut [u8]>) -> I {
-    let mut run =
-        Lin { tape, ctx, region, b: region.bounds(), s: vec![I::point(0.0); tape.nslots], lin: vec![None; tape.nslots], slopes: Slopes::of(tape, tape.nslots), frames: Vec::new() };
-    forked(tape, &mut run, 0, tape.code.len(), choices);
+    let far = region.inverse().map(|inv| (inv, vec![None; tape.nslots]));
+    let mut run = Lin {
+        tape,
+        ctx,
+        region,
+        b: region.bounds(),
+        s: vec![I::point(0.0); tape.nslots],
+        lin: vec![None; tape.nslots],
+        far,
+        slopes: Slopes::of(tape, tape.nslots),
+        frames: Vec::new(),
+    };
+    forked_live(tape, &mut run, choices);
     run.s[tape.out_slot()]
 }
 
@@ -1322,15 +1750,116 @@ struct Lin<'a> {
     b: [I; 3],
     s: Vec<I>,
     lin: Vec<Option<Linear>>,
+    /// Over a far sector, 1 / s and each slot's `Far` bound (None: degree
+    /// 0, its range).
+    far: Option<(I, Vec<Option<Far>>)>,
     slopes: Option<Slopes>,
     frames: Vec<f64>,
 }
 
+impl Lin<'_> {
+    /// Slot `k`'s bound as degree and w (its range at degree 0).
+    fn far_of(&self, k: u32) -> (u8, I) {
+        match &self.far {
+            Some((_, f)) => f[k as usize].map_or((0, self.s[k as usize]), |f| (f.k, f.w)),
+            None => (0, self.s[k as usize]),
+        }
+    }
+    /// Slots `a` and `b`'s bounds lifted to one degree, the higher.
+    fn far_pair(&self, inv: I, a: u32, b: u32) -> (u8, I, I) {
+        let ((ka, wa), (kb, wb)) = (self.far_of(a), self.far_of(b));
+        let k = ka.max(kb);
+        (k, Far::lift(wa, ka, k, inv), Far::lift(wb, kb, k, inv))
+    }
+    /// Instruction `ins`'s `Far` bound from its arguments' (`l` its linear
+    /// form), or the bound of degree 0 it gives where its degree falls to
+    /// 0 (an angle, a quotient). Read before its slot is written.
+    fn far_ins(&self, ins: &crate::tape::Ins, l: Option<&Linear>) -> (Option<Far>, Option<I>) {
+        let (Some((inv, _)), Region::Sector { c, r, q, .. }) = (&self.far, self.region) else { return (None, None) };
+        let inv = *inv;
+        // A linear form: d + a.c + s a.(r q), so w = (d + a.c) / s + a.(r q),
+        // met with the rule's (d may be the range of a value of degree 1).
+        let linear = l.filter(|l| !l.is_constant()).map(|l| {
+            let near = (0..3).fold(l.d, |acc, k| add_o(acc, mul_o(l.a[k], I::point(c[k]))));
+            let dir = (0..3).fold(I::point(0.0), |acc, k| add_o(acc, mul_o(mul_o(l.a[k], I::point(r[k])), q[k])));
+            add_o(mul_o(near, inv), dir)
+        });
+        let (far, angle) = self.far_rule(ins, inv);
+        match (far, linear) {
+            (None, Some(w)) => (Some(Far { k: 1, w }), angle),
+            (Some(f), Some(w)) if f.k == 1 => (Some(Far { k: 1, w: interval::meet(f.w, w) }), angle),
+            _ => (far, angle),
+        }
+    }
+    /// `far_ins` by the instruction's own rule, its linear form aside.
+    fn far_rule(&self, ins: &crate::tape::Ins, inv: I) -> (Option<Far>, Option<I>) {
+        let (k, w) = match ins.op {
+            Op::Tag(_) | Op::Lipschitz | Op::Read | Op::Deriv(_) | Op::Real => self.far_of(ins.a),
+            Op::Un(op @ (UnOp::Neg | UnOp::Abs)) => {
+                let (k, w) = self.far_of(ins.a);
+                (k, interval::un(op, w))
+            }
+            Op::Un(UnOp::Square) => {
+                let (k, w) = self.far_of(ins.a);
+                (2 * k, interval::un(UnOp::Square, w))
+            }
+            // Of an odd degree, lifted to the even one above.
+            Op::Un(UnOp::Sqrt) => {
+                let (k, w) = self.far_of(ins.a);
+                let e = k + k % 2;
+                (e / 2, interval::un(UnOp::Sqrt, Far::lift(w, k, e, inv)))
+            }
+            Op::Bin(BinOp::Mul) if ins.a == ins.b => {
+                let (k, w) = self.far_of(ins.a);
+                (2 * k, interval::un(UnOp::Square, w))
+            }
+            Op::Bin(BinOp::Mul) => {
+                let ((ka, wa), (kb, wb)) = (self.far_of(ins.a), self.far_of(ins.b));
+                (ka + kb, mul_o(wa, wb))
+            }
+            // A divisor one-signed: a quotient of lower degree is lifted.
+            Op::Bin(BinOp::Div) => {
+                let ((ka, wa), (kb, wb)) = (self.far_of(ins.a), self.far_of(ins.b));
+                if !(wb.lo > 0.0 || wb.hi < 0.0) {
+                    return (None, None);
+                }
+                let w = interval::div_o(wa, wb);
+                if ka >= kb { (ka - kb, w) } else { (0, Far::lift(w, 0, kb - ka, inv)) }
+            }
+            // s^k > 0: a sum, a min or max, and an Euclidean max of two
+            // bounds of one degree are those of their w; atan2's angle is
+            // that of its w, of degree 0.
+            Op::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Min | BinOp::Max | BinOp::Emax | BinOp::Atan2)) => {
+                let (k, wa, wb) = self.far_pair(inv, ins.a, ins.b);
+                if k == 0 {
+                    return (None, None);
+                }
+                (if op == BinOp::Atan2 { 0 } else { k }, interval::bin(op, wa, wb).0)
+            }
+            _ => return (None, None),
+        };
+        match k {
+            0 => (None, Some(w)),
+            k if k > FAR_DEGREE => (None, None),
+            k => (Some(Far { k, w }), None),
+        }
+    }
+}
+
 impl Fork for Lin<'_> {
-    type Out = (I, Option<Linear>, Option<interval::G>);
+    type Out = (I, Option<Linear>, Option<interval::G>, Option<Far>);
     type Args = (I, I);
+    /// An angle's coordinates over a far sector as their `Far` bounds of
+    /// one degree: atan2 does not see a positive scale, so its jump's sides
+    /// are those of the sector's directions.
     fn args(&self, i: usize) -> (I, I) {
         let ins = &self.tape.code[i];
+        if let (Op::Bin(BinOp::Atan2), Some((inv, _))) = (ins.op, &self.far) {
+            let (k, y, x) = self.far_pair(*inv, ins.a, ins.b);
+            if k > 0 {
+                return (y, x);
+            }
+        }
         (self.s[ins.a as usize], self.s[ins.b as usize])
     }
     fn bounds(args: &(I, I)) -> (I, I) {
@@ -1339,12 +1868,18 @@ impl Fork for Lin<'_> {
     fn ctx(&self) -> &Ctx {
         self.ctx
     }
+    fn code(&self) -> &[crate::tape::Ins] {
+        &self.tape.code
+    }
+    fn value(&self, k: u32) -> I {
+        self.s[k as usize]
+    }
     #[inline(always)]
     fn step(&mut self, i: usize, choices: Option<&mut [u8]>) -> I {
         let (tape, ctx, region, b) = (self.tape, self.ctx, self.region, self.b);
         let (s, lin) = (&self.s, &self.lin);
         let ins = &tape.code[i];
-        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices, Some(&mut self.frames));
+        let mut v = interval_ins(tape, ctx, i, ins, s, b, choices, Some(&mut self.frames), true);
         if let Some(sl) = &mut self.slopes {
             v = sl.tighten(tape, ctx, i, ins, b, v);
         }
@@ -1353,7 +1888,7 @@ impl Fork for Lin<'_> {
         // another's coefficients by).
         let scale = |k: u32| lin[k as usize].filter(|l| l.is_constant()).map_or(s[k as usize], |l| l.d);
         // Time is a constant term too: it does not vary over the region.
-        let l = if tape.fixed[i] || matches!(ins.op, Op::Const(_) | Op::Var(Var::Param(_) | Var::T)) {
+        let l = if tape.fixed[i] || matches!(ins.op, Op::Const(_) | Op::Within(_) | Op::Var(Var::Param(_) | Var::T)) {
             Some(Linear::constant(v))
         } else {
             match ins.op {
@@ -1415,8 +1950,18 @@ impl Fork for Lin<'_> {
         if let Some(l) = l {
             v = interval::meet(v, l.range(region));
         }
+        let (far, angle) = self.far_ins(ins, l.as_ref());
+        if let (Some(f), Region::Sector { s, .. }) = (far, region) {
+            v = interval::meet(v, f.range(*s));
+        }
+        if let Some(a) = angle {
+            v = interval::meet(v, a);
+        }
         self.s[ins.out as usize] = v;
         self.lin[ins.out as usize] = l;
+        if let Some((_, f)) = &mut self.far {
+            f[ins.out as usize] = far;
+        }
         v
     }
     fn side(&mut self, i: usize, _: &(I, I), _: usize, side: I) {
@@ -1424,18 +1969,24 @@ impl Fork for Lin<'_> {
         self.s[o] = side;
         // A floor's side is one number over the region.
         self.lin[o] = (side.lo == side.hi).then(|| Linear::constant(side));
+        if let Some((_, f)) = &mut self.far {
+            f[o] = None;
+        }
         if let Some(sl) = &mut self.slopes {
             sl.0[o].v = interval::meet(sl.0[o].v, side);
         }
     }
     fn out(&self, i: usize) -> Self::Out {
         let o = self.tape.code[i].out as usize;
-        (self.s[o], self.lin[o], self.slopes.as_ref().map(|sl| sl.0[o]))
+        (self.s[o], self.lin[o], self.slopes.as_ref().map(|sl| sl.0[o]), self.far.as_ref().and_then(|(_, f)| f[o]))
     }
-    fn put(&mut self, i: usize, (v, l, g): Self::Out) {
+    fn put(&mut self, i: usize, (v, l, g, far): Self::Out) {
         let o = self.tape.code[i].out as usize;
         self.s[o] = v;
         self.lin[o] = l;
+        if let Some((_, f)) = &mut self.far {
+            f[o] = far;
+        }
         if let (Some(sl), Some(g)) = (&mut self.slopes, g) {
             sl.0[o] = g;
         }
@@ -1445,6 +1996,13 @@ impl Fork for Lin<'_> {
         self.s[o] = interval::hull(a.0, b.0);
         // Coefficients that hold either form's (a value is one or the other).
         self.lin[o] = a.1.zip(b.1).map(|(p, q)| p.zip(&q, interval::hull));
+        if let Some((inv, f)) = &mut self.far {
+            // Each side's bound lifted to the higher degree.
+            let (ka, wa) = a.3.map_or((0, a.0), |f| (f.k, f.w));
+            let (kb, wb) = b.3.map_or((0, b.0), |f| (f.k, f.w));
+            let k = ka.max(kb);
+            f[o] = (k > 0).then(|| Far { k, w: interval::hull(Far::lift(wa, ka, k, *inv), Far::lift(wb, kb, k, *inv)) });
+        }
         if let (Some(sl), Some(ga), Some(gb)) = (&mut self.slopes, a.2, b.2) {
             sl.0[o] = ga.hull(&gb);
         }
@@ -1546,6 +2104,44 @@ pub fn eval_interval_scope_every(tape: &Tape, ctx: &Ctx, inputs: &Inputs, b: [I;
     scope_run(tape, true, ctx, inputs, b, None, rates)
 }
 
+/// The derived params `tape` reads through the inputs they are derived
+/// from (ParamSpans::chained, Derive::rate_bounds): each one's enclosure at
+/// the inputs' centre and its rates along them. One whose rates are not
+/// all bounded is an input of its own (Inputs::read); one that reads a
+/// param not among the inputs is read as a value ranged over its span, as
+/// a ranged param that is no input is; one the inputs name stays one.
+fn chained<const N: usize>(tape: &Tape, ctx: &Ctx, inputs: &Inputs) -> Vec<(u32, I, [I; N])> {
+    let mut out = Vec::new();
+    let mut done: Vec<*const ()> = Vec::new();
+    for ins in &tape.ssa {
+        let Op::Var(Var::Param(k)) = ins.op else { continue };
+        // One asked for as an input (rates along it wanted) is one.
+        let Some(d) = ctx.p_spans.chained(k).filter(|d| d.owns().iter().all(|&u| inputs.axis(Var::Param(u)).is_none())) else { continue };
+        let id = std::sync::Arc::as_ptr(d) as *const ();
+        if done.contains(&id) {
+            continue;
+        }
+        done.push(id);
+        let Some(axes) = d.reads().iter().map(|&r| inputs.axis(Var::Param(r))).collect::<Option<Vec<usize>>>() else { continue };
+        let Some(bounds) = rated(d.as_ref(), ctx) else { continue };
+        for (&u, (m, rates)) in d.owns().iter().zip(bounds) {
+            let mut du = [I::point(0.0); N];
+            for (&a, r) in axes.iter().zip(rates) {
+                du[a] = r;
+            }
+            out.push((u, m, du));
+        }
+    }
+    out
+}
+
+/// `d`'s rate bounds over ctx's spans (Derive::rate_bounds), where every
+/// rate is bounded: then its params are read through those it reads
+/// (Inputs::read, `chained`); else each is an input of its own.
+fn rated(d: &dyn Derive, ctx: &Ctx) -> Option<Vec<(I, Vec<I>)>> {
+    d.rate_bounds(ctx).filter(|b| b.iter().flat_map(|x| &x.1).all(|r| r.lo.is_finite() && r.hi.is_finite()))
+}
+
 /// scope_run with N rates per value (N at least inputs.len(); the rest are
 /// 0).
 fn scope_run_n<const N: usize>(tape: &Tape, every: bool, ctx: &Ctx, inputs: &Inputs, b: [I; 3], choices: Option<&mut [u8]>, rates: bool) -> Scoped {
@@ -1577,9 +2173,11 @@ fn scope_run_n<const N: usize>(tape: &Tape, every: bool, ctx: &Ctx, inputs: &Inp
         slopes: Slopes::of(tape, n),
         every,
         fv: Vec::new(),
+        next_gap: None,
         fm: Vec::new(),
+        chain: chained(tape, ctx, inputs),
     };
-    forked(tape, &mut run, 0, code.len(), Some(ch));
+    forked_live(tape, &mut run, Some(ch));
     let k = inputs.len();
     let mut flat = Vec::with_capacity(if rates { n * k } else { 0 });
     if rates {
@@ -1606,6 +2204,10 @@ struct Pair {
     /// Whether a derivative along t is marked of a value that differs
     /// between the sides: it has the jump's impulse.
     impulse: bool,
+    /// The jump's second side less its first where it switches: a floor's
+    /// next integer, atan2's whole turn, a select's branches' difference at
+    /// the Moment it switches.
+    gap: Gap,
 }
 
 /// scope_run's state.
@@ -1643,7 +2245,14 @@ struct Scope<'a, const N: usize> {
     every: bool,
     /// The frames' extents over the scope and at the centre (interval_ins).
     fv: Vec<f64>,
+    /// The select forked next: its branches' difference at its Moment
+    /// (select_sides), for its Pair.
+    next_gap: Option<Gap>,
     fm: Vec<f64>,
+    /// Derived params read through the inputs they are derived from
+    /// (ParamSpans::chained): each one's enclosure at the inputs' centre
+    /// and its rates along them.
+    chain: Vec<(u32, I, [I; N])>,
 }
 
 /// How far the mean value form reaches from a value at the inputs' centre
@@ -1792,7 +2401,7 @@ impl<const N: usize> Scope<'_, N> {
             // rates in time or params).
             Op::Tag(_) | Op::Lipschitz | Op::Deriv(_) | Op::Read | Op::Real => Some(d(a)),
             Op::Grid(gi, mk) => Some(interval::d_grid(&tape.grids[gi as usize], mk, [v[a], v[bb], v[c]], [d(a), d(bb), d(c)])),
-            Op::Frame => Some([I::point(0.0); M]),
+            Op::Frame | Op::Within(_) => Some([I::point(0.0); M]),
             Op::Const(_) | Op::Var(_) => unreachable!(),
         }
     }
@@ -1941,7 +2550,7 @@ impl<const N: usize> Scope<'_, N> {
             (self.v[o], self.m[o], self.d[o], self.j[o]) = (over, over, Some(du), jump);
             return over;
         }
-        let at_mid = interval_ins(tape, &self.mid, i, ins, &self.m, self.b, None, Some(&mut self.fm));
+        let at_mid = interval_ins(tape, &self.mid, i, ins, &self.m, self.b, None, Some(&mut self.fm), false);
         let r = around(over, at_mid, e);
         (self.v[o], self.m[o], self.d[o], self.j[o]) = (r, at_mid, Some(du), jump);
         r
@@ -1953,14 +2562,14 @@ impl<const N: usize> Fork for Scope<'_, N> {
     /// Each argument's bounds over the scope and at the centre, rates, how
     /// far it may jump, and its differences from the paired forks' first
     /// sides.
-    type Args = [(I, I, Option<[I; N]>, f64, [Option<Gap>; PAIRED]); 2];
+    type Args = [(I, I, Option<[I; N]>, f64, [Option<Gap>; PAIRED]); 3];
 
     #[inline(always)]
     fn step(&mut self, i: usize, choices: Option<&mut [u8]>) -> I {
         let (tape, ctx, ins) = (self.tape, self.ctx, &self.code[i]);
         let ch = choices.expect("scope_run passes its choices");
         let o = ins.out as usize;
-        let mut over = interval_ins(tape, ctx, i, ins, &self.v, self.b, Some(&mut *ch), Some(&mut self.fv));
+        let mut over = interval_ins(tape, ctx, i, ins, &self.v, self.b, Some(&mut *ch), Some(&mut self.fv), false);
         if let Some(sl) = &mut self.slopes {
             over = sl.tighten(tape, ctx, i, ins, self.b, over);
         }
@@ -1972,8 +2581,20 @@ impl<const N: usize> Fork for Scope<'_, N> {
         // The arguments' bounds before the output's slot (maybe one's) is
         // written, for the forks paired.
         let vals = (!self.pairs.is_empty()).then(|| [ins.a, ins.b, ins.c].map(|k| self.v[k as usize]));
+        let link = match ins.op {
+            Op::Var(Var::Param(k)) => self.chain.iter().find(|c| c.0 == k).map(|c| (c.1, c.2)),
+            _ => None,
+        };
         let (d, j) = (&self.d, &self.j);
-        let r = if fixed(tape, ctx, i) || !(axis.is_some() || args[..na].iter().any(|&k| d[k as usize].is_some() || j[k as usize] > 0.0)) {
+        let r = if let Some((m, du)) = link {
+            // Derived: from its value at the centre by its rates along the
+            // inputs it is derived from.
+            let e = reach(&du, &self.hw, self.inputs.len());
+            let v = if e.is_finite() { around(over, m, e) } else { over };
+            let m = if e.is_finite() { interval::meet(m, over) } else { over };
+            (self.v[o], self.m[o], self.d[o], self.j[o]) = (v, m, Some(du), 0.0);
+            v
+        } else if fixed(tape, ctx, i) || !(axis.is_some() || args[..na].iter().any(|&k| d[k as usize].is_some() || j[k as usize] > 0.0)) {
             (self.v[o], self.m[o], self.d[o], self.j[o]) = (over, over, None, 0.0);
             over
         } else {
@@ -1986,10 +2607,27 @@ impl<const N: usize> Fork for Scope<'_, N> {
     }
     fn args(&self, i: usize) -> Self::Args {
         let ins = &self.code[i];
-        [ins.a, ins.b].map(|k| {
+        [ins.a, ins.b, ins.c].map(|k| {
             let k = k as usize;
             (self.v[k], self.m[k], self.d[k], self.j[k], self.g.get(k).copied().unwrap_or([None; PAIRED]))
         })
+    }
+    /// A select whose condition switches at a Moment (once, over the
+    /// scope) forks: each side its branch over the region, their
+    /// difference where it switches its branches' there, bounded at the
+    /// moment alone (exact where they are: whole turns apart, read by a
+    /// turn, it does not jump).
+    fn select_sides(&mut self, i: usize, args: &Self::Args) -> Option<[I; 2]> {
+        let (tape, c) = (self.tape, args[0].0);
+        if !(c.lo < 0.0 && 0.0 <= c.hi) || same_branches(tape, i) || fixed(tape, self.ctx, i) {
+            return None;
+        }
+        let ins = &tape.ssa[i];
+        let m = moment(tape, self.ctx, ins.a as usize, self.b)?;
+        let at = input_at(self.ctx, m.var, m.at);
+        let branch = |k: u32| eval_interval(&tape.cone(k as usize), &at, self.b, None);
+        self.next_gap = Some(Gap::of(sub_o(branch(ins.c), branch(ins.b))));
+        Some([args[1].0, args[2].0])
     }
     fn bounds(args: &Self::Args) -> (I, I) {
         (args[0].0, args[1].0)
@@ -1997,13 +2635,25 @@ impl<const N: usize> Fork for Scope<'_, N> {
     fn ctx(&self) -> &Ctx {
         self.ctx
     }
+    fn code(&self) -> &[crate::tape::Ins] {
+        self.code
+    }
+    fn value(&self, k: u32) -> I {
+        self.v[k as usize]
+    }
     fn side(&mut self, i: usize, args: &Self::Args, k: usize, side: I) {
         let (ins, zero) = (&self.code[i], [I::point(0.0); N]);
         let o = ins.out as usize;
         // Whether an argument moves with the inputs (or may jump along them).
         let moves = |&(_, _, d, j, _): &(I, I, Option<[I; N]>, f64, [Option<Gap>; PAIRED])| j > 0.0 || d.is_some_and(|d| d != zero);
-        let [y, x] = args;
+        let [y, x, _] = args;
         let (v, m, d, j, moving) = match ins.op {
+            // Its branch, as it is over the region; its seam moving where
+            // its condition does.
+            Op::Select => {
+                let w = &args[1 + k];
+                (w.0, w.1, w.2, w.3, moves(y))
+            }
             // One integer over the region: constant in the inputs.
             Op::Un(UnOp::Floor) => (side, side, y.2.map(|_| zero), 0.0, moves(y)),
             // The branch continued over the region, at the centre from its
@@ -2029,7 +2679,7 @@ impl<const N: usize> Fork for Scope<'_, N> {
                 let moving = moves(y) | moves(x);
                 if e.is_finite() { (around(v, m, e), m, Some(du), j, moving) } else { (v, v, Some(du), j, moving) }
             }
-            _ => unreachable!("jump_sides takes floors and atan2"),
+            _ => unreachable!("jump_sides takes floors and atan2, select_sides selects"),
         };
         (self.v[o], self.m[o], self.d[o], self.j[o]) = (v, m, d, j);
         // This side's range, not a meet: the bound across the cut is not
@@ -2049,6 +2699,8 @@ impl<const N: usize> Fork for Scope<'_, N> {
                 *f = Some(f.map_or(v, |f| interval::hull(f, v)));
             } else if q < PAIRED {
                 self.g[o][q] = match ins.op {
+                    // Its condition the same at each point: its branch's.
+                    Op::Select if y.4[q].is_none() => args[1 + k].4[q],
                     Op::Un(UnOp::Floor) if y.4[q].is_none() => None,
                     Op::Bin(BinOp::Atan2) if y.4[q].is_none() && x.4[q].is_none() => None,
                     _ => {
@@ -2069,7 +2721,12 @@ impl<const N: usize> Fork for Scope<'_, N> {
             let r = self.tape.rejoin(i);
             let mut first = vec![None; r - i + 1];
             first[0] = Some(v);
-            self.pairs.push(Pair { i, r, moving, second: false, first, impulse: false });
+            let gap = match ins.op {
+                Op::Un(UnOp::Floor) => Gap::of(I::point(1.0)),
+                Op::Select => self.next_gap.take().expect("select_sides set it"),
+                _ => Gap { v: I::point(0.0), turns: 1 },
+            };
+            self.pairs.push(Pair { i, r, moving, second: false, first, impulse: false, gap });
         } else {
             self.pairs[depth].second = true;
             if depth < PAIRED {
@@ -2077,10 +2734,7 @@ impl<const N: usize> Fork for Scope<'_, N> {
                     self.g = vec![[None; PAIRED]; self.v.len()];
                 }
                 self.g.iter_mut().for_each(|g| g[depth] = None);
-                self.g[o][depth] = Some(match ins.op {
-                    Op::Un(UnOp::Floor) => Gap::of(I::point(1.0)),
-                    _ => Gap { v: I::point(0.0), turns: 1 },
-                });
+                self.g[o][depth] = Some(self.pairs[depth].gap);
             }
         }
     }
@@ -2122,9 +2776,10 @@ impl<const N: usize> Fork for Scope<'_, N> {
                 Some(std::array::from_fn(|k| interval::hull(da[k], db[k])))
             }
         };
-        // A speed of what jumps where t moves the seam: unbounded along t.
-        if let (Some(d), Some(t), true) = (&mut d, self.inputs.axis(Var::T), p.moving && p.impulse) {
-            d[t] = I::ENTIRE;
+        // A speed of what jumps where t moves the seam: unbounded along t
+        // (each side's constant too).
+        if let (Some(t), true) = (self.inputs.axis(Var::T), p.moving && p.impulse) {
+            d.get_or_insert([zero; N])[t] = I::ENTIRE;
         }
         (self.v[o], self.m[o], self.d[o], self.j[o]) = (v, m, d, j);
         if let (Some(sl), Some(ga), Some(gb)) = (&mut self.slopes, a.4, b.4) {
@@ -2233,6 +2888,7 @@ fn grads_in<const N: usize>(tape: &Tape, ctx: &Ctx, pts: &[V3]) -> Vec<[f64; 4]>
                     }
                 }
                 Op::Tag(_) | Op::Lipschitz | Op::Deriv(_) | Op::Real => s[o] = s[ins.a as usize],
+                Op::Within(_) => s[o] = [s[ins.c as usize][0], [0.0; N], [0.0; N], [0.0; N]],
                 Op::Frame => s[o] = [[0.0; N]; 4],
                 Op::Grid(gi, m) => {
                     // Chain rule through the coordinate expressions.
@@ -2327,6 +2983,7 @@ pub fn eval_dual(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<f64> {
                 }
             }
             Op::Tag(_) | Op::Lipschitz | Op::Deriv(_) | Op::Real => r.copy_from_slice(&s[ins.a as usize * w..][..w]),
+            Op::Within(_) => r[0] = s[ins.c as usize * w],
             Op::Frame => {}
             Op::Grid(gi, m) => {
                 let (a, b, c) = (&s[ins.a as usize * w..][..w], &s[ins.b as usize * w..][..w], &s[ins.c as usize * w..][..w]);
@@ -2345,14 +3002,23 @@ pub fn eval_dual(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<f64> {
 
 /// Construction names (graph tag ids) on the active path at `p`, outermost
 /// first. From the root, follow the branch of each min/max/select that decides
-/// the value (ties take the first operand), and every operand of other ops,
+/// the value (on a tie, the operand that is the other under a name, or the
+/// one the other computes from and leaves as it is, else the first), and
+/// every operand of other ops,
 /// collecting the names passed. On a surface this says which named
 /// construction the point belongs to: implicit faces without B-rep.
 pub fn provenance(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<u32> {
     let v = values(tape, ctx, p);
     names_on(tape, |ins| {
         let (a, b, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
+        // A side that is the other under a name names it; one that computes
+        // from it and leaves it as it is does not.
+        let tie = |first: usize, second: usize| match (holds(tape, &v, first, second), holds(tape, &v, second, first)) {
+            (Holds::Computed, _) | (_, Holds::Plain) => second,
+            _ => first,
+        };
         match ins.op {
+            Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax) if v[a] == v[b] => Follow::One(tie(a, b)),
             Op::Bin(BinOp::Min) => Follow::One(if v[a] <= v[b] || v[b].is_nan() { a } else { b }),
             Op::Bin(BinOp::Max | BinOp::Emax) => Follow::One(if v[a] >= v[b] || v[b].is_nan() { a } else { b }),
             Op::Select => Follow::One(if v[a] < 0.0 { b } else { c }),
@@ -2384,6 +3050,10 @@ pub fn decided_names(tape: &Tape, ctx: &Ctx, p: V3, reach: f64) -> Vec<u32> {
             if !((v[a] - v[b]).abs() > reach * slope(lost)) { Follow::All } else { Follow::One(if first { a } else { b }) }
         };
         match ins.op {
+            // Equal to what it is built from, a side leaves it as it is:
+            // only that names the value.
+            Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax) if v[a] == v[b] && holds(tape, &v, a, b) == Holds::Computed => Follow::One(b),
+            Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax) if v[a] == v[b] && holds(tape, &v, b, a) == Holds::Computed => Follow::One(a),
             Op::Bin(BinOp::Min) => side(v[a] < v[b]),
             Op::Bin(BinOp::Max | BinOp::Emax) => side(v[a] > v[b]),
             Op::Bin(BinOp::Mul) => match (v[a] != 0.0, v[b] != 0.0) {
@@ -2395,6 +3065,73 @@ pub fn decided_names(tape: &Tape, ctx: &Ctx, p: V3, reach: f64) -> Vec<u32> {
             _ => Follow::All,
         }
     })
+}
+
+/// How instruction `from` holds `to`'s value at the point whose values are
+/// `v`: along its active path (a min's, max's or select's deciding operand,
+/// through names and identities), `to` itself (Plain: `from` is it under a
+/// name, which forms that face), or through an operation that computes
+/// from it (Computed: a construction on it, which a tie says leaves it as
+/// it is there), or not at all.
+#[derive(Clone, Copy, PartialEq)]
+enum Holds {
+    No,
+    Plain,
+    Computed,
+}
+
+fn holds(tape: &Tape, v: &[f64], from: usize, to: usize) -> Holds {
+    holds_in(tape, v, from, to, &mut std::collections::HashMap::new())
+}
+
+/// `holds`, each instruction once (`memo`).
+fn holds_in(tape: &Tape, v: &[f64], from: usize, to: usize, memo: &mut std::collections::HashMap<usize, Holds>) -> Holds {
+    if from == to {
+        return Holds::Plain;
+    }
+    if from < to {
+        return Holds::No;
+    }
+    if let Some(&h) = memo.get(&from) {
+        return h;
+    }
+    let ins = &tape.ssa[from];
+    let (a, b, c) = (ins.a as usize, ins.b as usize, ins.c as usize);
+    let h = match ins.op {
+        Op::Tag(_) | Op::Real | Op::Lipschitz | Op::Deriv(_) => holds_in(tape, v, a, to, memo),
+        Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax) if v[a] == v[b] => match (holds_in(tape, v, a, to, memo), holds_in(tape, v, b, to, memo)) {
+            (Holds::Plain, _) | (_, Holds::Plain) => Holds::Plain,
+            (Holds::Computed, _) | (_, Holds::Computed) => Holds::Computed,
+            _ => Holds::No,
+        },
+        Op::Bin(BinOp::Min) => holds_in(tape, v, if v[a] < v[b] { a } else { b }, to, memo),
+        Op::Bin(BinOp::Max | BinOp::Emax) => holds_in(tape, v, if v[a] > v[b] { a } else { b }, to, memo),
+        Op::Select => holds_in(tape, v, if v[a] < 0.0 { b } else { c }, to, memo),
+        _ if reads(tape, from, to) => Holds::Computed,
+        _ => Holds::No,
+    };
+    memo.insert(from, h);
+    h
+}
+
+/// Whether instruction `from` reads `to`'s value (through any of its
+/// arguments).
+fn reads(tape: &Tape, from: usize, to: usize) -> bool {
+    let mut stack = vec![from];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(i) = stack.pop() {
+        let (args, k) = tape.ssa[i].args();
+        for &j in &args[..k] {
+            let j = j as usize;
+            if j == to {
+                return true;
+            }
+            if j > to && seen.insert(j) {
+                stack.push(j);
+            }
+        }
+    }
+    false
 }
 
 /// Every instruction's value at `p`.
@@ -2420,6 +3157,7 @@ fn values(tape: &Tape, ctx: &Ctx, p: V3) -> Vec<f64> {
                 }
             }
             Op::Tag(_) | Op::Lipschitz | Op::Read | Op::Deriv(_) | Op::Real => v[a],
+            Op::Within(_) => v[c],
             Op::Frame => 0.0,
             Op::Grid(gi, m) => tape.grids[gi as usize].component([v[a], v[b], v[c]], m),
         };
@@ -2481,7 +3219,7 @@ fn names_on(tape: &Tape, pick: impl Fn(&crate::tape::Ins) -> Follow) -> Vec<u32>
             Op::Un(_) | Op::Lipschitz | Op::Read | Op::Deriv(_) | Op::Real => stack.push(a),
             Op::Grid(..) => stack.extend([c, b, a]),
             Op::Bin(_) => stack.extend([b, a]),
-            Op::Const(_) | Op::Var(_) | Op::Frame => {}
+            Op::Const(_) | Op::Var(_) | Op::Frame | Op::Within(_) => {}
         }
     }
     out
@@ -2549,6 +3287,7 @@ pub fn undefined_cases(tape: &Tape, ctx: &Ctx, pts: &[V3]) -> Vec<Undefined> {
                     }
                 }
                 Op::Tag(_) | Op::Lipschitz | Op::Read | Op::Deriv(_) | Op::Real => v[a],
+                Op::Within(_) => v[c],
                 Op::Frame => 0.0,
                 Op::Grid(gi, m) => tape.grids[gi as usize].component([v[a], v[b], v[c]], m),
             };
@@ -2639,7 +3378,7 @@ fn same_branches(tape: &Tape, i: usize) -> bool {
 /// (each line along it takes one side throughout).
 fn grad_run(tape: &Tape, code: &[crate::tape::Ins], nslots: usize, every: bool, ctx: &Ctx, b: [I; 3]) -> Vec<interval::G> {
     let mut run = Grad { tape, code, ctx, b, s: vec![interval::G::constant(0.0); nslots], every, g: Vec::new(), pairs: Vec::new() };
-    forked(tape, &mut run, 0, code.len(), None);
+    forked_live(tape, &mut run, None);
     run.s
 }
 
@@ -2727,7 +3466,7 @@ impl Grad<'_> {
         for j in i + 1..=r {
             let x = &self.code[j];
             let (args, na) = x.args();
-            let (v0, v1) = (interval_ins(self.tape, self.ctx, j, x, &s0, self.b, None, None), interval_ins(self.tape, self.ctx, j, x, &s1, self.b, None, None));
+            let (v0, v1) = (interval_ins(self.tape, self.ctx, j, x, &s0, self.b, None, None, false), interval_ins(self.tape, self.ctx, j, x, &s1, self.b, None, None, false));
             let exact = matches!(x.op, Op::Un(UnOp::Neg | UnOp::Abs | UnOp::Floor) | Op::Bin(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Min | BinOp::Max));
             let d = args[..na].iter().any(|&a| differs[a as usize]) && !(exact && v0.lo == v0.hi && v0 == v1);
             let o = x.out as usize;
@@ -2769,6 +3508,12 @@ impl Fork for Grad<'_> {
     }
     fn ctx(&self) -> &Ctx {
         self.ctx
+    }
+    fn code(&self) -> &[crate::tape::Ins] {
+        self.code
+    }
+    fn value(&self, k: u32) -> I {
+        self.s[k as usize].v
     }
     fn side(&mut self, i: usize, (y, x): &Self::Args, k: usize, side: I) {
         use interval::G;
@@ -2946,6 +3691,11 @@ fn grad_ins(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, s: &[inter
         Op::Bin(op) => interval::g_bin(op, s[ins.a as usize], s[ins.b as usize]),
         Op::Select => interval::g_select(s[ins.a as usize], s[ins.b as usize], s[ins.c as usize], same_branches(tape, i)),
         Op::Tag(_) | Op::Read | Op::Real => s[ins.a as usize],
+        // Constant in space, somewhere in its range (as a ranged param).
+        Op::Within(_) => {
+            let v = I::new(s[ins.a as usize].v.lo, s[ins.b as usize].v.hi);
+            G { v, d: [I::point(0.0); 3], l: 0.0, s2: (v.lo >= 0.0).then_some(0.0), m: interval::NO_GRAM }
+        }
         // Trusted only where its field's, k's and frame's constants are real.
         Op::Lipschitz if !promise_valid(tape, ctx, i, b) => s[ins.a as usize],
         Op::Lipschitz => interval::g_lipschitz(s[ins.a as usize], s[ins.b as usize], s[ins.c as usize]),

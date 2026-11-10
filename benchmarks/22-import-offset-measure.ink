@@ -33,6 +33,11 @@
 ; The offset, the shell and the two offsets of 3f are separate tasks,
 ; side by side.
 
+; The shell offsets samples: approximate, to within their error and
+; spacing (their trilinear interpolant is no distance), as ink check says.
+; expect-warning: 22-import-offset-measure.ink:48): (offset-shape f h): an offset of sampled data is approximate
+; expect-warning: 22-import-offset-measure.ink:48): (offset-shape f (neg h)): an offset of sampled data is approximate
+
 (import "std")
 
 (def imported (import-stl "inputs/22-part.stl" (res 0.25)))

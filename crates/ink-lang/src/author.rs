@@ -35,7 +35,7 @@ impl Doc {
     /// is evaluated at load time, and for each element the forms are
     /// repeated with `var` replaced by the element and `$var` inside
     /// symbols replaced by its text (for names: `bolt-$i`). Works inside
-    /// study, assembly, body and optimize clauses (any package form's);
+    /// study, assembly, body, relation and optimize clauses (any package form's);
     /// nests (a file's
     /// top-level forms are expanded as they are reached: Doc::run_forms).
     pub(super) fn expand_for(&mut self, items: &[Sexp]) -> R<Vec<Sexp>> {
@@ -70,7 +70,7 @@ impl Doc {
         let usage = "usage: (for var list form ...): repeats the forms for each element, with var and $var in names replaced";
         let var = var.sym().ok_or_else(|| self.err_hint(var, "for needs a variable name", Some(usage.into())))?.to_string();
         let values = match self.eval(list, env)? {
-            Value::Vec(v) => v,
+            Value::Vec(v) => Rc::unwrap_or_clone(v),
             v => vec![v],
         };
         let literals = values.iter().map(|v| self.literal(v, list)).collect::<R<Vec<_>>>()?;
@@ -92,9 +92,9 @@ impl Doc {
             }
             Value::Str(t) => (mk(SK::Str(t.clone())), t.clone()),
             Value::Vec(items) => {
-                let mut parts = vec![mk(SK::Sym("vec".into()))];
+                let mut parts = vec![mk(SK::BuiltIn("vec".into()))];
                 let mut texts = Vec::new();
-                for i in items {
+                for i in items.iter() {
                     let (s, t) = self.literal(i, at)?;
                     parts.push(s);
                     texts.push(t);
@@ -148,7 +148,7 @@ impl Doc {
                 for i in 0..n {
                     out.push(self.call(&f, lists.iter().map(|l| l[i].clone()).collect(), e)?);
                 }
-                return Ok(Value::Vec(out));
+                return Ok(Value::list(out));
             }
             "reduce" => {
                 let [f, l] = args else { return Err(self.err(e, "usage: (reduce f list); f must be associative (reduced as a balanced tree)")) };
@@ -173,11 +173,11 @@ impl Doc {
                 let mut out = Vec::new();
                 for item in self.list(l, env)? {
                     match item {
-                        Value::Vec(v) => out.extend(v),
+                        Value::Vec(v) => out.extend(v.iter().cloned()),
                         other => out.push(other),
                     }
                 }
-                return Ok(Value::Vec(out));
+                return Ok(Value::list(out));
             }
             "apply" => {
                 let [f, l] = args else { return Err(self.err(e, "usage: (apply f list)")) };
@@ -212,7 +212,7 @@ impl Doc {
                     return Err(self.err(e, format!("{name} would produce {} elements (limit 1e6)", if count < 1e12 { count.to_string() } else { format!("{count:e}") })));
                 }
                 let vals: Vec<f64> = (0..count as usize).map(|i| start + step * i as f64).collect();
-                return Ok(Value::Vec(vals.into_iter().map(|v| Value::Field(self.g.constant(v), None)).collect()));
+                return Ok(Value::list(vals.into_iter().map(|v| Value::Field(self.g.constant(v), None)).collect()));
             }
             "len" => {
                 let [l] = args else { return Err(self.err(e, "usage: (len list)")) };
@@ -228,18 +228,18 @@ impl Doc {
                 let mut out = Vec::new();
                 for (v, a) in vals.into_iter().zip(args) {
                     match v {
-                        Value::Vec(v) => out.extend(v),
+                        Value::Vec(v) => out.extend(v.iter().cloned()),
                         other => return Err(self.err(a, format!("concat takes lists, or strings: got a {}", other.kind()))),
                     }
                 }
-                return Ok(Value::Vec(out));
+                return Ok(Value::list(out));
             }
             "char-codes" => {
                 // A string's characters as numbers (Unicode code points), so
                 // load-time code can read text: index tables, decode data.
                 let [a] = args else { return Err(self.err(e, "usage: (char-codes \"text\")")) };
                 let Value::Str(s) = self.eval(a, env)? else { return Err(self.err(a, "char-codes takes a string")) };
-                return Ok(Value::Vec(s.chars().map(|c| Value::Field(self.g.constant(c as u32 as f64), None)).collect()));
+                return Ok(Value::list(s.chars().map(|c| Value::Field(self.g.constant(c as u32 as f64), None)).collect()));
             }
             "slice" => {
                 let usage = "usage: (slice list start [end]); negative indices count from the end";
@@ -255,7 +255,7 @@ impl Doc {
                     [a, b] => (idx(self, a, env)?, idx(self, b, env)?),
                     _ => return Err(self.err(e, usage)),
                 };
-                return Ok(Value::Vec(if a < b { items[a..b].to_vec() } else { Vec::new() }));
+                return Ok(Value::list(if a < b { items[a..b].to_vec() } else { Vec::new() }));
             }
             "if" => {
                 let [c, a, b] = args else { return Err(self.err(e, "usage: (if constant-condition then else)")) };
@@ -306,7 +306,7 @@ impl Doc {
                             }
                             _ => return Err(self.err_hint(k, format!("a frame has no '{key}'"), Some("its keys: \"origin\", \"x\", \"y\", \"z\"".into()))),
                         };
-                        return Ok(Value::Vec(v.map(|f| Value::Field(f, None)).to_vec()));
+                        return Ok(Value::list(v.map(|f| Value::Field(f, None)).to_vec()));
                     }
                     _ => return Err(self.err(d, "get expects data (a JSON object) or a frame")),
                 };

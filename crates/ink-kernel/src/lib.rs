@@ -9,6 +9,7 @@
 pub mod cache;
 pub mod centred;
 pub mod feature;
+pub mod integral;
 pub mod mesh;
 pub mod motion;
 pub mod octree;

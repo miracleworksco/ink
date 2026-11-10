@@ -33,7 +33,7 @@ pub const PACKAGES: &[&'static dyn lang::Package] = &[&design::Design];
 
 /// A loaded model and what analysis has learned of it, and checking a
 /// document's claims on it (ink-lang).
-pub use ink_lang::{claims, motion, validity, view};
+pub use ink_lang::{claims, cost, motion, validity, view};
 
 /// The language reference, `ink spec`.
 pub const SPEC: &str = include_str!("../../../docs/IR.md");

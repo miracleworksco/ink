@@ -1,6 +1,8 @@
 //! `ink mcp`: the CLI as an MCP server on stdio (newline-delimited JSON-RPC),
-//! for agents whose clients speak MCP (`claude mcp add ink -- ink mcp`). One
-//! tool runs any command: each call runs this binary once, so a call sees
+//! for agents whose clients speak MCP (`claude mcp add ink -- ink mcp`). Two
+//! tools run the commands, `ink` a call that only reads and `ink_write` one
+//! that writes a file (the command table's Writes), so a client can ask
+//! before a write and not before a query. Each call runs this binary once, so a call sees
 //! exactly what the command line would print, and a crash leaves the server
 //! standing. A package's command that reads words and asks to be answered
 //! here (Run::Words: a catalog's search, from the catalog it has read) the
@@ -29,6 +31,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::NO_FILE;
+use ink::lang::command::{Args, Opt, Writes};
+
+/// The tools: a call that only reads, and one that writes a file.
+const READ: &str = "ink";
+const WRITE: &str = "ink_write";
 
 /// The commands the tool runs: the command line's, but `mcp` itself. `help`
 /// is the command line's text, which says what each option does.
@@ -57,7 +64,7 @@ fn instructions() -> String {
     // Only a package's command reads words (Run::Words), so only a build
     // with one offers query.
     let words = if reads_words() { r#" A command that reads words, not a file, takes {"query": "WORDS"}."# } else { "" };
-    format!("{TOOL}{words} Below is spec section Tour.\n\n{}", crate::cli::tour())
+    format!("{TOOL}{words} {} Below is spec section Tour.\n\n{}", to_write(), crate::cli::tour())
 }
 
 /// Whether a command of this build reads words (a package's: Run::Words),
@@ -66,24 +73,76 @@ fn reads_words() -> bool {
     commands().iter().any(|c| crate::words(crate::registry(), c).is_some())
 }
 
-/// The tool's description, from the table `ink help` is printed from
-/// (main's COMMANDS): a line per command, what it answers and its options
-/// as JSON, the packages' after the core's (Command::tool). What each
-/// option does is `help`'s, not repeated in every session. Not given: the
-/// options the server sets (render's out, compact).
-fn description() -> String {
-    let hidden = |cmd: &str, k: &str| k == "compact" || (cmd, k) == ("render", "out");
-    let mut d = String::from(
-        r#"Run an ink command. Answers are JSON (spec, std: text). Options go in "options"; any command on a file takes {"param": ["w=40", "h=5"], "t": 1.5}; assert and interfere also {"nominal": true}. Units: mm, g, N, MPa, N mm, degC, s, deg; an option may give its own ("0.01in")."#,
-    );
-    for (name, help, opts) in crate::COMMANDS.iter().filter(|c| commands().contains(&c.0) && c.0 != "help") {
-        let ex: Vec<String> = opts.iter().filter(|k| !hidden(name, k)).map(|k| format!("\"{k}\": {}", crate::option(name, k).0)).collect();
+/// render's option for its picture: without it the server writes the
+/// picture in its own directory and gives it back as an image, so only a
+/// render given it writes a file of the agent's.
+const OWN_PICTURE: (&str, &str) = ("render", "out");
+
+/// A command's options, each with what it writes as this server runs it
+/// (the command table's Opt, but OWN_PICTURE's).
+fn opts_of(cmd: &str) -> Vec<Opt> {
+    let all = crate::commands(crate::registry());
+    let opts = all.into_iter().find(|c| c.0 == cmd).map_or(&[][..], |c| c.1);
+    opts.iter().map(|o| if (cmd, o.name) == OWN_PICTURE { Opt::writes(o.name) } else { *o }).collect()
+}
+
+/// Whether a call, as its command reads it, writes a file: it gives an
+/// option naming one, or its command writes one of its own without it.
+fn writes_file(a: &Args) -> bool {
+    opts_of(&a.cmd).iter().any(|o| match o.writes {
+        Writes::No => false,
+        Writes::File => a.opts.contains_key(o.name),
+        Writes::FileOrOwn => true,
+    })
+}
+
+/// The commands a tool runs: `ink_write` those with an option that
+/// writes, `ink` those that can run without writing.
+fn tool_commands(write: bool) -> Vec<&'static str> {
+    let any = |c: &str, w: fn(Writes) -> bool| opts_of(c).iter().any(|o| w(o.writes));
+    commands().into_iter().filter(|c| if write { any(c, |w| w != Writes::No) } else { !any(c, |w| w == Writes::FileOrOwn) }).collect()
+}
+
+/// Which calls are `ink_write`'s, said to agents.
+fn to_write() -> String {
+    let calls: Vec<String> = tool_commands(true)
+        .into_iter()
+        .map(|c| {
+            let opts = opts_of(c);
+            let given: Vec<&str> = opts.iter().filter(|o| o.writes == Writes::File).map(|o| o.name).collect();
+            match opts.iter().any(|o| o.writes == Writes::FileOrOwn) {
+                true => c.to_string(),
+                false => format!("{c} given {}", given.join(" or ")),
+            }
+        })
+        .collect();
+    format!("A call that writes a file ({}) is the `{WRITE}` tool's, with the same arguments.", calls.join(", "))
+}
+
+/// A tool's description, from the table `ink help` is printed from
+/// (main's COMMANDS): a line per command it runs, what it answers and its
+/// options as JSON, the packages' after the core's (Command::tool). What
+/// each option does is `help`'s, not repeated in every session. Not
+/// given: compact, which the server sets, and in `ink` the options naming
+/// a file the command writes.
+fn description(write: bool) -> String {
+    let hidden = |cmd: &str, k: &str| k == "compact" || (!write && opts_of(cmd).iter().any(|o| o.name == k && o.writes != Writes::No));
+    let mut d = match write {
+        false => format!(
+            r#"Run an ink command that only reads. Answers are JSON (spec, std: text). Options go in "options"; any command on a file takes {{"param": ["w=40", "h=5"], "t": 1.5}}; assert and interfere also {{"nominal": true}}. Units: mm, g, N, MPa, N mm, degC, s, deg; an option may give its own ("0.01in"). {}"#,
+            to_write()
+        ),
+        true => format!("Run an ink command that writes a file, overwriting one there: arguments and options as the `{READ}` tool's, which runs a call that writes none."),
+    };
+    let mine = tool_commands(write);
+    for (name, help, opts) in crate::COMMANDS.iter().filter(|c| mine.contains(&c.0) && c.0 != "help") {
+        let ex: Vec<String> = opts.iter().map(|o| o.name).filter(|k| !hidden(name, k)).map(|k| format!("\"{k}\": {}", crate::option(name, k).0)).collect();
         d += &format!("\n{name}: {help}{}", if ex.is_empty() { String::new() } else { format!(" {{{}}}", ex.join(", ")) });
     }
-    for c in crate::registry().commands() {
+    for c in crate::registry().commands().filter(|c| mine.contains(&c.name)) {
         d += &format!("\n{}: {}", c.name, c.tool);
     }
-    d + "\nhelp: what each option does."
+    if write { d } else { d + "\nhelp: what each option does." }
 }
 
 /// The calls under way by request id, each with its process once started:
@@ -207,7 +266,7 @@ pub fn serve() -> i32 {
             continue;
         };
         match method {
-            "tools/call" if p["name"] == "ink" => {
+            "tools/call" if p["name"] == READ || p["name"] == WRITE => {
                 running.lock().unwrap().insert(id.to_string(), None);
                 let (send, running, dir) = (send.clone(), running.clone(), dir.clone());
                 calls.retain(|c: &std::thread::JoinHandle<()>| !c.is_finished());
@@ -222,7 +281,7 @@ pub fn serve() -> i32 {
                             }}));
                         }
                     };
-                    match call(&p["arguments"], &id.to_string(), &running, &progress, &dir) {
+                    match call(&p["arguments"], p["name"] == WRITE, &id.to_string(), &running, &progress, &dir) {
                         Some(Ok(r)) => send(json!({"jsonrpc": "2.0", "id": id, "result": r})),
                         // The kernel crashed: the server's failure, not an answer.
                         Some(Err(e)) => send(error(id, -32603, e)),
@@ -242,7 +301,7 @@ pub fn serve() -> i32 {
                 }}));
             }
             "ping" => send(json!({"jsonrpc": "2.0", "id": id, "result": {}})),
-            "tools/list" => send(json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [tool()]}})),
+            "tools/list" => send(json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [tool(false), tool(true)]}})),
             other => send(error(id, -32601, format!("unknown method {other}"))),
         }
     }
@@ -259,14 +318,21 @@ fn error(id: J, code: i32, message: String) -> J {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn tool() -> J {
+/// A tool: `ink_write` (write) or `ink`. Its hints (MCP's annotations), all
+/// four given: `ink` changes nothing; `ink_write` overwrites the file it
+/// is given, and the same call again changes nothing more. Neither reaches
+/// past this machine.
+fn tool(write: bool) -> J {
+    let title = if write { "Write files with ink" } else { "Query models with ink" };
     let mut t = json!({
-        "name": "ink",
-        "description": description(),
+        "name": if write { WRITE } else { READ },
+        "title": title,
+        "description": description(write),
+        "annotations": {"title": title, "readOnlyHint": !write, "destructiveHint": write, "idempotentHint": true, "openWorldHint": false},
         "inputSchema": {
             "type": "object",
             "properties": {
-                "command": {"type": "string", "enum": commands()},
+                "command": {"type": "string", "enum": tool_commands(write)},
                 "file": {"type": "string", "description": if reads_words() { "The .ink file (none for help, spec, std and commands that read words)." } else { "The .ink file (none for help, spec and std)." }},
                 "query": {"type": "string", "description": "The words for a command that reads words, not a file."},
                 "options": {"type": "object", "description": "The command's options, as in the examples. true sets a flag; a list of strings repeats an option."},
@@ -279,12 +345,26 @@ fn tool() -> J {
     if !reads_words() {
         t["inputSchema"]["properties"].as_object_mut().unwrap().remove("query");
     }
+    // For a host that runs these tools for its own (ink.build): which
+    // calls write, by command, as this server tells them apart.
+    if write {
+        let by: serde_json::Map<String, J> = tool_commands(true)
+            .into_iter()
+            .map(|c| {
+                let opts = opts_of(c);
+                let given: Vec<&str> = opts.iter().filter(|o| o.writes == Writes::File).map(|o| o.name).collect();
+                (c.to_string(), json!({"always": opts.iter().any(|o| o.writes == Writes::FileOrOwn), "given": given}))
+            })
+            .collect();
+        t["_meta"] = json!({"ink/writes": by});
+    }
     t
 }
 
-/// Runs the command as the command line would, in a process of its own.
-/// None: the call was cancelled.
-fn call(args: &J, id: &str, running: &Running, progress: &dyn Fn(u64, &str), dir: &Path) -> Option<Result<J, String>> {
+/// Runs the command as the command line would, in a process of its own,
+/// if it is the tool's it came to (`write`: `ink_write`). None: the call
+/// was cancelled.
+fn call(args: &J, write: bool, id: &str, running: &Running, progress: &dyn Fn(u64, &str), dir: &Path) -> Option<Result<J, String>> {
     let fail = |text: String| running.lock().unwrap().remove(id).map(|_| Ok(json!({"content": [{"type": "text", "text": text}], "isError": true})));
     let cmd = args["command"].as_str().unwrap_or("");
     if !commands().contains(&cmd) {
@@ -297,15 +377,17 @@ fn call(args: &J, id: &str, running: &Running, progress: &dyn Fn(u64, &str), dir
         let args: Vec<&str> = ARGS.into_iter().filter(|&a| a != "query" || reads_words()).collect();
         return fail(format!("unknown argument '{k}': the arguments are {}; a command's options go in options ({{\"options\": {{\"{k}\": ...}}}})", args.join(", ")));
     }
-    let mut argv = vec![cmd.to_string()];
-    let reads_words = crate::words(crate::registry(), cmd).is_some();
+    // Positional arguments: after `--`, so none is read as an option.
+    let mut pos = Vec::new();
+    // help's query: the command it is asked about.
+    let reads_words = crate::words(crate::registry(), cmd).is_some() || cmd == "help";
     match args["file"].as_str() {
-        Some(f) => argv.push(f.to_string()),
+        Some(f) => pos.push(f.to_string()),
         None if !crate::no_file(crate::registry(), cmd) => return fail(format!("'{cmd}' needs a file")),
         None => {}
     }
     match args["query"].as_str() {
-        Some(q) if reads_words => argv.extend(q.split_whitespace().map(str::to_string)),
+        Some(q) if reads_words => pos.extend(q.split_whitespace().map(str::to_string)),
         Some(_) => {
             let what = if crate::no_file(crate::registry(), cmd) { "what it is asked goes in options" } else { "it reads a file, and its options go in options" };
             return fail(format!("'{cmd}' takes no query: {what} (help: {{\"command\": \"help\"}})"));
@@ -324,19 +406,21 @@ fn call(args: &J, id: &str, running: &Running, progress: &dyn Fn(u64, &str), dir
         J::Null => Default::default(),
         v => return fail(format!("options must be an object of option names, got {v}")),
     };
-    // A picture comes back as an image: render needs somewhere to write it.
-    let temp = (cmd == "render" && !opts.contains_key("out")).then(|| file(dir, "png"));
-    if let Some(p) = &temp {
-        opts.insert("out".into(), json!(p.to_string_lossy()));
+    // An option is named as the command reads it: a name with any other
+    // character (`out=part.dxf`) would be read as another option.
+    if let Some(k) = opts.keys().find(|k| !k.starts_with(|c: char| c.is_ascii_lowercase()) || !k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')) {
+        return fail(format!("'{k}' is no option name: options are named as `ink help {cmd}` names them"));
     }
     // Columns rather than repeated keys: the same answer in fewer tokens.
     if !NO_FILE.contains(&cmd) {
         opts.entry("compact").or_insert(json!(true));
     }
+    let mut argv = vec![cmd.to_string()];
     for (k, v) in &opts {
         // A list of strings repeats the option (--param, --attr); any other
         // value is the option's own (a JSON list of points is one --points).
-        let repeated = v.as_array().filter(|l| !l.is_empty() && l.iter().all(J::is_string));
+        // An empty list repeats it no times.
+        let repeated = v.as_array().filter(|l| l.iter().all(J::is_string));
         for v in repeated.cloned().unwrap_or_else(|| vec![v.clone()]) {
             match v {
                 J::Bool(true) => argv.push(format!("--{k}")),
@@ -346,6 +430,20 @@ fn call(args: &J, id: &str, running: &Running, progress: &dyn Fn(u64, &str), dir
             }
         }
     }
+    // The tool is decided by the call as the command reads it.
+    let a = Args::parse(&[argv.clone(), vec!["--".into()], pos.clone()].concat());
+    match (writes_file(&a), write) {
+        (true, false) => return fail(format!("ink {cmd} writes a file here: call the `{WRITE}` tool with these arguments")),
+        (false, true) => return fail(format!("ink {cmd} writes no file here: call the `{READ}` tool with these arguments")),
+        _ => {}
+    }
+    // A picture comes back as an image: render needs somewhere to write it.
+    let temp = ((cmd, "out") == OWN_PICTURE && !a.opts.contains_key("out")).then(|| file(dir, "png"));
+    if let Some(p) = &temp {
+        argv.push(format!("--out={}", p.to_string_lossy()));
+    }
+    argv.push("--".into());
+    argv.extend(pos);
     // A command answered here (a catalog's search, from the catalog this
     // server has read), on a thread of its own: stopped at its limit or
     // cancelled as a process is, it is told to stop and its answer is not
@@ -602,6 +700,9 @@ struct Finished {
     of: String,
     kept: bool,
     done: Vec<J>,
+    /// What else finished, taking time but counted with none (a model
+    /// loaded again at a declared case): the slowest are listed with them.
+    loaded: Vec<J>,
     /// The one running when stopped (of several, as interfere's moving
     /// pairs run, the one running longest), and when it started (Unix
     /// seconds).
@@ -609,6 +710,22 @@ struct Finished {
     /// The ranged params the one running reads, by name.
     ranged: Vec<String>,
     answer: serde_json::Map<String, J>,
+    /// What each was estimated to cost before it ran (ink::cost), by name:
+    /// the first estimate given (a run at a later case gives its own).
+    estimates: serde_json::Map<String, J>,
+    /// Every one still running when stopped, by name.
+    left_running: Vec<String>,
+}
+
+/// A claim's name, or a pair's ("a ~ b"), as progress gives it: what its
+/// estimate is listed by (a claim at a case, by the claim's).
+fn label(r: &J) -> String {
+    match r {
+        J::Array(p) => p.iter().filter_map(J::as_str).collect::<Vec<_>>().join(" ~ "),
+        J::String(n) => n.clone(),
+        J::Object(o) if o.contains_key("case") => label(&o["name"]),
+        r => r.to_string(),
+    }
 }
 
 /// What limited a call stopped at its time limit, `secs` after it started,
@@ -654,7 +771,12 @@ fn limited(f: Option<&Finished>, secs: f64) -> String {
                 J::Array(p) => holder(p).map_or(String::new(), |h| format!(", or check the assembly holding it alone (target {h})")),
                 _ => String::new(),
             };
-            format!("Most of the time went to {name}, still running after {ran:.0} s: it needs more than the call gave. {again}{own}.")
+            let est = match f.estimates.get(&label(r)).and_then(|c| Some((c["class"].as_str(), c["basis"].as_str()?))) {
+                Some((Some(class), basis)) => format!(" It was estimated at {class} before it ran ({basis})."),
+                Some((None, basis)) => format!(" Its cost before it ran: {basis}."),
+                None => String::new(),
+            };
+            format!("Most of the time went to {name}, still running after {ran:.0} s: it needs more than the call gave.{est} {again}{own}.")
         }
         _ => format!("The time went to what finished (the slowest under finished.slowest), and {name} was running when it stopped. {again}."),
     }
@@ -664,7 +786,19 @@ impl Finished {
     /// None: the command reported nothing (not one that reports).
     fn read(path: &std::path::Path) -> Option<Finished> {
         let text = std::fs::read_to_string(path).ok()?;
-        let mut f = Finished { status: None, total: None, of: "results".into(), kept: false, done: Vec::new(), running: None, ranged: Vec::new(), answer: Default::default() };
+        let mut f = Finished {
+            status: None,
+            total: None,
+            of: "results".into(),
+            kept: false,
+            done: Vec::new(),
+            loaded: Vec::new(),
+            running: None,
+            ranged: Vec::new(),
+            answer: Default::default(),
+            estimates: Default::default(),
+            left_running: Vec::new(),
+        };
         // Those running, in the order they started, each with its ranged
         // params.
         let mut running: Vec<(J, Option<f64>, Vec<String>)> = Vec::new();
@@ -677,15 +811,30 @@ impl Finished {
                 (f.total, f.of, f.kept) = (l["total"].as_u64(), of.to_string(), l["kept"] == true);
             } else if let J::Object(a) = &l["answer"] {
                 f.answer.extend(a.clone());
+            } else if let J::Object(e) = &l["estimates"] {
+                for (k, c) in e {
+                    f.estimates.entry(k.clone()).or_insert_with(|| c.clone());
+                }
             } else if !l["running"].is_null() {
-                running.push((l["running"].clone(), l["at"].as_f64(), l["ranged"].as_object().map_or(Vec::new(), |o| o.keys().cloned().collect())));
-            } else if !l["done"].is_null() {
-                if let Some(k) = running.iter().position(|r| r.0 == l["done"]) {
+                let r = match &l["case"] {
+                    J::Null => l["running"].clone(),
+                    c => json!({"name": l["running"], "case": c}),
+                };
+                running.push((r, l["at"].as_f64(), l["ranged"].as_object().map_or(Vec::new(), |o| o.keys().cloned().collect())));
+            } else if !l["done"].is_null() || !l["loaded"].is_null() {
+                // A claim at a declared case is that claim and case.
+                let what = |l: &J, k: &str| match &l["case"] {
+                    J::Null => l[k].clone(),
+                    c => json!({"name": l[k], "case": c}),
+                };
+                let (key, list) = if l["done"].is_null() { ("loaded", &mut f.loaded) } else { ("done", &mut f.done) };
+                if let Some(k) = running.iter().position(|r| r.0 == what(&l, key)) {
                     running.remove(k);
                 }
-                f.done.push(l);
+                list.push(l);
             }
         }
+        f.left_running = running.iter().map(|r| label(&r.0)).collect();
         if let Some((r, at, ranged)) = running.into_iter().next() {
             (f.running, f.ranged) = (Some((r, at)), ranged);
         }
@@ -719,8 +868,13 @@ impl Finished {
             let k = counts.get(&s).and_then(J::as_u64).unwrap_or(0);
             counts.insert(s, json!(k + 1));
         }
-        let mut slowest: Vec<&J> = self.done.iter().collect();
+        let mut slowest: Vec<&J> = self.done.iter().chain(&self.loaded).collect();
         slowest.sort_by(|a, b| ms(b).total_cmp(&ms(a)));
+        let named = |l: &J| match (&l["done"], &l["case"]) {
+            (J::Null, _) => l["loaded"].clone(),
+            (d, J::Null) => d.clone(),
+            (d, c) => json!({"name": d, "case": c}),
+        };
         let mut o = J::Object(self.answer.clone());
         o["stopped"] = json!(true);
         if self.total.is_none() && self.done.is_empty() {
@@ -732,9 +886,20 @@ impl Finished {
             o[&self.of] = J::Array(rows);
         }
         o["finished"] = json!({"done": self.done.len(), "total": self.total, "of": self.of, "counts": counts,
-            "slowest": slowest.iter().take(5).map(|l| json!({"name": l["done"], "ms": (ms(l) * 10.0).round() / 10.0})).collect::<Vec<_>>()});
+            "slowest": slowest.iter().take(5).map(|l| json!({"name": named(l), "ms": (ms(l) * 10.0).round() / 10.0})).collect::<Vec<_>>()});
         if let Some((r, _)) = &self.running {
             o["finished"]["running_when_stopped"] = r.clone();
+        }
+        // What was left (running, or not begun) as estimated before it
+        // ran, costliest first: where the time would have gone.
+        // A claim done at one case and running at the next is left.
+        let left_out = |k: &String| self.left_running.contains(k) || !self.done.iter().any(|l| label(&l["done"]) == *k);
+        let mut left: Vec<(&String, &J)> = self.estimates.iter().filter(|(k, c)| c.is_object() && left_out(k)).collect();
+        // Unclassed (a proof's) after the classed ones as costly as minutes.
+        let rank = |c: &J| ink::cost::CLASSES.iter().position(|x| c["class"] == x.1).unwrap_or(2);
+        left.sort_by_key(|(_, c)| std::cmp::Reverse(rank(c)));
+        if !left.is_empty() {
+            o["finished"]["left_estimated"] = left.iter().take(5).map(|(k, c)| json!({"name": k, "cost_estimate": c})).collect();
         }
         o
     }
@@ -756,6 +921,31 @@ fn base64(b: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// A claim done at the file's values and running at a case when the
+    /// call stopped is among what was left, with its estimate; one done
+    /// only at the values, its case not begun, is not.
+    #[test]
+    fn a_claim_running_at_a_later_case_is_left() {
+        let log = std::env::temp_dir().join(format!("ink-mcp-left-estimated-{}", std::process::id()));
+        let est = |c: &str| format!("{{\"class\":\"{c}\",\"basis\":\"b\"}}");
+        let lines = [
+            "{\"total\":2,\"of\":\"asserts\",\"kept\":true}".to_string(),
+            format!("{{\"estimates\":{{\"walls\":{},\"gap\":{}}}}}", est("seconds"), est("under a second")),
+            "{\"running\":\"walls\"}".into(),
+            "{\"done\":\"walls\",\"status\":\"holds\",\"ms\":900}".into(),
+            "{\"running\":\"gap\"}".into(),
+            "{\"done\":\"gap\",\"status\":\"holds\",\"ms\":3}".into(),
+            "{\"running\":{\"load\":{\"name\":{\"case\":1}}}}".into(),
+            "{\"loaded\":{\"load\":{\"name\":{\"case\":1}}},\"ms\":40}".into(),
+            "{\"running\":\"walls\",\"case\":{\"name\":\"Bo\"}}".into(),
+        ];
+        std::fs::write(&log, lines.join("\n") + "\n").unwrap();
+        let f = Finished::read(&log).unwrap();
+        let _ = std::fs::remove_file(&log);
+        let left = &f.json()["finished"]["left_estimated"];
+        assert!(left.as_array().map(Vec::len) == Some(1) && left[0]["name"] == "walls" && left[0]["cost_estimate"]["class"] == "seconds", "{left}");
+    }
+
     /// A solve stopped at its time limit before it answered (a package's
     /// still stepping) gives where it had got: its last status and
     /// answer so far, not a count of rows it never had, nor "It reported
@@ -770,6 +960,29 @@ mod tests {
         assert_eq!(f.count(), "stepping: step 20");
         assert!(j["stopped"] == true && j["solver"]["steps"] == 20 && j["status_when_stopped"] == "stepping: step 20" && j.get("finished").is_none(), "{j}");
         assert!(limited(Some(&f), 10.0).starts_with("Where it had got is below"));
+    }
+
+    /// A run at declared cases, stopped: each claim at each case counted
+    /// once against a total of them all (it said "3 of 1 asserts done"),
+    /// a model's load at a case among the slowest, and the claim running
+    /// at a case named with it.
+    #[test]
+    fn a_run_at_cases_counts_each_and_its_loads() {
+        let log = std::env::temp_dir().join(format!("ink-mcp-cases-{}", std::process::id()));
+        std::fs::write(
+            &log,
+            "{\"total\":1,\"of\":\"asserts\",\"kept\":true}\n{\"running\":\"fits\"}\n{\"done\":\"fits\",\"status\":\"holds\",\"ms\":5}\n\
+             {\"total\":3,\"of\":\"asserts\",\"kept\":true}\n{\"running\":{\"load\":{\"n\":2}}}\n{\"loaded\":{\"load\":{\"n\":2}},\"ms\":900}\n\
+             {\"running\":\"fits\",\"case\":{\"n\":2}}\n{\"done\":\"fits\",\"case\":{\"n\":2},\"status\":\"holds\",\"ms\":7}\n\
+             {\"running\":{\"load\":{\"n\":3}}}\n{\"loaded\":{\"load\":{\"n\":3}},\"ms\":800}\n{\"running\":\"fits\",\"case\":{\"n\":3}}\n",
+        )
+        .unwrap();
+        let f = Finished::read(&log).unwrap();
+        let _ = std::fs::remove_file(&log);
+        let j = f.json();
+        assert_eq!(f.count(), "2 of 3 asserts done");
+        assert_eq!(j["finished"]["slowest"][0], json!({"name": {"load": {"n": 2}}, "ms": 900.0}));
+        assert_eq!(j["finished"]["running_when_stopped"], json!({"name": "fits", "case": {"n": 3}}));
     }
 
     /// The progress of a run names what is running: the claim's range (the

@@ -12,6 +12,7 @@ ink-core.workspace = true
 ink-kernel.workspace = true
 libm = "0.2.16"
 rayon = "1"
+rustc-hash = "2"
 miniz_oxide = "0.8"
 crc32fast = "1"
 serde = { version = "1", features = ["derive"] }

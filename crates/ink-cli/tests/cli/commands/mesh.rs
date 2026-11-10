@@ -2,6 +2,7 @@
 //! what the answer says of each mesh (its res, deviation).
 
 use super::*;
+use serde_json::json;
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
@@ -62,6 +63,52 @@ fn a_deviation_past_the_accuracy_asked_is_warned_of_and_the_answer_claims_no_acc
         "{}",
         pretty(&d)
     );
+}
+
+#[test]
+fn a_smooth_union_is_meshed_whole() {
+    // Its blend meets min(a, b) continuously where a and b are k apart:
+    // no cell there is left undecided.
+    let s = Scratch::new("smooth-union");
+    let coin = s.model("coin.ink", "(import \"std\")\n(body coin (shape (extrude-z (smooth-union (circle-2d 20) (move (circle-2d 6) 0 22 0) 3) 0 3)))\n");
+    let d = ink(["mesh", &coin, "--out", &s.path("coin.stl")]);
+    let quiet = d.get("warnings").is_none_or(|w| w.as_array().is_some_and(Vec::is_empty));
+    assert!(d["objects"][0]["unresolved"]["cells"] == 0 && quiet, "{}", pretty(&d));
+}
+
+#[test]
+fn a_smooth_union_is_its_polynomial_with_its_slopes() {
+    // As written with a switch at |a - b| = k (h clamped, mixed): its
+    // value, gradient and rates over t and a param, where the blend meets
+    // min(a, b), where a = b, and at points about.
+    let s = Scratch::new("smooth-union-slopes");
+    let m = s.model(
+        "both.ink",
+        "(import \"std\")\n(param k 1)\n(fn switched (a b k)\n  (let ((h (clamp (+ 0.5 (/ (* 0.5 (- b a)) k)) 0 1)) (m (min a b)))\n\
+         (select (- (abs (- a b)) k) (min m (max (- m (* 0.25 k)) (- (mix b a h) (* k h (- 1 h))))) m)))\n\
+         (def a (- (len3 x y z) 2))\n(def b (* (+ 1 (* 0.1 t)) (- (len3 (- x 2.5) y z) 1)))\n\
+         (body new (shape (min (smooth-union x y k) (move (smooth-union a b (* 0.7 k)) 0 0 10))))\n\
+         (body old (shape (min (switched x y k) (move (switched a b (* 0.7 k)) 0 0 10))))\n",
+    );
+    let mut seed = 7u64;
+    let mut r = |lo: f64, hi: f64| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        lo + (hi - lo) * (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut pts = vec![json!([1, 0, 0]), json!([0, 1, 0]), json!([0, 0, 0]), json!([0.5, 0.5, 0]), json!([-1, 0, 0])];
+    pts.extend((0..400).map(|_| json!([r(-3.0, 5.0), r(-3.0, 3.0), r(-2.0, 12.0)])));
+    let pts = Value::Array(pts).to_string();
+    let rows = |t: &str| ink(["eval", &m, "--target", t, "--points", &pts, "--t", "0.5", "--keys", "value,grad,d_dt,d_dparams"])["targets"][0]["results"]["rows"].clone();
+    let (new, old) = (rows("new"), rows("old"));
+    let leaves = |v: &Value| v.as_array().unwrap().iter().flat_map(|c| c.as_array().cloned().unwrap_or_else(|| vec![c.clone()])).map(|x| num(&x)).collect::<Vec<f64>>();
+    for (i, (a, b)) in new.as_array().unwrap().iter().zip(old.as_array().unwrap()).enumerate() {
+        let (a, b) = (leaves(a), leaves(b));
+        assert!(a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-12), "point {i}: {a:?} vs {b:?}");
+        // No steeper than its steepest input (b's 1.05 at t = 0.5): its
+        // gradient is a mix of a's and b's.
+        let g = (a[1] * a[1] + a[2] * a[2] + a[3] * a[3]).sqrt();
+        assert!(g <= 1.05 + 1e-12, "point {i}: |grad| {g}");
+    }
 }
 
 #[test]

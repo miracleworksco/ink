@@ -4,14 +4,14 @@
 use crate::{Optimize, Optimized, Trace};
 use ink_lang::InkError;
 use ink_lang::claims::progress;
-use ink_lang::command::{Args, Command, extend, form_named, n, param_args, param_name, solved};
+use ink_lang::command::{Args, Command, Opt, extend, form_named, n, param_args, param_name, solved};
 use ink_lang::view::ModelView;
 use serde_json::{Value as J, json};
 
 /// The package's commands.
 pub(crate) static COMMANDS: [Command; 1] = [Command {
     name: "optimize",
-    options: &["name", "budget"],
+    options: &[Opt::reads("name"), Opt::reads("budget")],
     help: "Run an (optimize ...): vary params to minimize or maximize a metric while required claims hold.
                 [--name NAME] [--budget N]",
     tool: r#"Runs an (optimize ...). {"name": "lightest", "budget": 40}"#,
@@ -83,6 +83,9 @@ fn optimized_json(o: &Optimized, names: &[String], apply: &str) -> J {
         .iter()
         .map(|r| {
             let mut j = json!({"claim": r.claim, "search_measured": n(r.measured), "search_violation": n(r.violation.max(0.0)), "satisfied": r.satisfied()});
+            if let Some(e) = r.grid_error {
+                j["search_grid_error"] = n(e);
+            }
             if let Some(c) = &r.answer {
                 j["answer"] = ink_lang::answer::check_json(c, names);
             }

@@ -85,6 +85,18 @@ impl Package for Gauge {
         }
         Ok(())
     }
+    fn metrics(&self) -> &'static [(&'static str, &'static str)] {
+        &[("height", "how tall a shape is, top to bottom (mm)")]
+    }
+    fn shape_metrics(&self) -> &'static [&'static str] {
+        &["height"]
+    }
+    /// `(height f)`: f's proven box's height, not the same of a prism in
+    /// any slice (it says no plane_metric).
+    fn shape_metric(&self, v: &mut ModelView, _metric: &str, f: u32, _res: Option<f64>, _accuracy: f64) -> Result<ink::lang::Measured, InkError> {
+        let value = v.bounds(f).map_or(Ok(0.0), |(lo, hi, _)| Ok(hi[2] - lo[2]));
+        Ok(ink::lang::Measured { value, at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: true, held: None })
+    }
 }
 
 struct Mark {
@@ -168,6 +180,15 @@ fn statuses(src: &str) -> Vec<(String, Status)> {
 
 fn status(src: &str, name: &str) -> Status {
     statuses(src).into_iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("no claim {name}")).1
+}
+
+/// A shape metric is asked in the plane of a 2D profile only where its
+/// package says the plane keeps its meaning (Package::plane_metric): a
+/// prism's height, measured in the plane's band, was a guaranteed 200 mm.
+#[test]
+fn a_metric_is_asked_in_the_plane_only_where_its_package_says_so() {
+    assert_eq!(status("(assert tall (height (circle-2d 1) < 300))", "tall"), Status::Unknown);
+    assert_eq!(status("(assert walls (min-thickness (circle-2d 1) > 1.9))", "walls"), Status::Holds);
 }
 
 #[test]

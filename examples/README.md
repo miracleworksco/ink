@@ -16,6 +16,7 @@ fails`). Each line names the section of
 - [machining-access.ink](machining-access.ink): what a 3-axis mill reaches from its setups, and a T-slot it can't. ([6. Can it be made?](../docs/guide/walkthrough.md#6-can-it-be-made))
 - [motors-on-radius.ink](motors-on-radius.ink): four motors on an X frame's arms, with claims that fail if one is placed wrong. ([5. Motion](../docs/guide/walkthrough.md#5-an-assembly-that-moves))
 - [mould-undercut.ink](mould-undercut.ink): an injection-moulded half checked for undercuts along its pull, and the side action that frees one. ([6. Can it be made?](../docs/guide/walkthrough.md#6-can-it-be-made))
+- [name-ornament.ink](name-ornament.ink): a name ornament made to order from the customer's text, its letters in a script font sized to fit, with a claim for every name it allows. ([3. A part](../docs/guide/walkthrough.md#3-ask-for-a-part))
 - [nameplate.ink](nameplate.ink): nameplates sized from their text, engraved and raised. ([3. A part](../docs/guide/walkthrough.md#3-ask-for-a-part))
 - [phone-stand.ink](phone-stand.ink): a part placed on a tilted face of another. ([5. Motion](../docs/guide/walkthrough.md#5-an-assembly-that-moves))
 - [print-checks.ink](print-checks.ink): an FDM part checked against published rules for walls, overhangs and moving clearances. ([6. Can it be made?](../docs/guide/walkthrough.md#6-can-it-be-made))

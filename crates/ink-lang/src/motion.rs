@@ -1068,24 +1068,76 @@ fn moving_frame(v: &mut ModelView, claim: &Claim, span: (f64, f64), tol: Option<
     // placed relative to it.
     let placements = v.doc.placements();
     let moves = |xf: &Xf| xf.r.iter().flatten().chain(&xf.t).any(|&n| v.doc.g.depends_on(n, |x| matches!(x, Var::T)));
-    let iso = [a, b].into_iter().find_map(|s| {
+    let first = |s: u32| {
         let within: std::collections::HashSet<u32> = v.doc.g.reachable(&[s]).into_iter().collect();
         placements.iter().filter(|(w, _)| within.contains(w)).map(|(_, p)| p.at).filter(moves).find_map(|xf| Isometry::over(&v.doc.g, &xf.r, &xf.t, &over))
-    })?;
-    let fa = Xf { r: *iso.r(), t: *iso.t() };
+    };
+    let mut frames: Vec<Xf> = [a, b].into_iter().filter_map(first).map(|iso| Xf { r: *iso.r(), t: *iso.t() }).collect();
+    frames.dedup();
+    if frames.is_empty() {
+        return None;
+    }
     let read: std::collections::HashSet<u32> = v.doc.g.reachable(&[a, b]).into_iter().collect();
     // In node order, so the nodes made are the same each run.
-    let placed: Vec<((u32, Xf), u32)> = placements.iter().filter(|(w, _)| read.contains(w)).map(|(w, p)| ((p.shape, p.at), *w)).collect();
+    let mut placed: Vec<((u32, Xf), u32)> = placements.iter().filter(|(w, _)| read.contains(w)).map(|(w, p)| ((p.shape, p.at), *w)).collect();
     // Each placed relative to the frame, its entries finite over the scope:
     // one infinite at a moment places nothing there, which no relative
     // placement need say alike.
     if !placed.iter().all(|((_, xf), _)| ink_kernel::rigid::finite_over(&v.doc.g, xf.r.iter().flatten().chain(&xf.t), &over)) {
         return None;
     }
-    // Each placed shape's placement relative to the frame's: R_a^T R_x,
-    // R_a^T (t_x - t_a); the frame's own shape where it rests (None).
+    // The world's frame too, where a shape rests in it: a shaft turning
+    // about its own axis in a still block's bore moves nothing of the
+    // shaft there, where in the shaft's frame the block's screws sweep
+    // round it. Asked in the first frame where nothing of the claim moves
+    // (reads t), else in the first.
+    let g = &mut v.doc.g;
+    let (z, o) = (g.constant(0.0), g.constant(1.0));
+    let identity = Xf { r: [[o, z, z], [z, o, z], [z, z, o]], t: [z, z, z] };
+    // A shape no instance places (a still part's own field) is placed
+    // where it is, so that in another's frame it is one placed shape too:
+    // a still bush round about a turning shaft is unchanged by its turn.
+    for s in [a, b] {
+        let within: std::collections::HashSet<u32> = g.reachable(&[s]).into_iter().collect();
+        if !placed.iter().any(|(_, w)| within.contains(w)) && g.depends_on(s, |x| matches!(x, Var::X | Var::Y | Var::Z)) {
+            placed.push(((s, identity), s));
+        }
+    }
+    frames.push(identity);
+    // Nothing of the claim rests in any frame where a shape's own field
+    // reads t (a belt's teeth), nor in one where a shape turns about no
+    // axis of its own fixed on the frame's (`Axes`): those frames, but the
+    // first, are not built.
+    let own = placed.iter().any(|((f, _), _)| v.doc.g.depends_on(*f, |x| matches!(x, Var::T)));
+    let mut first = None;
+    for (i, fa) in frames.into_iter().enumerate() {
+        let rels = relative(v, fa, &placed, &over);
+        let may = !own && rels.iter().all(|(_, _, rel)| rel.as_ref().is_none_or(|rel| !moving(&v.doc.g, rel) || Axes::of(&v.doc.g, rel, &over).is_some()));
+        if i > 0 && !may {
+            continue;
+        }
+        let m = in_frame(v, claim, fa, rels, span, tol, &over);
+        let g = &mut v.doc.g;
+        let still = may
+            && [a, b].into_iter().all(|s| {
+                let s = g.replace(s, &m.0);
+                !g.depends_on(s, |x| matches!(x, Var::T))
+            });
+        if still {
+            return Some(m);
+        }
+        first.get_or_insert(m);
+    }
+    first
+}
+
+/// Each placed shape's placement relative to the frame `fa`: R_a^T R_x,
+/// R_a^T (t_x - t_a), as (node placing it, shape, placement); the frame's
+/// own shape where it rests (None).
+fn relative(v: &mut ModelView, fa: Xf, placed: &[((u32, Xf), u32)], over: &Ctx) -> Vec<(u32, u32, Option<Xf>)> {
+    let over = over.clone();
     let mut rels: Vec<(u32, u32, Option<Xf>)> = Vec::with_capacity(placed.len());
-    for ((f, xf), w) in placed {
+    for &((f, xf), w) in placed {
         if xf == fa {
             rels.push((w, f, None));
             continue;
@@ -1108,18 +1160,52 @@ fn moving_frame(v: &mut ModelView, claim: &Claim, span: (f64, f64), tol: Option<
         };
         rels.push((w, f, Some(rel)));
     }
+    rels
+}
+
+/// Whether a placement reads t.
+fn moving(g: &ink_core::graph::Graph, xf: &Xf) -> bool {
+    xf.r.iter().flatten().chain(&xf.t).any(|&n| g.depends_on(n, |x| matches!(x, Var::T)))
+}
+
+/// `moving_frame` in frame `fa` (an isometry over the scope `over`), of
+/// the shapes placed in the claim (`placed`: each shape and its placement,
+/// with the node placing it).
+fn in_frame(
+    v: &mut ModelView,
+    claim: &Claim,
+    fa: Xf,
+    rels: Vec<(u32, u32, Option<Xf>)>,
+    span: (f64, f64),
+    tol: Option<f64>,
+    over: &Ctx,
+) -> (std::collections::HashMap<u32, u32>, [u32; 3], f64) {
+    let over = over.clone();
+    let moves = |v: &ModelView, xf: &Xf| moving(&v.doc.g, xf);
     // A proper turn about the shape's own z (an isometry, r_zz exactly 1):
     // its parts every such turn leaves unchanged (a pin, a bore about the
     // axis) placed by the move alone, equal in real numbers
     // (`split_about`). Where its move is not one point over the scope,
     // the turn about a pivot it holds still to within a certified drift
     // (`pivot`), where the claim can be charged it (`charge`).
+    // A turn about the shape's own x or y fixed on one of the frame's axes
+    // (a shaft along y turned by a rot-y) is the same turn about z seen
+    // through relabelled axes (`Axes`): each shape so turning is asked as
+    // its own (`seen`: the shape and its placement relabelled), and what is
+    // made of it relabelled back.
     let about_z = |v: &ModelView, rel: &Xf| Isometry::over(&v.doc.g, &rel.r, &rel.t, &over).filter(|_| ink_kernel::rigid::constant_over(&v.doc.g, rel.r[2][2], &over) == Some(1.0));
-    let mut pivots: std::collections::HashMap<u32, Pivot> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<u32, (Axes, u32, Xf, Xf)> = std::collections::HashMap::new();
     for (w, f, rel) in &rels {
-        let Some(rel) = rel else { continue };
-        if about_z(v, rel).is_some()
-            && !rel.t.iter().all(|&n| ink_kernel::rigid::constant_over(&v.doc.g, n, &over).is_some())
+        let Some(rel) = rel.filter(|rel| moves(v, rel)) else { continue };
+        let Some(axes) = Axes::of(&v.doc.g, &rel, &over) else { continue };
+        let (f, rel) = axes.seen(&mut v.doc.g, *f, &rel);
+        if let Some(turn) = about_z(v, &rel) {
+            seen.insert(*w, (axes, f, rel, Xf { r: *turn.r(), t: *turn.t() }));
+        }
+    }
+    let mut pivots: std::collections::HashMap<u32, Pivot> = std::collections::HashMap::new();
+    for (w, (_, f, rel, _)) in &seen {
+        if !rel.t.iter().all(|&n| ink_kernel::rigid::constant_over(&v.doc.g, n, &over).is_some())
             && let Some(p) = tol.and_then(|tol| pivot(v, *f, rel, span, tol))
         {
             pivots.insert(*w, p);
@@ -1142,8 +1228,8 @@ fn moving_frame(v: &mut ModelView, claim: &Claim, span: (f64, f64), tol: Option<
     for (w, f, rel) in rels {
         let to = match rel {
             None => f,
-            Some(rel) => match (about_z(v, &rel), pivots.get(&w)) {
-                (Some(_), Some(p)) => {
+            Some(rel) => match (seen.get(&w).cloned(), pivots.get(&w)) {
+                (Some((axes, f, rel, _)), Some(p)) => {
                     let g = &mut v.doc.g;
                     // The turn about the pivot: p -> R (q - l) + c.
                     let l = [g.constant(p.l[0]), g.constant(p.l[1])];
@@ -1165,9 +1251,13 @@ fn moving_frame(v: &mut ModelView, claim: &Claim, span: (f64, f64), tol: Option<
                             c
                         }
                     });
-                    split_about(v, f, &turn, p.l, moved).unwrap_or_else(|| v.doc.warped(f, &turn))
+                    let placed = split_about(v, f, &turn, p.l, moved).unwrap_or_else(|| v.doc.warped(f, &turn));
+                    axes.back(&mut v.doc.g, placed)
                 }
-                (Some(turn), None) => split_about(v, f, &Xf { r: *turn.r(), t: *turn.t() }, [0.0; 2], *turn.t()).unwrap_or_else(|| v.doc.warped(f, &rel)),
+                (Some((axes, seen_f, _, turn)), None) => match split_about(v, seen_f, &turn, [0.0; 2], turn.t) {
+                    Some(placed) => axes.back(&mut v.doc.g, placed),
+                    None => v.doc.warped(f, &rel),
+                },
                 (None, _) => v.doc.warped(f, &rel),
             },
         };
@@ -1185,7 +1275,89 @@ fn moving_frame(v: &mut ModelView, claim: &Claim, span: (f64, f64), tol: Option<
     for i in 0..3 {
         map.entry(p[i]).or_insert(world[i]);
     }
-    Some((map, world, charge))
+    (map, world, charge)
+}
+
+/// A placement relative to a frame (R, T) whose turn keeps an axis of the
+/// shape's own frame, k, on an axis of the frame's, j (R e_k = s e_j, s
+/// +-1, exactly over the scope), seen as a turn about z: the shape's axes
+/// relabelled by P (a cycle, P e_z = e_k) and the frame's by M (a signed
+/// cycle, M e_z = s e_j, det 1). The shape f placed, f(R^T (p - T)), is f'
+/// = f o P placed by (M^T R P, M^T T), read at M^T p: a turn about z,
+/// exactly (its r_zz is s s), and relabelling is a substitution of x, y
+/// and z by signed x, y and z, so every value is the same in real numbers.
+#[derive(Clone, Copy)]
+struct Axes {
+    own: [[f64; 3]; 3],
+    frame: [[f64; 3]; 3],
+}
+
+impl Axes {
+    /// The relabelling of `rel`, its own z first: None where no column of
+    /// its turn is a signed axis of the frame's over the scope.
+    fn of(g: &ink_core::graph::Graph, rel: &Xf, over: &Ctx) -> Option<Axes> {
+        // The cycle taking z to axis k: (P q)_i = q_((i + 2 - k) mod 3).
+        let cycle = |k: usize| -> [[f64; 3]; 3] { std::array::from_fn(|i| std::array::from_fn(|j| if j == (i + 2 - k) % 3 { 1.0 } else { 0.0 })) };
+        [2, 0, 1].into_iter().find_map(|k| {
+            let col: Vec<f64> = (0..3).map(|i| ink_kernel::rigid::constant_over(g, rel.r[i][k], over)).collect::<Option<_>>()?;
+            let j = (0..3).find(|&j| col[j].abs() == 1.0 && (0..3).all(|i| i == j || col[i] == 0.0))?;
+            let s = col[j];
+            // M = P_j diag(1, s, s): M e_z = s e_j, det s^2.
+            let frame = cycle(j).map(|row| std::array::from_fn(|c| row[c] * if c == 0 { 1.0 } else { s }));
+            Some(Axes { own: cycle(k), frame })
+        })
+    }
+
+    fn identity(&self) -> bool {
+        let i: [[f64; 3]; 3] = std::array::from_fn(|a| std::array::from_fn(|b| if a == b { 1.0 } else { 0.0 }));
+        self.own == i && self.frame == i
+    }
+
+    /// The shape and its placement seen with z the axis: f o P and
+    /// (M^T R P, M^T T).
+    fn seen(&self, g: &mut ink_core::graph::Graph, f: u32, rel: &Xf) -> (u32, Xf) {
+        if self.identity() {
+            return (f, *rel);
+        }
+        let (p, m) = (self.own, self.frame);
+        // The one term of a signed permutation's product: sign times node.
+        let term = |g: &mut ink_core::graph::Graph, terms: Vec<(f64, u32)>| {
+            let (s, n) = terms.into_iter().find(|(s, _)| *s != 0.0).expect("a signed permutation has one term a row");
+            if s > 0.0 { n } else { g.neg(n) }
+        };
+        // (M^T R P)_ab = sum_i,c M_ia R_ic P_cb.
+        let r = std::array::from_fn(|a| {
+            std::array::from_fn(|b| {
+                let terms = (0..3).flat_map(|i| (0..3).map(move |c| (i, c))).map(|(i, c)| (m[i][a] * p[c][b], rel.r[i][c])).collect();
+                term(g, terms)
+            })
+        });
+        let t = std::array::from_fn(|a| term(g, (0..3).map(|i| (m[i][a], rel.t[i])).collect()));
+        (relabel(g, f, &p), Xf { r, t })
+    }
+
+    /// A field made at the relabelled point read at the frame's: q = M^T p.
+    fn back(&self, g: &mut ink_core::graph::Graph, f: u32) -> u32 {
+        if self.identity() {
+            return f;
+        }
+        let mt = std::array::from_fn(|a| std::array::from_fn(|b| self.frame[b][a]));
+        relabel(g, f, &mt)
+    }
+}
+
+/// Field `f` read at m q (m a signed permutation): x, y and z replaced by
+/// signed x, y and z.
+fn relabel(g: &mut ink_core::graph::Graph, f: u32, m: &[[f64; 3]; 3]) -> u32 {
+    let xyz = [Var::X, Var::Y, Var::Z];
+    let map: Vec<(Var, u32)> = (0..3)
+        .map(|i| {
+            let (j, s) = (0..3).find_map(|j| (m[i][j] != 0.0).then_some((j, m[i][j]))).expect("a signed permutation");
+            let q = g.var(xyz[j]);
+            (xyz[i], if s > 0.0 { q } else { g.neg(q) })
+        })
+        .collect();
+    g.subst(f, &map)
 }
 
 /// Field `f` with its fixed params read as the floats they are, as
@@ -2145,9 +2317,11 @@ mod tests {
     /// turns about the pin they share, though the eye is placed through the
     /// coupler's angle and the pin through the rocker's: the eye is placed
     /// about that pivot, its drift bounded far under the accuracy and
-    /// charged. An eye 0.3 off the pin has no pivot; a union of the eye and
-    /// a part at rest is not one shape moved, so it is not charged one move
-    /// and is placed as it is.
+    /// charged. Seen from a coupler whose eye is 0.3 off the pin, the pin
+    /// turns about the point the rocker shares with that coupler: asked
+    /// there, where nothing of the claim moves, its drift charged. A union
+    /// of the eye and a part at rest is not one shape moved, so it is not
+    /// charged one move and is placed as it is.
     #[test]
     fn a_loop_closed_joint_is_searched_about_its_pivot() {
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/motion/loop-closed-pin.ink")).unwrap();
@@ -2162,7 +2336,8 @@ mod tests {
         assert!(seated > 0.0 && seated < 1e-3, "{seated}");
         let clear = charge(&mut v, Claim::Clearance(coupler, rocker, 0.05));
         assert!(clear > 0.0 && clear < 2e-3, "{clear}");
-        assert_eq!(charge(&mut v, Claim::Subset(pin, in_far)), 0.0);
+        let far = charge(&mut v, Claim::Subset(pin, in_far));
+        assert!(far > 0.0 && far < 1e-3, "{far}");
         assert_eq!(charge(&mut v, Claim::Disjoint(pin, with_wall)), 0.0);
         assert_eq!(charge(&mut v, Claim::Subset(pin, in_eye)), seated);
     }

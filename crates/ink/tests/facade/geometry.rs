@@ -430,11 +430,12 @@ fn htd_teeth_meet_exactly_at_their_lands() {
     }
 }
 
-/// A load-time reach cannot enclose a section growing with t: a reach of
-/// 1.002 at t = 0 would clip radius 1 + 9 t at t = 1. Such profiles are
-/// refused, in a sweep too; a section of fixed size loads.
+/// A load-time reach of a section growing with t holds over the motion: a
+/// reach of 1.002 at t = 0 would clip radius 1 + 9 t at t = 1. With no
+/// motion stated such profiles are refused, in a sweep too; a section of
+/// fixed size loads.
 #[test]
-fn profile_reach_refuses_a_profile_that_reads_t() {
+fn profile_reach_holds_over_the_motion_or_is_refused() {
     let load = |src: &str| ink::load_str(&format!("(import \"std\")\n{src}"), "test", Path::new(ROOT)).map(|_| ());
     for src in ["(def r (profile-reach (circle-2d (+ 1 (* 9 t)))))", "(def s (sweep (circle-2d (+ 1 (* 9 t))) (vec (vec 0 0 0) (vec 0 0 20)) (vec 1 0 0)))"] {
         let e = load(src).unwrap_err();
@@ -442,17 +443,81 @@ fn profile_reach_refuses_a_profile_that_reads_t() {
         assert!(e.contains("profile-reach of a profile that reads t"), "{src}: {e}");
     }
     load("(def s (sweep (circle-2d 10) (vec (vec 0 0 0) (vec 0 0 20)) (vec 1 0 0)))").unwrap();
+    // Over a motion stated before it, its reach holds at every moment.
+    let d = ink::load_str("(import \"std\")\n(t-span 0 1)\n(def r (profile-reach (circle-2d (+ 1 (* 9 t)))))", "test", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
+    let Some(ink::lang::Value::Field(r, _)) = d.def("r") else { panic!("no r") };
+    let r = d.g.as_const(*r).unwrap();
+    assert!((10.0..10.1).contains(&r), "{r}");
 }
 
-/// A load-time box cannot enclose a sphere moving 10 t along x over t in
-/// [0, 1]: its box at t = 0 would miss its reach to x = 11 at t = 1.
-/// (bounds f) refuses a field reading t; one independent of t is bounded.
+/// A load-time box of a field that reads t holds at every moment of the
+/// file's span, stated before it, and at t = 0, where load reads it: a
+/// sphere moving 10 t along x over [0, 1] reaches x = 11. With no span
+/// it is refused, and a view at a moment or over a span it does not cover
+/// is refused, naming it. A ranged param's box holds over its band, which
+/// a run may narrow (--nominal) but not widen.
 #[test]
-fn bounds_refuses_a_field_that_reads_t() {
-    let load = |src: &str| ink::load_str(&format!("(import \"std\")\n(t-span 0 1)\n{src}"), "test", Path::new(ROOT)).map(|_| ());
-    let e = format!("{:?}", load("(def b (bounds (move (sphere 1) (* 10 t) 0 0)))").unwrap_err());
-    assert!(e.contains("bounds of a field that reads t"), "{e}");
+fn bounds_holds_over_the_span_and_the_bands_it_reads() {
+    let load = |src: &str| ink::load_str(&format!("(import \"std\")\n{src}"), "test", Path::new(ROOT));
+    let x = |d: &ink::lang::Doc, n: &str| match d.def(n) {
+        Some(ink::lang::Value::Field(f, _)) => d.g.as_const(*f).unwrap(),
+        v => panic!("{n}: {v:?}"),
+    };
+    let ends = "(def lx (nth (nth b 0) 0)) (def hx (nth (nth b 1) 0))";
+    let d = load(&format!("(t-span 0 1)\n(def b (bounds (move (sphere 1) (* 10 t) 0 0)))\n{ends}")).unwrap_or_else(|e| panic!("{e:?}"));
+    let (lx, hx) = (x(&d, "lx"), x(&d, "hx"));
+    assert!((-1.2..=-1.0).contains(&lx) && (11.0..11.2).contains(&hx), "{lx} {hx}");
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let mut v = ink::view::ModelView::new(d, ctx);
+    v.set_moment(0.5).unwrap();
+    v.set_motion(Some((0.0, 1.0))).unwrap();
+    let e = v.set_moment(2.0).unwrap_err();
+    assert!(e.message.contains("t = 2") && e.message.contains("test:3 (def b ...)"), "{e:?}");
+    let e = v.set_motion(Some((0.0, 3.0))).unwrap_err();
+    assert!(e.message.contains("test:3 (def b ...)"), "{e:?}");
+    let e = v.doc.ctx(&[], 2.0).unwrap_err();
+    assert!(e.contains("t = 2"), "{e}");
+    let e = format!("{:?}", load("(def b (bounds (move (sphere 1) (* 10 t) 0 0)))").err().unwrap());
+    assert!(e.contains("bounds of a field that reads t") && e.contains("t-span"), "{e}");
     load("(def b (bounds (move (sphere 1) 10 0 0)))").unwrap();
+
+    let src = format!("(param px 0 (tol -1 1))\n(def b (bounds (move (sphere 1) px 0 0)))\n{ends}");
+    let v = toleranced(&src).unwrap_or_else(|e| panic!("{e:?}"));
+    let (lx, hx) = (x(&v.doc, "lx"), x(&v.doc, "hx"));
+    assert!((-2.2..=-2.0).contains(&lx) && (2.0..2.2).contains(&hx), "{lx} {hx}");
+    let px = v.doc.param_index("px").unwrap();
+    v.scope_spans(&[(px, (0.0, 0.0))]).unwrap();
+    let e = v.scope_spans(&[(px, (-3.0, 3.0))]).unwrap_err();
+    assert!(e.message.contains("'px'") && e.message.contains("test:3 (def b ...)"), "{e:?}");
+}
+
+/// A load-time reach holds at every value a run uses: a tolerance band
+/// that excludes the param's value (r 10, band 1..2) is reached at both,
+/// so the sweep holds (5, 0, 15) at r = 10, and a value beyond what it
+/// holds over is refused, naming the form.
+#[test]
+fn a_load_time_reach_covers_every_value_a_run_uses() {
+    let d = ink::load_str("(import \"std\")\n(param r 10 (tol -9 -8))\n(def s (sweep (circle-2d r) (vec (vec 0 0 0) (vec 0 0 20)) (vec 1 0 0)))", "test", Path::new(ROOT))
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let Some(Value::Field(s, _)) = d.def("s") else { panic!("no s") };
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    assert!(eval_point(&Tape::new(&d.g, *s), &ctx, [5.0, 0.0, 15.0]) < 0.0, "inside at r = 10");
+    let e = d.ctx(&[("r".to_string(), 20.0.into())], 0.0).unwrap_err();
+    assert!(e.contains("'r'") && e.contains("test:3 (def s ...)"), "{e}");
+}
+
+/// A load-time box of a field that reads t holds over the motion of the
+/// file whose form found it, imported or not: a child's (t-span 0 2) with
+/// no span in its parent, and not the parent's shorter one.
+#[test]
+fn a_load_time_reach_holds_over_its_own_files_motion() {
+    let dir = crate::common::Scratch::new("reach-span");
+    std::fs::write(dir.join("child.ink"), "(import \"std\")\n(t-span 0 2)\n(def s (sweep (circle-2d (+ 1 t)) (vec (vec 0 0 0) (vec 0 0 20)) (vec 1 0 0)))").unwrap();
+    for parent in ["(import \"child.ink\" as c)", "(t-span 0 1)\n(import \"child.ink\" as c)"] {
+        let d = ink::load_str(parent, "parent", &dir).unwrap_or_else(|e| panic!("{parent}: {e:?}"));
+        d.covers_t(1.5, None).unwrap_or_else(|e| panic!("{parent}: {e:?}"));
+        assert!(d.covers_t(2.5, None).is_err(), "{parent}");
+    }
 }
 
 /// polygon-distance's edges are straight: a rounded corner (polygon's
@@ -633,7 +698,7 @@ fn volume(src: &str, res: f64) -> f64 {
     let (c, r) = d.clip_reach(f, &CTX);
     let t = Arc::new(Tape::new(&d.g, c));
     let (blo, bhi, _) = ink::query::bounds(&t, &CTX, r.lo, r.hi).unwrap();
-    ink::query::sums(&t, &[None], false, &CTX, blo, bhi, res).sums[0]
+    ink::query::integrate(&t, &[None], false, &CTX, blo, bhi, ink::query::Until::Res(res)).sums[0]
 }
 
 #[test]
@@ -1321,27 +1386,10 @@ fn iso_thread_has_the_profile_volume() {
 }
 
 #[test]
-fn text_is_the_exact_distance_to_its_strokes() {
+fn char_codes_are_code_points() {
     // char-codes: code points, one per character (not per byte).
     let (_d, t) = field("(def f (+ (len (char-codes \"h°llo\")) (nth (char-codes \"A°\") 1)))", "f");
     assert_eq!(eval_point(&t, &CTX, [0.0; 3]), 5.0 + 176.0);
-    // Hershey "I" (left -4, right 4: one stroke x 0, y 0..21) and "L" (left
-    // -10, right 7: x -6, y 21..0, then to x 6). At cap height 21 (1 mm a
-    // font unit), stroke 2, anchored at the baseline's left end, each
-    // advance grows by the stroke: I at x 0..10, L from 10.
-    let segs = [[[5.0, 21.0], [5.0, 0.0]], [[15.0, 21.0], [15.0, 0.0]], [[15.0, 0.0], [27.0, 0.0]]];
-    let (_d, t) = field("(def f (text-2d-styled \"IL\" 21 2 0 0 0))", "f");
-    let mut r = Lcg(7);
-    for _ in 0..2000 {
-        let p = [r.f(-5.0, 35.0), r.f(-8.0, 30.0), r.f(-5.0, 5.0)];
-        let want = segs.iter().map(|s| seg_dist([p[0], p[1], 0.0], [s[0][0], s[0][1], 0.0], [s[1][0], s[1][1], 0.0])).fold(f64::INFINITY, f64::min) - 1.0;
-        assert!((eval_point(&t, &CTX, p) - want).abs() < 1e-9, "at {p:?}");
-    }
-    let (_d, t) = field("(def f (text-width \"IL\" 21 2 0.5))", "f");
-    assert_eq!(eval_point(&t, &CTX, [0.0; 3]), 29.5);
-    // A character outside the font is an error at load time, not a blank.
-    assert!(ink::load_str("(import \"std\")\n(def f (text-2d \"a\u{e9}\" 5))", "test", Path::new(ROOT)).is_err());
-    assert!(ink::load_str("(import \"std\")\n(def f (text-2d \"a\\nb\" 5))", "test", Path::new(ROOT)).is_err());
 }
 
 #[test]
@@ -1391,29 +1439,20 @@ fn grad_lists_the_derivatives_along_x_y_z() {
 #[test]
 fn thickness_is_exact_on_exact_walls() {
     // A ray ends where the material does, to the precision of floats: a
-    // hollow sphere's wall is 2 from either side, everywhere; a 3 mm plate
-    // is 3 from its faces, 40 and 30 across, and at least 3 from its edges
-    // (they take their faces' thickness, or the diagonal, or none).
+    // hollow sphere's wall is 2 from either side, a 3 mm plate 3 (its
+    // edges take their faces' thickness, or the diagonal, or none), and a
+    // 0.8 fin on the plate is its thinnest wall.
     use std::sync::Arc;
-    let thick = |src: &str, lo: f64, hi: f64| {
+    let thinnest = |src: &str, lo: f64, hi: f64| {
         let (_d, t) = field(&format!("(def part {src})"), "part");
-        let mut s = ink::feature::thickness(&Arc::new(t), &CTX, [lo; 3], [hi; 3], 64.0);
-        s.sort_by(|a, b| a.3.total_cmp(&b.3));
-        s
+        ink::feature::thickness(&Arc::new(t), &CTX, [lo; 3], [hi; 3], 64.0).unwrap().expect("a wall")
     };
-    let s = thick("(subtract (sphere 10) (sphere 8))", -10.0, 10.0);
-    assert!(s.len() > 5000, "{} samples", s.len());
-    assert!((s[0].3 - 2.0).abs() < 1e-7 && (s[s.len() - 1].3 - 2.0).abs() < 1e-7, "{} .. {}", s[0].3, s[s.len() - 1].3);
-    let s = thick("(box 40 30 3)", -20.0, 20.0);
-    let area: f64 = s.iter().map(|x| x.2).sum();
-    let at3: f64 = s.iter().filter(|x| (x.3 - 3.0).abs() < 1e-9).map(|x| x.2).sum();
-    assert!((s[0].3 - 3.0).abs() < 1e-9, "{:?}", s[0]);
-    assert!([30.0, 40.0].iter().all(|w| s.iter().any(|x| (x.3 - w).abs() < 1e-9)));
-    // The faces' area, less a row of samples at each edge.
-    assert!(at3 > 0.97 * 2400.0 && at3 <= 2400.0 + 1e-6 && area < 2820.0 + 1e-6, "{at3} of {area} at 3");
-    // A 0.8 fin on the plate: the thinnest wall, exactly.
-    let s = thick("(min (box 40 30 3) (move (box 0.8 20 10) 10 0 6))", -20.0, 20.0);
-    assert!((s[0].3 - 0.8).abs() < 1e-9 && (s[0].0[0] - 10.0).abs() <= 0.4 + 1e-9, "{:?}", s[0]);
+    let (_, t) = thinnest("(subtract (sphere 10) (sphere 8))", -10.0, 10.0);
+    assert!((t - 2.0).abs() < 1e-7, "{t}");
+    let (_, t) = thinnest("(box 40 30 3)", -20.0, 20.0);
+    assert!((t - 3.0).abs() < 1e-9, "{t}");
+    let (at, t) = thinnest("(min (box 40 30 3) (move (box 0.8 20 10) 10 0 6))", -20.0, 20.0);
+    assert!((t - 0.8).abs() < 1e-9 && (at[0] - 10.0).abs() <= 0.4 + 1e-9, "{t} at {at:?}");
 }
 
 #[test]
@@ -1801,8 +1840,9 @@ fn drafted_faces_close_together_clear_by_their_planes() {
 
 /// An overlap is disproven only where the shapes do not meet at all: an
 /// intersection shown no deeper than the accuracy may still be one (a
-/// press fit 0.04 deep at 0.05), so it is unknown, as two boxes face to
-/// face are. One 0.2 deep is proven, boxes 0.2 apart disproven.
+/// press fit 0.04 deep at 0.05), so it is unknown. Two boxes face to face
+/// share no point inside both (the bounds split at the face), so they do
+/// not overlap. One 0.2 deep is proven, boxes 0.2 apart disproven.
 #[test]
 fn an_overlap_within_the_accuracy_is_not_disproven() {
     use ink::claims::Status;
@@ -1814,7 +1854,7 @@ fn an_overlap_within_the_accuracy_is_not_disproven() {
          (assert apart (overlaps a (move (box 10 10 10) 10.2 0 0)))",
     );
     let got: Vec<Status> = c.iter().map(|(_, c)| c.status).collect();
-    assert_eq!(got, [Status::Unknown, Status::Unknown, Status::Holds, Status::Fails], "{c:?}");
+    assert_eq!(got, [Status::Unknown, Status::Fails, Status::Holds, Status::Fails], "{c:?}");
 }
 
 /// A clearance of 0 is disjointness: boxes resting face to face are proven
@@ -1919,8 +1959,7 @@ fn drafted_rims_are_not_thin() {
         "cup",
     );
     let t = std::sync::Arc::new(t);
-    let s = ink::feature::thickness(&t, &CTX, [-42.0, -32.0, -1.0], [42.0, 32.0, 31.0], 128.0);
-    let min = s.iter().map(|x| x.3).fold(f64::INFINITY, f64::min);
+    let (_, min) = ink::feature::thickness(&t, &CTX, [-42.0, -32.0, -1.0], [42.0, 32.0, 31.0], 128.0).unwrap().expect("a wall");
     assert!(min > 1.9, "thinnest {min}");
 }
 
@@ -2023,7 +2062,6 @@ fn std_promises_hold_for_fixed_sizes_only() {
         "(capsule-z 2 R)",
         "(circle-2d R)",
         "(rect-2d (* 6 R) 2)",
-        "(text-2d-styled \"I\" 1 R 0 0 0)",
         "(thread-iso (+ 8 R) 1)",
         "(sweep-varying (lambda (s) (circle-2d R)) (vec (vec 0 0 0) (vec 0 0 1)) (vec 1 0 0))",
         "(gyroid R)",
@@ -2273,8 +2311,10 @@ fn hidden_constructions_stop_at_other_bodies() {
 /// ACCURACY of the window), landing on it, and the claim is proven to that
 /// accuracy, no finer: finer cells would cost more and say no more. Asked
 /// exactly, the search ends at the first box undecided at the floor (fail
-/// fast: the cell given is a floor cell). A given resolution still goes
+/// fast: its cells reach the floor, no finer). A given resolution still goes
 /// finer, and a tiny probe's cells follow its region, below the floor.
+/// (Faces that touch where both pieces read one coordinate are split there
+/// and proven exactly; here one reads x as (x + y) - y, sharing nothing.)
 #[test]
 fn touching_surfaces_are_proven_to_the_models_accuracy() {
     use ink::query::{Verdict, prove_empty};
@@ -2282,19 +2322,23 @@ fn touching_surfaces_are_proven_to_the_models_accuracy() {
     use std::sync::Arc;
     // A 1 mm cube seated on a face of a 2 mm one.
     // Searched in a 100 mm window, to that size's accuracy (5 um).
-    let (_, t) = field("(def f (max (box 2 2 2) (move (box 1 1 1) 1.5 0 0)))", "f");
+    let (_, t) = field("(def f (max (box 2 2 2) (warp (move (box 1 1 1) 1.5 0 0) (- (+ x y) y) y z)))", "f");
     let accuracy = 100.0 * ink::lang::ACCURACY;
     let finest = accuracy / 2.0;
     let (lo, hi) = ([-50.0; 3], [50.0; 3]);
+    let (_, shared) = field("(def f (max (box 2 2 2) (move (box 1 1 1) 1.5 0 0)))", "f");
+    assert!(matches!(prove_empty(&Arc::new(shared), &CTX, lo, hi, None, finest, 0.0).verdict, Verdict::Proven));
     let tape = Arc::new(t);
-    // The undecided cell's side on the face (y), where no clip narrows it,
-    // in floors.
-    let floors = |v: &Verdict| match v {
-        Verdict::Unknown { cell: Some([a, b]), .. } => ((b[1] - a[1]) / finest * 1e6).round() / 1e6,
-        _ => panic!("touching faces stay undecided asked exactly: {v:?}"),
+    // The cells it reached and the undecided cell's least side across the
+    // face (y and z, where no clip narrows it), in floors: a cell is not
+    // halved along an axis its question reads not there (one along an
+    // edge of the face), so one of the two may be wider.
+    let floors = |p: &ink::ranged::Proof| match p.verdict {
+        Verdict::Unknown { cell: Some([a, b]), .. } => [p.res, (b[1] - a[1]).min(b[2] - a[2])].map(|w| (w / finest * 1e6).round() / 1e6),
+        _ => panic!("touching faces stay undecided asked exactly: {p:?}"),
     };
     let s = prove_empty(&tape, &CTX, lo, hi, None, finest, 0.0);
-    assert!(s.res >= finest && floors(&s.verdict) == 1.0, "lands on the floor: {s:?}");
+    assert!(floors(&s) == [1.0; 2], "lands on the floor: {s:?}");
     // Asked to the accuracy, they are proven at once, at cells no finer
     // than half of it, not exactly.
     let opts = ProofOptions { res: None, finest, depth: 0, tol: accuracy };
@@ -2302,14 +2346,14 @@ fn touching_surfaces_are_proven_to_the_models_accuracy() {
     assert!(p.verdict == Verdict::Proven && !p.exact && p.res >= finest && p.tol == accuracy, "{p:?}");
     // The default window's floor (0.025 mm) stops the exact search coarser.
     let h0 = prove_empty(&tape, &CTX, lo, hi, None, 1000.0 * ink::lang::ACCURACY / 2.0, 0.0);
-    assert_eq!(floors(&h0.verdict), 10.0);
+    assert_eq!(floors(&h0), [10.0; 2]);
     // A given resolution (--res) is used as given, below the floor.
     let (v, hr) = empty_at(&tape, &CTX, lo, hi, Some(0.75 * finest));
     assert!(matches!(v, Verdict::Unknown { .. }) && hr == 0.75 * finest, "{v:?} at {hr}");
     // The cells follow the claim's region, below the floor if the region
     // is: a 0.03 mm probe seated on the part is searched to cells near 1e-3
     // mm, no finer.
-    let (_, probe) = field("(def f (max (box 2 2 2) (move (box 0.03 0.03 0.03) 1.015 0 0)))", "f");
+    let (_, probe) = field("(def f (max (box 2 2 2) (warp (move (box 0.03 0.03 0.03) 1.015 0 0) (- (+ x y) y) y z)))", "f");
     let probe = Arc::new(probe);
     let s = prove_empty(&probe, &CTX, lo, hi, None, finest, 0.0);
     let start = prove_empty(&probe, &CTX, lo, hi, None, f64::INFINITY, 0.0).res;
@@ -2321,7 +2365,9 @@ fn touching_surfaces_are_proven_to_the_models_accuracy() {
 /// takes, and decided. Halving at most six times from 1/32 of the material
 /// would stop at 32 floors, and the accuracy there, 64 floors, is too loose
 /// to give (ranged::within_limit): such claims would be unknown on any
-/// machine (a bench's working-height envelope).
+/// machine (a bench's working-height envelope). Upright, its walls read no
+/// z inside the envelope's span, and the gap is decided as in the plane, at
+/// coarser cells; tilted, they read every axis.
 /// The answer is the same at any thread count.
 #[test]
 fn a_narrow_gap_around_a_whole_part_is_refined_to_the_floor() {
@@ -2329,15 +2375,18 @@ fn a_narrow_gap_around_a_whole_part_is_refined_to_the_floor() {
     use std::sync::Arc;
     // A 14 mm square turned 30 degrees, its corners 0.005 mm inside the
     // sides of its envelope, in a 24 mm window, to that size's floor.
-    let (_, t) = field("(def f (max (rotate-z (box 14 14 20) 30) (neg (box 19.1344 19.1344 22))))", "f");
+    let part = "(max (rotate-z (box 14 14 20) 30) (neg (box 19.1344 19.1344 22)))";
     let (lo, hi) = ([-12.0; 3], [12.0; 3]);
     let finest = ink::lang::ACCURACY / 2.0 * 24.0;
-    let tape = Arc::new(t);
-    let opts = ProofOptions { res: None, finest, depth: 0, tol: 0.0 };
-    let at = |threads| rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| prove(&tape, &CTX, lo, hi, &opts));
-    let p = at(1);
-    assert!(p.exact() && p.res > finest && p.res < 32.0 * finest, "{p:?}, floor {finest}");
-    assert_eq!(format!("{:?}", at(4)), format!("{p:?}"));
+    for (shape, most) in [(part.to_string(), 64.0), (format!("(rotate-x {part} 10)"), 32.0)] {
+        let (_, t) = field(&format!("(def f {shape})"), "f");
+        let tape = Arc::new(t);
+        let opts = ProofOptions { res: None, finest, depth: 0, tol: 0.0 };
+        let at = |threads| rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| prove(&tape, &CTX, lo, hi, &opts));
+        let p = at(1);
+        assert!(p.verdict == ink::query::Verdict::Proven && p.exact() && p.res > finest && p.res <= most * finest, "{shape}: {p:?}, floor {finest}");
+        assert_eq!(format!("{:?}", at(4)), format!("{p:?}"));
+    }
 }
 
 #[test]
@@ -2660,11 +2709,11 @@ fn an_integral_over_parts_of_mixed_size_resolves_each() {
     assert_eq!(got[0].1.status, ink::claims::Status::Holds, "{:?}", got[0].1);
 }
 
-/// A claim stops only after a halving: a 0.3 mm layer of density (3 g)
-/// every sample at a 100th of the cube misses reads 0 g there, under 1 g
-/// with nothing to say otherwise.
+/// A 0.3 mm layer of density (3 g) the first boxes' samples miss is in
+/// their bounds, so the claim is not decided on the samples (0 g, under 1
+/// g).
 #[test]
-fn an_integral_claim_is_not_decided_before_a_halving() {
+fn an_integral_claim_is_not_decided_by_samples_that_miss_a_layer() {
     let src = "(import \"std\")\n\
                (body b (shape (box 100 100 100)) (attr density (select (- (abs x) .15) .001 0)))\n\
                (assert light (integral b (attr density) < 1))\n";
@@ -2942,6 +2991,31 @@ fn integrals_in_frames_read_placements_as_the_evaluator_does() {
                    (assembly root (instance c cube (at (move p 0 0))))\n(assert half (integral root (select z 1 0) < 2))\n");
     let Evidence::Integral { integrals, .. } = &got[0].1.evidence else { panic!("{got:?}") };
     assert!(got[0].1.status == Holds && (integrals[0].0 - 0.5).abs() < 0.01, "{got:?}");
+}
+
+/// An integral claim stops where the bounds proven so far decide it, and
+/// reports the estimate there: a sphere's volume (4189 mm^3) claimed under
+/// 10000 is decided on coarser boxes than one claimed under 4250, which
+/// goes on to the mass's 2%; both hold, with the estimate as the value.
+#[test]
+fn an_integral_claim_stops_where_its_bounds_decide_it() {
+    use ink::claims::{ClaimOptions, Evidence, Status::Holds, run_asserts};
+    let src = "(import \"std\")\n(body b (shape (sphere 10)))\n(assert far (integral b 1 < 10000))\n(assert near (integral b 1 < 4250))\n";
+    let doc = ink::load_str(src, "stops.ink", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
+    let ctx = doc.ctx(&[], 0.0).unwrap();
+    let mut v = ink::view::ModelView::new(doc, ctx);
+    let got = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap().asserts;
+    let res: Vec<f64> = got
+        .iter()
+        .map(|a| match &a.check.evidence {
+            Evidence::Integral { integrals, res, .. } => {
+                assert!(a.check.status == Holds && (integrals[0].0 / 4188.79 - 1.0).abs() < 0.02, "{}: {:?}", a.name, a.check);
+                *res
+            }
+            e => panic!("{e:?}"),
+        })
+        .collect();
+    assert!(res[0] > res[1], "far stopped at boxes of {}, near at {}", res[0], res[1]);
 }
 
 /// Each assert knows the file and line it is written in, so the runner can
@@ -4341,8 +4415,10 @@ fn a_direction_without_a_length_is_refused() {
 
 /// Fail fast: best first, a box undecided at the finest cells ends the
 /// search. Two plates touching over a 20 x 20 face (at z = 1/3, off the
-/// cells' faces; on one, z = 0, every cell's bounds show no point below 0,
-/// and it is proven), asked exactly, stay undecided there at any res: the search ends at its first box on the
+/// cells' faces) are apart exactly: the boxes across the face split there.
+/// The upper one's height read as (z + 3 y) - 3 y, the same in real numbers
+/// but sharing nothing with the lower's, they stay undecided there at any
+/// res, asked exactly: the search ends at its first box on the
 /// face at the finest cells (Ended::Finest), the rest of the face not
 /// refined (all of it is four million boxes at 0.01), and it holds to
 /// about that box's size (accuracy attained; their intersection is empty).
@@ -4365,7 +4441,8 @@ fn a_search_ends_where_a_box_stays_undecided_at_its_finest_cells() {
     let shape = |bump: f64| at(zc, bump);
     let region = ([-11.0; 3], [11.0; 3]);
     assert!(matches!(prove_empty(&at(0.0, 0.0), &CTX, region.0, region.1, None, 0.01, 0.0).verdict, Verdict::Proven));
-    let touch = shape(0.0);
+    assert!(matches!(prove_empty(&shape(0.0), &CTX, region.0, region.1, None, 0.01, 0.0).verdict, Verdict::Proven));
+    let touch = Arc::new(field(&format!("(def f (max (move (box 20 20 4) 0 0 (- {zc} 2)) (warp (move (box 20 20 4) 0 0 (+ {zc} 2)) x y (- (+ z (* 3 y)) (* 3 y)))))"), "f").1);
     let s = prove_empty(&touch, &CTX, region.0, region.1, None, 0.01, 0.0);
     let Verdict::Unknown { cells, ended: Ended::Finest, cell: Some([lo, hi]), attained: Some(a), .. } = s.verdict else { panic!("{:?}", s.verdict) };
     assert!(cells < 100_000 && a <= 1.0, "{cells} boxes left, holds to {a}");
@@ -5000,7 +5077,8 @@ fn std_blends_are_constructions_of_their_own() {
     let src = "(def can-shell (max (tag can-wall (circle-2d 6)) (tag can-flats (- (abs y) 5))))
                (def can (fillet-intersect can-shell (- (abs z) 10) 1.5 90))
                (def ch (chamfer-union (- z) (- x) 2))
-               (def sm (smooth-union (- z) (- x) 2))";
+               (def sm (smooth-union (- z) (- x) 2))
+               (def balls (smooth-union (tag ball (sphere 1)) (tag other (move (sphere 1) 10 0 0)) 1))";
     let (d, t) = field(src, "can");
     let names = |t: &Tape, p: [f64; 3]| -> Vec<String> { ink::eval::provenance(t, &CTX, p).iter().map(|&i| d.g.tag_names[i as usize].clone()).collect() };
     assert!(names(&t, [6.0, 0.0, 0.0]).contains(&"can-wall".to_string()));
@@ -5016,6 +5094,35 @@ fn std_blends_are_constructions_of_their_own() {
         assert!(eval_point(&t, &CTX, p).abs() < 1e-12, "{def}");
         assert!(names(&t, p).contains(&name.to_string()), "{def}: {:?}", names(&t, p));
     }
+    // Outside its band (the balls 8 apart, blended over 1) the blend
+    // changes nothing: a ball's face is the ball's, whichever operand of
+    // the min the blend is.
+    let (_d, t) = field(src, "balls");
+    for (p, ball) in [([-1.0, 0.0, 0.0], "ball"), ([0.0, 1.0, 0.0], "ball"), ([11.0, 0.0, 0.0], "other")] {
+        let n = names(&t, p);
+        assert!(!n.contains(&"blend".to_string()) && n.contains(&ball.to_string()), "{p:?}: {n:?}");
+    }
+}
+
+#[test]
+fn a_name_tied_with_what_it_names_forms_the_face() {
+    // A flat screw head: its top, the plane z named head-top, ties in the
+    // max with the slab's own z. The named side is z itself, by a name and
+    // a choice, not a construction on it: the survey's walk sees head-top
+    // form the top (a construction computing from z would not).
+    let src = "(def head (max (tag countersink (- (len2 x y) (+ 3 z))) (tag head-top z) (slab-z -2 0)))\n\
+               (def top (max (tag top-face z) z))";
+    let (d, t) = field(src, "head");
+    let named = |n: Vec<u32>| n.iter().map(|&i| d.g.tag_names[i as usize].clone()).collect::<Vec<_>>();
+    for p in [[0.5, 0.0, 0.0], [-1.0, 1.0, 0.0]] {
+        assert!(eval_point(&t, &CTX, p).abs() < 1e-12);
+        let decided = named(ink::eval::decided_names(&t, &CTX, p, 0.01));
+        assert!(decided.contains(&"head-top".to_string()), "{p:?}: {decided:?}");
+    }
+    // Tied with what it names directly, the name is the point's.
+    let (d2, t2) = field(src, "top");
+    let shown: Vec<String> = ink::eval::provenance(&t2, &CTX, [0.3, 0.0, 0.0]).iter().map(|&i| d2.g.tag_names[i as usize].clone()).collect();
+    assert!(shown.contains(&"top-face".to_string()), "{shown:?}");
 }
 
 #[test]
@@ -5206,10 +5313,8 @@ fn a_warp_does_not_move_a_point() {
     assert!(loaded.is_empty(), "a point moved by a warp: {loaded:#?}");
 }
 
-/// A point's sign by the small cube about it (its bounds there straddling
-/// 0) needs the cube to hold it: at x = 1e16, x - 0.0025 rounds to x, and a
-/// cube of no width has no inside to show, so both sides would be proven.
-/// With its corners rounded outward it holds the point, and neither is. A
+/// A point's sign is its bounds there, rounded outward: at x = 1e16 they
+/// straddle 0, and neither side is proven. A
 /// point placed past the largest number is at infinity, no point: the field
 /// there (a sphere's, infinite) would prove it both outside and inside the
 /// sphere's complement; so too with another coordinate ranged, where the

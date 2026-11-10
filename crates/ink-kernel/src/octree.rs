@@ -203,6 +203,8 @@ pub struct Local<'a> {
     near: Vec<Mutex<HashMap<(u32, [i64; 3]), Arc<Tape>>>>,
     /// Instructions run on points so far (`work`).
     work: std::sync::atomic::AtomicUsize,
+    /// Evaluations along rays traced through it so far (`ray_evals`).
+    rays: std::sync::atomic::AtomicUsize,
 }
 
 /// Levels of nesting: blocks up to 2^20 times the smallest, past any model.
@@ -212,13 +214,13 @@ impl<'a> Local<'a> {
     /// The smallest blocks are of `size`, on a lattice through `origin`.
     pub fn new(tape: &'a Arc<Tape>, ctx: &'a Ctx, origin: V3, size: f64) -> Local<'a> {
         let near = (0..rayon::current_num_threads()).map(|_| Mutex::new(HashMap::new())).collect();
-        Local { tape, ctx, origin, size, blocks: RwLock::new(HashMap::new()), near, work: Default::default() }
+        Local { tape, ctx, origin, size, blocks: RwLock::new(HashMap::new()), near, work: Default::default(), rays: Default::default() }
     }
 
     /// No blocks: every point and box gets the whole tape (for a few
     /// evaluations, where simplifying would cost more than it saves).
     pub fn whole(tape: &'a Arc<Tape>, ctx: &'a Ctx) -> Local<'a> {
-        Local { tape, ctx, origin: [0.0; 3], size: f64::INFINITY, blocks: RwLock::new(HashMap::new()), near: Vec::new(), work: Default::default() }
+        Local { tape, ctx, origin: [0.0; 3], size: f64::INFINITY, blocks: RwLock::new(HashMap::new()), near: Vec::new(), work: Default::default(), rays: Default::default() }
     }
 
     pub fn ctx(&self) -> &'a Ctx {
@@ -230,6 +232,17 @@ impl<'a> Local<'a> {
     /// blocks' simplification).
     pub fn work(&self) -> usize {
         self.work.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The evaluations of the field along rays traced through it
+    /// (query::ray_to): what tracing them cost.
+    pub fn ray_evals(&self) -> usize {
+        self.rays.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Count `n` evaluations along a ray (`ray_evals`).
+    pub(crate) fn count_ray_evals(&self, n: usize) {
+        self.rays.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether it has blocks (else everything gets the whole tape).
@@ -332,5 +345,93 @@ impl<'a> Local<'a> {
             let lo = self.origin[a] + size * k[a] as f64;
             I::new(lo - pad - 1e-15 * lo.abs(), lo + size + pad + 1e-15 * lo.abs())
         })
+    }
+}
+
+/// Which points of a grid the field is inside at (`sign::inside`): the
+/// grid's corner `origin`, its step `h`, `dims` points along each axis, in
+/// `grid::index` order. The same as evaluating every point, at a fraction
+/// of the work: a box of points the field's range shows wholly inside or
+/// outside is not evaluated, and the rest are evaluated with the tape
+/// simplified over their box (`descend`). With how many points it
+/// evaluated; None where the call's time limit passed first (`stop`).
+pub fn grid_inside(tape: &Arc<Tape>, ctx: &Ctx, origin: V3, h: f64, dims: [usize; 3]) -> Option<(Vec<bool>, usize)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    /// A leaf's side, in steps: 9^3 points evaluated together.
+    const LEAF: i64 = 8;
+    let top: V3 = std::array::from_fn(|a| origin[a] + h * (dims[a].max(1) - 1) as f64);
+    let (root, cell) = root_for(origin, top, h, LEAF);
+    let grid = Grid { clip: (origin, top), ..root };
+    // A cell's points: those of its closed box in the grid.
+    let points = |c: Cell| -> Vec<usize> {
+        let r: [std::ops::RangeInclusive<usize>; 3] = std::array::from_fn(|a| c.i[a] as usize..=((c.i[a] + c.size) as usize).min(dims[a] - 1));
+        let mut out = Vec::new();
+        for k in r[2].clone() {
+            for j in r[1].clone() {
+                for i in r[0].clone() {
+                    out.push(ink_core::grid::index([i, j, k], dims));
+                }
+            }
+        }
+        out
+    };
+    let evaluated = AtomicUsize::new(0);
+    let leaf = |t: &Arc<Tape>, c: Cell| -> Option<Vec<usize>> {
+        let idx = points(c);
+        let pts: Vec<V3> = idx.iter().map(|&n| grid.pos(ink_core::grid::ijk(n, dims).map(|v| v as i64))).collect();
+        let mut vals = Vec::new();
+        eval_points(t, ctx, &pts, &mut vals);
+        evaluated.fetch_add(pts.len(), Ordering::Relaxed);
+        Some(idx.into_iter().zip(vals).filter(|(_, v)| ink_core::sign::inside(*v)).map(|(n, _)| n).collect())
+    };
+    let full = |_: &Arc<Tape>, c: Cell| Some(points(c));
+    let mut inside = vec![false; dims.iter().product()];
+    if dims.iter().all(|&d| d > 0) {
+        for n in descend_go(tape, ctx, &grid, cell, LEAF, 0.0, &|| !crate::stop::reached(), &leaf, &full).into_iter().flatten() {
+            inside[n] = true;
+        }
+    }
+    (!crate::stop::reached()).then(|| (inside, evaluated.into_inner()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ink_core::graph::{BinOp, Graph, UnOp, Var};
+
+    /// A sampled field's signs from the field's ranges agree with each
+    /// point's own, evaluating a small part of the points: those near the
+    /// surface. Many spheres, each a branch of a min, as letters are.
+    #[test]
+    fn a_grids_signs_are_each_points_evaluating_only_near_the_surface() {
+        let mut g = Graph::new();
+        let (x, y, z) = (g.var(Var::X), g.var(Var::Y), g.var(Var::Z));
+        let mut f = None;
+        for i in 0..12 {
+            let c = g.constant(-30.0 + 5.5 * i as f64);
+            let dx = g.bin(BinOp::Sub, x, c);
+            let dz = g.bin(BinOp::Sub, z, c);
+            let (a, b, k) = (g.un(UnOp::Square, dx), g.un(UnOp::Square, y), g.un(UnOp::Square, dz));
+            let s = g.bin(BinOp::Add, a, b);
+            let s = g.bin(BinOp::Add, s, k);
+            let r = g.un(UnOp::Sqrt, s);
+            let two = g.constant(2.0);
+            let ball = g.bin(BinOp::Sub, r, two);
+            f = Some(f.map_or(ball, |m| g.bin(BinOp::Min, m, ball)));
+        }
+        let tape = Arc::new(Tape::new(&g, f.unwrap()));
+        let ctx = Ctx::new(0.0, vec![]);
+        let (origin, h, dims) = ([-40.0, -10.0, -40.0], 0.5, [161, 41, 161]);
+        let (inside, evaluated) = grid_inside(&tape, &ctx, origin, h, dims).expect("no time limit");
+        let pts: Vec<V3> = (0..inside.len())
+            .map(|n| {
+                let q = ink_core::grid::ijk(n, dims);
+                std::array::from_fn(|a| origin[a] + h * q[a] as f64)
+            })
+            .collect();
+        let each = ink_core::eval::eval_points_par(&tape, &ctx, &pts);
+        assert!(each.iter().zip(&inside).all(|(v, i)| ink_core::sign::inside(*v) == *i), "a sign differs from the point's own");
+        assert!(inside.iter().filter(|&&i| i).count() > 1000, "the balls hold points");
+        assert!(evaluated * 10 < inside.len(), "{evaluated} of {} points evaluated", inside.len());
     }
 }

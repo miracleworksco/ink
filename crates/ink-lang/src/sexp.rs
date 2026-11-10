@@ -11,6 +11,11 @@ pub enum SK {
     Sym(String),
     Str(String),
     List(Vec<Sexp>),
+    /// The built-in so named, whatever the file binds the name to: the
+    /// head ink writes for a built-in passed as a value and called, and
+    /// for a `for`'s `(vec ...)`. It is no name, so nothing read or made
+    /// from text is one (Doc::shadows).
+    BuiltIn(String),
 }
 
 /// The unit a number says: written in it (`1in`: in, and 1), or a value
@@ -60,7 +65,7 @@ impl Sexp {
     pub fn to_json(&self) -> serde_json::Value {
         match &self.k {
             SK::Num(v, _) => serde_json::json!(v),
-            SK::Sym(s) | SK::Str(s) => serde_json::json!(s),
+            SK::Sym(s) | SK::Str(s) | SK::BuiltIn(s) => serde_json::json!(s),
             SK::List(v) => serde_json::Value::Array(v.iter().map(|e| e.to_json()).collect()),
         }
     }
@@ -72,7 +77,7 @@ impl fmt::Display for Sexp {
             SK::Num(v, None) => write!(f, "{v}"),
             SK::Num(_, Some(Written::Here(u, w))) => write!(f, "{w}{}", u.name),
             SK::Num(v, Some(Written::From(s))) => write!(f, "{}{}", units::to(*v, s.unit), s.unit.name),
-            SK::Sym(s) => write!(f, "{s}"),
+            SK::Sym(s) | SK::BuiltIn(s) => write!(f, "{s}"),
             SK::Str(s) => write!(f, "{s:?}"),
             SK::List(v) => {
                 write!(f, "(")?;

@@ -4,7 +4,7 @@
 ; thumb scoop cut with smooth-subtract, a flat base with a rounded edge,
 ; then hollowed to a 2 mm wall. Ellipsoids are non-uniformly scaled
 ; spheres: not distance fields, so a naive (shell f 2) wall varies in
-; thickness; (redistance f) first should make it exact.
+; thickness; (redistance f) first makes it even, to within its samples.
 ;
 ; Reference: the wall is 2.0 mm everywhere (by construction intent).
 ;
@@ -25,6 +25,15 @@
 ; expect-warning: body 'naive-shell': 'hump' is in its field but forms none of its surface
 ; expect-warning: body 'mouse': 'thumb-scoop' was not seen forming any of its surface
 ; expect-warning: body 'naive-shell': 'thumb-scoop' was not seen forming any of its surface
+
+; The naive shell grows and shrinks a field that is not the distance (the
+; control): ink check says so. The redistanced one is approximate, to
+; within its samples (their trilinear interpolant is no distance), and
+; ink check says by how much.
+; expect-warning: 20-organic-shell.ink:52): (offset-shape f h): an offset of sampled data is approximate
+; expect-warning: 20-organic-shell.ink:52): (offset-shape f (neg h)): an offset of sampled data is approximate
+; expect-warning: 20-organic-shell.ink:53): (offset-shape f h): the field is not shown to be the distance outside its shape
+; expect-warning: 20-organic-shell.ink:53): (offset-shape f (neg h)): the field is not shown to be the distance inside its shape
 
 ; The shells stand beside the solid body they are cut from.
 

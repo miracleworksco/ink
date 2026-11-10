@@ -1,13 +1,13 @@
 //! Geometric queries with proof-carrying answers: bounds, integrals (volume,
 //! mass), emptiness proofs, and planar slices.
 
-use crate::octree::{Cell, Grid, Local, descend, root_for, try_root_for};
+use crate::octree::{Cell, Grid, Local, try_root_for};
 use crate::scope::{self, At};
 use crate::search;
 use ink_core::V3;
 use ink_core::eval::{Ctx, eval_grads, eval_interval, eval_interval_in, eval_interval_scope, eval_point, eval_points, span_mid};
 use ink_core::interval::{I, add_o, mul_o, sub_o};
-use ink_core::sign::{inside, undecided};
+use ink_core::sign::{drawn, inside};
 use ink_core::tape::{BOTH, Tape};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -15,27 +15,6 @@ use std::sync::Arc;
 
 pub fn max_extent(lo: V3, hi: V3) -> f64 {
     (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max)
-}
-
-/// A cell's volume, as clipped (an estimate's; bounds use box_volume_out).
-fn cell_volume(grid: &Grid, c: Cell) -> f64 {
-    grid.cell_sides(c).iter().product()
-}
-
-/// `k^3` sample points at the centres of the sub-cells of a cell (as
-/// clipped), `k` along each side.
-pub fn samples(grid: &Grid, c: Cell, k: usize) -> Vec<V3> {
-    let (lo, _) = grid.cell_bounds(c);
-    let s = grid.cell_sides(c).map(|x| x / k as f64);
-    let mut out = Vec::with_capacity(k * k * k);
-    for a in 0..k {
-        for b in 0..k {
-            for d in 0..k {
-                out.push([lo[0] + s[0] * (d as f64 + 0.5), lo[1] + s[1] * (b as f64 + 0.5), lo[2] + s[2] * (a as f64 + 0.5)]);
-            }
-        }
-    }
-    out
 }
 
 /// Fraction of a box of sides `s` centred on a sample that lies inside,
@@ -85,18 +64,23 @@ pub enum Extent {
 /// reports `Unbounded`.
 const EXTENT_BUDGET: usize = 1 << 13;
 
-/// 2^40: farther than any model reaches, in window sizes (`extent_sectors`).
+/// 2^40: farther than any model reaches, in window sizes (`reaches_far`).
 const TB: f64 = 1_099_511_627_776.0;
 
-// The instructions `extent`'s tests and covers evaluated on this thread,
-// and the longest tape among them: the tests' measure of its work.
-#[cfg(test)]
-thread_local!(static EXTENT_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) });
+/// ink's range: the farthest coordinate (mm), 1,000 km. Material beyond it
+/// is outside what ink answers about.
+pub const REACH: f64 = 1e9;
 
-/// Count an evaluation of `tape` toward `EXTENT_WORK` (tests only).
+// The instructions evaluated on this thread by `extent`'s tests and covers
+// and by an emptiness search's reads of a and b (`Except`), and the
+// longest tape among them: the tests' measure of their work.
+#[cfg(test)]
+thread_local!(static WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) });
+
+/// Count an evaluation of `tape` toward `WORK` (tests only).
 fn worked(_tape: &Tape) {
     #[cfg(test)]
-    EXTENT_WORK.with(|w| w.set((w.get().0 + _tape.len(), w.get().1.max(_tape.len()))));
+    WORK.with(|w| w.set((w.get().0 + _tape.len(), w.get().1.max(_tape.len()))));
 }
 
 /// Where the field can be negative, over all of space, proven by covering all of space with pieces on which
@@ -391,7 +375,8 @@ fn centre_radius(window: (V3, V3)) -> (V3, V3) {
 /// scaled out from its centre), each split into sectors: a range of
 /// directions and a range of distance, the farthest reaching infinity. Over
 /// a sector a linear term's distance factor is taken once, so a rotated
-/// coordinate stays one-signed on a narrow sector however far it reaches.
+/// coordinate stays one-signed on a narrow sector however far it reaches,
+/// and a radius and an angle (a polar fold's) stay narrow.
 /// Undecided sectors split by direction, then by distance (doubling); a
 /// finite one small for its distance joins the box, a far one never does.
 fn extent_sectors(tape: &Arc<Tape>, ctx: &Ctx, window: (V3, V3), budget: usize) -> Extent {
@@ -467,17 +452,19 @@ fn extent_sectors(tape: &Arc<Tape>, ctx: &Ctx, window: (V3, V3), budget: usize) 
             stack.push(y);
         };
         // A finite sector splits its directions. A far one splits them only
-        // if they do not settle its far end out where no model reaches (2^40
-        // window sizes: there only narrower directions can help); else its
-        // distance: the far end doubles away (material in between stays in
-        // the finite pieces).
+        // if they do not settle its far end beyond ink's range (REACH: there
+        // only narrower directions can help); else its distance: the far end
+        // doubles away (material in between stays in the finite pieces). So
+        // a distance walked out is settled within the range, and a sector
+        // settled only farther out (an angle about an axis off the origin,
+        // whose offset fades only there) is narrowed instead.
         let narrower = !far
             || width > 1.0 / 64.0 && {
                 evals += 1;
                 worked(&sub);
                 let mut y = region(&x);
                 if let Region::Sector { s, .. } = &mut y {
-                    *s = I::new(x.s.0.max(TB), f64::INFINITY);
+                    *s = I::new(x.s.0.max((REACH + c[x.axis].abs()) / r[x.axis]), f64::INFINITY);
                 }
                 eval_interval_linear(&sub, ctx, &y, None).may_be_inside()
             };
@@ -670,7 +657,7 @@ fn bounds_passes(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, passes: &[f64]) ->
         h = max_extent(lo, hi) / divisions;
         // No root covers the region: no bounds tighter than it.
         let Some((grid, root)) = try_root_for(lo, hi, h, 1) else { return Some((lo, hi, h)) };
-        let ((nlo, nhi), _) = bounds_cells(tape, ctx, &grid, root);
+        let ((nlo, nhi), ..) = bounds_cells(tape, ctx, &grid, root);
         if nlo[0] > nhi[0] {
             return None;
         }
@@ -686,11 +673,16 @@ fn bounds_passes(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, passes: &[f64]) ->
 /// For a cell crossing that box, evaluate only its outside slabs first:
 /// its inside material must not force subdivision of an entire face just
 /// to exclude the empty strip beyond the current bound. The result is
-/// an enclosure of the material, as in a full descent.
-/// With the cells it evaluated: a work count a test can bound, whatever the timing.
-fn bounds_cells(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, root: Cell) -> ((V3, V3), usize) {
+/// an enclosure of the material, as in a full descent. Each of the
+/// field's parts (`material_parts`: an assembly's) descends on its own
+/// tape, all into the one box, so a part inside the box found so far
+/// costs its own few slabs, and no cell reads the whole.
+/// With the cells it evaluated and the longest tape it read: work a test
+/// can bound, whatever the timing.
+fn bounds_cells(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, root: Cell) -> ((V3, V3), usize, usize) {
     let (mut lo, mut hi) = ink_core::v3::EMPTY_BOX;
-    let mut pending = vec![(tape.clone(), root)];
+    let mut pending: Vec<_> = material_parts(tape).into_iter().map(|t| (t, root)).collect();
+    let longest = pending.iter().map(|p| p.0.len()).max().unwrap_or(0);
     let mut visited = 0;
     while let Some((t, c)) = pending.pop() {
         if !grid.meets(c) {
@@ -733,177 +725,39 @@ fn bounds_cells(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, root: Cell) -> ((V3, V
             pending.extend(c.children().into_iter().map(|c| (sub.clone(), c)));
         }
     }
-    ((lo, hi), visited)
+    ((lo, hi), visited, longest)
 }
 
-/// The relative spread an estimated integral settles to (`refine`): a
-/// mass, a volume, a published mass's density, a claim's integrals at
-/// the latest.
-pub const ACCURACY: f64 = 0.02;
-
-/// Cells a halving of `refine` may make: one that would make more is not
-/// made (surfaces over a large area at fine cells: a few seconds' work).
-pub const PASS_CELLS: usize = 1 << 21;
-
-/// Integrals at one cell size (`sums`), and the cells they took, full and
-/// surface.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Sums {
-    pub sums: Vec<f64>,
-    pub cells: [usize; 2],
+/// A field as pieces whose materials' union is its material, each its own
+/// tape: a union's members; an intersection's, where a union is among its
+/// members, that union's members each with the rest (an assembly clipped
+/// to a box: each part clipped to it); else the field whole. Split only
+/// where the pieces together are no longer than twice the whole (what
+/// they share is read once a piece).
+fn material_parts(tape: &Arc<Tape>) -> Vec<Arc<Tape>> {
+    use ink_core::graph::BinOp;
+    use ink_core::tape::Op;
+    let is = |i: usize, o: BinOp| matches!(tape.ssa[i].op, Op::Bin(x) if x == o);
+    let i = value_of(tape, tape.len() - 1);
+    let sets: Vec<Vec<usize>> = if is(i, BinOp::Min) {
+        members(tape, i, BinOp::Min).into_iter().map(|m| vec![m]).collect()
+    } else if is(i, BinOp::Max) {
+        let ms = members(tape, i, BinOp::Max);
+        let Some(&u) = ms.iter().rev().find(|&&m| is(m, BinOp::Min)) else { return vec![tape.clone()] };
+        let rest: Vec<usize> = ms.iter().copied().filter(|&m| m != u).collect();
+        members(tape, u, BinOp::Min).into_iter().map(|m| rest.iter().copied().chain([m]).collect()).collect()
+    } else {
+        return vec![tape.clone()];
+    };
+    let mut cones = Cones::new(tape);
+    let read: usize = sets.iter().map(|s| cones.len(s)).sum();
+    if sets.len() < 2 || read > 2 * tape.len() {
+        return vec![tape.clone()];
+    }
+    sets.iter().map(|s| whole(tape, s)).collect()
 }
 
-/// Integrals as `refine` left them, at cells of `res`: each with its
-/// spread (none before a halving), the size before (`coarse`: it, and how far the first integral
-/// moved from there, relative to it), the cells it took (full of
-/// material, and the surface's), and whether it settled.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Measured {
-    pub sums: Vec<f64>,
-    pub spread: Vec<f64>,
-    pub res: f64,
-    pub coarse: Option<(f64, f64)>,
-    pub cells: [usize; 2],
-    pub settled: bool,
-}
-
-impl Measured {
-    /// `at`'s integrals at cells of `h`, before any halving: no spread.
-    /// Settled where there are none.
-    pub fn first(h: f64, at: impl FnOnce(f64) -> Sums) -> Measured {
-        let s = at(h);
-        Measured { settled: s.sums.is_empty(), sums: s.sums, spread: Vec::new(), res: h, coarse: None, cells: s.cells }
-    }
-
-    /// Halved once (`refine`).
-    pub fn halved(&self, at: impl FnOnce(f64) -> Sums) -> Measured {
-        let next = at(self.res / 2.0);
-        let spread: Vec<f64> = next.sums.iter().zip(&self.sums).map(|(a, b)| 2.0 * (a - b).abs()).collect();
-        let (first, change) = (next.sums[0], (next.sums[0] - self.sums[0]).abs());
-        let settled = next.cells == [0; 2] || (next.cells[0] > 0 && spread[0] <= ACCURACY * first.abs());
-        let coarse = Some((self.res, if change == 0.0 { 0.0 } else { change / first.abs() }));
-        Measured { sums: next.sums, spread, res: self.res / 2.0, coarse, cells: next.cells, settled }
-    }
-
-    /// Whether `refine` halves it again: unsettled, finite, and (past the
-    /// first halving) the next within PASS_CELLS.
-    pub fn halves(&self) -> bool {
-        let cells = self.cells[0] + self.cells[1];
-        !self.settled && self.sums[0].is_finite() && !(self.coarse.is_some() && cells.saturating_mul(4) > PASS_CELLS)
-    }
-
-    /// Of `measured` with moments: rho * [1, x, y, z, xx, yy, zz, xy, yz,
-    /// zx], then (the second integrand's, where it is 1) the volume.
-    pub fn moments(&self) -> [f64; 10] {
-        std::array::from_fn(|k| self.sums[k])
-    }
-    pub fn volume(&self) -> f64 {
-        self.sums[10]
-    }
-
-    /// The first integral's spread, relative to it (None before a halving).
-    pub fn relative_spread(&self) -> Option<f64> {
-        self.spread.first().map(|&s| if s == 0.0 { 0.0 } else { s / self.sums[0].abs() })
-    }
-
-    /// Why it did not settle (None: it did).
-    pub fn unsettled(&self) -> Option<String> {
-        let why = match self.cells[0] {
-            0 => "no cell is proven full of material (a wall thinner than every cell)".to_string(),
-            _ => format!("its spread is over {}% of it", ACCURACY * 100.0),
-        };
-        (!self.settled).then(|| format!("{why}, and the next halving would take over {PASS_CELLS} cells"))
-    }
-}
-
-/// Integrals estimated, the one way they are: `at` (integrals at a cell
-/// size) at cells of `h`, halved until the first's spread is within
-/// ACCURACY of it, at cells some of which are proven full of material. A
-/// spread is a sampled estimate of the change left: twice what the last
-/// halving moved it. So at least one halving is made, and the answer is an estimate, not a
-/// bound. Cells none of which fits inside the material resolve none of
-/// its walls, and can read them alike at every size that leaves them so
-/// (a 0.25 mm plate 200 mm across is 48% heavy at cells of 2 and of 1
-/// mm). A halving takes about four times the cells (they cover a
-/// surface): after the first, one that would pass PASS_CELLS is not made,
-/// and the answer is unsettled. A claim's parts are halved this way each,
-/// and stop sooner where the claim's status survives their spreads
-/// (claims::estimate_parts).
-pub fn refine(h: f64, mut at: impl FnMut(f64) -> Sums) -> Measured {
-    let mut m = Measured::first(h, &mut at);
-    while m.halves() {
-        m = m.halved(&mut at);
-    }
-    m
-}
-
-/// `sums` refined (`refine`) from cells of a 100th of the box, to
-/// ACCURACY; at `res`, once, where given. Cached, as the kernel's other
-/// answers are. The cells follow walls, not length (a 1200 mm tube's
-/// 0.71 mm walls measure 59% heavy at a 200th of its length).
-pub fn measured(shape: &Arc<Tape>, gs: &[Option<&Tape>], moments: bool, ctx: &Ctx, lo: V3, hi: V3, res: Option<f64>) -> Measured {
-    let tapes: Vec<&Tape> = std::iter::once(&**shape).chain(gs.iter().flatten().copied()).collect();
-    crate::cache::memo_region(
-        "measured",
-        &tapes,
-        ctx,
-        (lo, hi),
-        |fp| {
-            fp.word(res.map_or(0, |r| 1 + r.to_bits())).word(gs.len() as u64).word(moments as u64);
-            gs.iter().for_each(|g| _ = fp.word(g.is_some() as u64));
-        },
-        |ctx| {
-            let at = |h| sums(shape, gs, moments, ctx, lo, hi, h);
-            match res {
-                Some(h) => Measured { settled: true, ..Measured::first(h, at) },
-                None => refine(max_extent(lo, hi) / 100.0, at),
-            }
-        },
-    )
-}
-
-/// Bounds of the integral of `g` over a cell full of material (of every
-/// moment and param value of ctx's spans), rounded outward, and whether
-/// g's slopes are the same across it to 1e-9 of their size (their range's
-/// width: g linear but for rounding, so splits would narrow little): the
-/// tighter of its range times the cell's volume and the centred form. With
-/// c a point of the cell and a_k(x) the mean of dg/dx_k on the segment from
-/// c to x (in the range of that slope over the cell, which covers both
-/// sides of a kink), g(x) = g(c) + sum_k a_k(x) (x_k - c_k), so the
-/// integral is vol g(c) plus, per axis, at most the slope's range times
-/// the integral of x_k - c_k where positive, less where negative: exact
-/// for g linear in x, y, z (a centre of mass's moment). A g that jumps in
-/// the cell (a select, a floor) has unbounded slopes there and keeps the
-/// plain bound. Halved while the slopes vary over it, down to `leaf` grid
-/// steps.
-fn full_integral(g: &Tape, ctx: &Ctx, grid: &Grid, c: Cell, leaf: i64) -> (I, bool) {
-    let b = grid.cell_box(c);
-    let side: [I; 3] = b.map(|x| sub_o(I::point(x.hi), I::point(x.lo)));
-    let vol = mul_o(mul_o(side[0], side[1]), side[2]);
-    let plain = mul_o(vol, eval_interval(g, ctx, b, None));
-    let gg = ink_core::eval::eval_interval_grad(g, ctx, b);
-    let centre: V3 = b.map(|x| span_mid((x.lo, x.hi)));
-    let mut centred = mul_o(vol, eval_interval(g, ctx, centre.map(I::point), None));
-    for k in 0..3 {
-        // The integral of x_k - c_k where positive and where negative: the
-        // cross-section times half the squared distance to each face.
-        let area = mul_o(side[(k + 1) % 3], side[(k + 2) % 3]);
-        let half = |d: I| mul_o(mul_o(area, mul_o(d, d)), I::point(0.5));
-        let up = half(sub_o(I::point(b[k].hi), I::point(centre[k])));
-        let down = half(sub_o(I::point(centre[k]), I::point(b[k].lo)));
-        let term = sub_o(mul_o(gg.d[k], up), mul_o(gg.d[k], down));
-        centred = add_o(centred, term);
-    }
-    let both = I::new(plain.lo.max(centred.lo), plain.hi.min(centred.hi));
-    let linear = |d: &I| d.lo.is_finite() && d.hi.is_finite() && d.hi - d.lo <= 1e-9 * ink_core::interval::mag(*d);
-    let curved = !gg.d.iter().all(linear);
-    if !curved || c.size <= leaf {
-        return (both, !curved);
-    }
-    let halves = c.children().map(|k| if grid.meets(k) { full_integral(g, ctx, grid, k, leaf).0 } else { I::point(0.0) });
-    let sum = halves.iter().fold(I::point(0.0), |s, x| add_o(s, *x));
-    (I::new(sum.lo.max(both.lo), sum.hi.min(both.hi)), false)
-}
+pub use crate::integral::{ACCURACY, Measured, Until, integrate, measured};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Verdict {
@@ -1036,6 +890,14 @@ pub(crate) struct Cover {
     pub region: [I; 3],
     pub asked: [I; 3],
     pub sign: f64,
+    /// The space axes the field reads (Tape::space_read): along one it
+    /// reads not, no region ends.
+    pub read: [bool; 3],
+    /// The space axes the box's own field reads not (`covered`): along
+    /// them it is the same all through the box, so a point there is as far
+    /// outside as one beside it, and a point is shown outside along the
+    /// box's whole span of them.
+    pub still: [bool; 3],
 }
 
 impl Cover {
@@ -1052,9 +914,20 @@ impl Cover {
     /// (`wide` gives the field there): a box inside a contact thinner than twice the
     /// tolerance is settled from outside it. `pts` are the box's samples,
     /// the centres of its 4 x 4 x 4 sub-boxes (`box_samples`), `v` the field
-    /// there (`sub` holds only in the box).
+    /// there (`sub` holds only in the box; `out` is asked of a point, as a
+    /// box of its still axes' spans, and the bounds there).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn covered<'w>(&self, sub: &Tape, wide: &dyn Fn() -> &'w Tape, out: &dyn Fn(I, &Ctx, V3) -> bool, ctx: &Ctx, b: [I; 3], side: V3, pts: &[V3], v: &[f64]) -> bool {
+    pub(crate) fn covered<'w>(
+        &self,
+        sub: &Tape,
+        wide: &dyn Fn() -> &'w Tape,
+        out: &dyn Fn(I, &Ctx, [I; 3]) -> bool,
+        ctx: &Ctx,
+        b: [I; 3],
+        side: V3,
+        pts: &[V3],
+        v: &[f64],
+    ) -> bool {
         if self.tol == 0.0 {
             return false;
         }
@@ -1063,11 +936,15 @@ impl Cover {
         // sign::inside: the solid's outside is not inside, the air's is.
         let outside = |x: f64| if sign > 0.0 { !inside(x) } else { inside(-x) };
         let grown = self.grown(b);
+        let (read, still) = (self.read, self.still);
         let within = |p: &V3, r: &[I; 3]| (0..3).all(|k| r[k].contains(p[k]));
+        let far = |q: V3, c: V3, half: V3, b: [I; 3]| far(q, c, half, b, still);
+        let side: V3 = std::array::from_fn(|k| if still[k] { 0.0 } else { side[k] });
         // Shown outside: in the box by its own tape; past the region asked
         // or the material's box (a proven bound), by them; else in the
-        // grown box by `wide`.
-        let past = |q: &V3| !within(q, &self.asked) || !within(q, &self.region);
+        // grown box by `wide`; each along the box's span of its still axes
+        // (no step moves a point along them).
+        let past = |q: &V3| (0..3).any(|k| read[k] && !(self.asked[k].contains(q[k]) && self.region[k].contains(q[k])));
         let shown = |q: &V3, slots: &mut Vec<I>| -> bool {
             let t = if within(q, &b) {
                 sub
@@ -1078,7 +955,8 @@ impl Cover {
             } else {
                 return false;
             };
-            out(ink_core::eval::eval_interval_in(t, ctx, q.map(I::point), None, slots), ctx, *q)
+            let at: [I; 3] = std::array::from_fn(|k| if still[k] { b[k] } else { I::point(q[k]) });
+            out(ink_core::eval::eval_interval_in(t, ctx, at, None, slots), ctx, at)
         };
         // A point shown outside within the tolerance of every point of the
         // box about c (field x there): c itself, else a step from c up the
@@ -1091,7 +969,10 @@ impl Cover {
             if outside(x) && far(c, c, half, b) <= tol && shown(&c, slots) {
                 return Some(c);
             }
-            let reach = tol - ink_core::interval::norm(half);
+            // A step this long keeps every point of the box about c within
+            // the tolerance of where it lands, with room for far's rounding
+            // (along one axis read alone, the farthest is reach + its half).
+            let reach = 0.99 * (tol - ink_core::interval::norm(std::array::from_fn(|k| if still[k] { 0.0 } else { half[k] })));
             if !(reach > 0.0) {
                 return None;
             }
@@ -1114,9 +995,13 @@ impl Cover {
                 (axis(2, 1.0), reach),
                 (axis(2, -1.0), reach),
             ];
-            ways.into_iter().map(|(u, s)| [c[0] + s * u[0], c[1] + s * u[1], c[2] + s * u[2]]).filter(|q| q.iter().all(|x| x.is_finite())).find(|q| {
-                far(*q, c, half, b) <= tol && (past(q) || within(q, &grown) && outside(sign * eval_point(if within(q, &b) { sub } else { wide() }, ctx, *q))) && shown(q, slots)
-            })
+            ways.into_iter()
+                .filter(|(u, _)| (0..3).all(|k| !still[k] || u[k] == 0.0))
+                .map(|(u, s)| [c[0] + s * u[0], c[1] + s * u[1], c[2] + s * u[2]])
+                .filter(|q| q.iter().all(|x| x.is_finite()))
+                .find(|q| {
+                    far(*q, c, half, b) <= tol && (past(q) || within(q, &grown) && outside(sign * eval_point(if within(q, &b) { sub } else { wide() }, ctx, *q))) && shown(q, slots)
+                })
         };
         let mut slots = Vec::new();
         // First the fewest boxes: the n x n x n whose corners are no more
@@ -1410,9 +1295,11 @@ fn empty_now(tape: &Arc<Tape>, except: Option<&Except>, ctx: &Ctx, lo: V3, hi: V
         asked: std::array::from_fn(|k| I::new(lo[k], hi[k])),
         loose: Default::default(),
         t_band: ctx.t_span,
-        except: except.cloned(),
+        read: tape.space_read(),
+        finest,
     };
-    let (searched, s) = empty_run(&q, vec![search::Node { b: root, ctx: ctx.clone(), state: (Kept::of(tape), Kept::of(tape)) }], finest);
+    let state = (Kept::of(tape), Kept::of(tape), except.map(|e| (Kept::of(&e.a), Kept::of(&e.b))));
+    let (searched, s) = empty_run(&q, vec![search::Node { b: root, ctx: ctx.clone(), state }], finest);
     (searched, s.tested())
 }
 
@@ -1483,6 +1370,16 @@ fn lattice(lo: V3, hi: V3, h: f64) -> Option<[I; 3]> {
 /// Boxes a search may test (an emptiness's or a clearance's).
 pub const BOXES: usize = 1 << 22;
 
+/// What h reading at least 0 over a box of "inside a and not inside b"
+/// leaves there (`Empty::shallow`): no point of the question's, none deeper
+/// than the tolerance, or it cannot say.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Allowed {
+    Exact,
+    Loose,
+    No,
+}
+
 /// Witness samples a box confirms against the tolerance (the deepest
 /// first: each costs a bound over a cube).
 const DEEP_TRIES: usize = 4;
@@ -1492,8 +1389,10 @@ type Witness = (V3, At, f64);
 
 /// What a box of an emptiness search keeps for its halves: the field
 /// simplified over it, and over it grown by the tolerance (where a
-/// witness's cube and the points that cover it are bounded).
-type Pieces = (Kept, Kept);
+/// witness's cube and the points that cover it are bounded); for "inside
+/// a and not inside b", a and b simplified over that grown box, where
+/// every point its test reads them at lies.
+type Pieces = (Kept, Kept, Option<(Kept, Kept)>);
 
 /// A tape a box keeps for its halves: the tape its test read and the
 /// choices made there, a step at a time, simplified when one of its halves
@@ -1558,6 +1457,13 @@ impl Kept {
 ///   is deeper (`loose`: a proof that needed the tolerance, which keeps
 ///   the LOOSE such boxes of lowest bound).
 ///
+/// Those after the bounds ask the box narrowed to where the field can be
+/// at most 0 by its terms of one axis alone (`contract`: an extrusion's
+/// span), of the field's sign alone there (`signed`: a slab below 0 inside
+/// its span drops out of an extrusion), and a box is never halved along an
+/// axis that reads not (an extrusion's walls inside its span: the plane's
+/// question, a point shown outside standing for its whole column).
+///
 /// A witness is its centre where the field is below 0 all over it and the
 /// cube about it fits (or is shown inside), or one of its samples, the
 /// deepest first, whose cube is shown inside: at the box's moment and
@@ -1591,8 +1497,12 @@ struct Empty {
     /// Time's span over the search (a step of a motion), which a box's
     /// share of it is of.
     t_band: Option<(f64, f64)>,
-    /// "Inside a and not inside b": the tape is max(a, -b) (`Except`).
-    except: Option<Except>,
+    /// The space axes the field reads (Tape::space_read): along one it
+    /// reads not, the material box ends nowhere (`to_faces`).
+    read: [bool; 3],
+    /// The lattice's cells (empty_run): a box with a side over 1.5 of
+    /// them can still be halved there.
+    finest: f64,
 }
 
 impl search::Question for Empty {
@@ -1606,17 +1516,51 @@ impl search::Question for Empty {
         let (from, given) = (n.state.0.tape(), n.state.1.tape());
         let mut ch = vec![BOTH; from.len()];
         let r = eval_interval(&from, ctx, b, Some(&mut ch));
-        // h at least 0 settles where it decides (`by_h`); "inside a and not
-        // inside b" holds a point reading 0 only where a is below 0.
+        // a and b simplified over the grown box, once read, and the choices
+        // that simplified them.
+        let cell = std::cell::OnceCell::new();
+        let narrowed = || {
+            cell.get_or_init(|| {
+                n.state.2.as_ref().map(|(a, z)| {
+                    let (a, z) = (a.tape(), z.tape());
+                    let (mut cha, mut chz) = (vec![BOTH; a.len()], vec![BOTH; z.len()]);
+                    eval_interval(&a, ctx, self.grown(b), Some(&mut cha));
+                    eval_interval(&z, ctx, self.grown(b), Some(&mut chz));
+                    (Except { a: simple(&a, &cha), b: simple(&z, &chz) }, (a, cha), (z, chz))
+                })
+            })
+            .as_ref()
+        };
+        let except = || narrowed().map(|n| &n.0);
+        // h at least 0 over the box settles where that leaves no point of
+        // the question's there, or none deeper than the tolerance, the box
+        // then kept as one held to it (`shallow`); "inside a and not inside
+        // b" holds a point reading 0 only where a is below 0.
         let by_h = std::cell::OnceCell::new();
-        let by_h = |x: [I; 3]| *by_h.get_or_init(|| self.by_h(ctx, x));
-        if r.clear_of_surface() || r.none_inside() && by_h(self.grown(b)) {
+        let by_h = |x: [I; 3]| *by_h.get_or_init(|| Self::by_h(except(), ctx, x));
+        let shallow = std::cell::OnceCell::new();
+        let shallow = || *shallow.get_or_init(|| if n.state.2.is_none() { Allowed::Exact } else { self.shallow(except(), &by_h, ctx, b) });
+        // Its value over the box holds over any part of it (a narrowed
+        // box); a box it settles held to the tolerance is kept as such.
+        let settled = |a: Allowed, at: [I; 3]| {
+            if a == Allowed::Loose {
+                self.keep_loose(r.lo, at, ctx);
+            }
+            Settled
+        };
+        if r.clear_of_surface() {
             return Settled;
         }
-        if let Some(w) = self.found_except(r, ctx, b) {
+        if r.none_inside() && shallow() != Allowed::No {
+            return settled(shallow(), b);
+        }
+        // a and b are narrowed only where h may be below 0 throughout.
+        if r.hi <= 0.0
+            && let Some(w) = self.found_except(except(), r, ctx, b)
+        {
             return Found(w);
         }
-        let mut sub = simple(&from, &ch);
+        let sub = simple(&from, &ch);
         // `wide` simplified over the box grown by the tolerance where the
         // box's own tape has halved the one it was tested with (narrowing
         // costs a bound over the grown box).
@@ -1629,40 +1573,96 @@ impl search::Question for Empty {
             }
             true => given.clone(),
         };
-        let mut chp = Vec::new();
         let c: V3 = std::array::from_fn(|k| b[k].mid());
         // Inside throughout: its centre is a witness where the box holds the
         // cube about it, else where that cube is inside.
         if r.all_inside() && ((0..3).all(|k| c[k] - b[k].lo >= self.tol && b[k].hi - c[k] >= self.tol) || self.deep(&sub, &wide, &mut Confirm::new(ctx), c)) {
             return Found((c, At::of(ctx), eval_point(&sub, ctx, c)));
         }
+        // The rest is asked where the field can be at most 0 alone
+        // (`contract`: past there it is above 0), of its sign alone there
+        // (`signed`): settled and covered so, and never halved along the
+        // axes that reads not.
+        let Some(narrow) = contract(&sub, ctx, b) else { return Settled };
+        let mut signed = signed(&sub, ctx, narrow);
+        if narrow != b {
+            let rs = eval_interval(&signed, ctx, narrow, None);
+            if rs.clear_of_surface() {
+                return Settled;
+            }
+            if rs.none_inside() && shallow() != Allowed::No {
+                return settled(shallow(), narrow);
+            }
+        }
+        let b = narrow;
         // The scope's axes the field reads: ranged params, and time over a
         // step of a motion.
-        let (ps, ts) = (scope::splittable(&sub, ctx, scope::PARAM_SPLITS), scope::spans_t(&sub, ctx));
+        let (ps, ts) = (scope::splittable(&signed, ctx, scope::PARAM_SPLITS), scope::spans_t(&signed, ctx));
+        // A max of groups of terms reading params apart (scope::groups) is
+        // at least 0 over a box only where one group is, and halving a
+        // group's params narrows that group's bound alone: each box made
+        // must still be settled by one group, so the boxes multiply with
+        // each group halved. Only a group whose next halving settles a half
+        // by itself (the group at least 0 over it) is halved, the one
+        // nearest settling (its bound at the scope's middle less what its
+        // params spread it by, `shares`). Where none is, space is halved
+        // first while that can narrow a group (one reads an axis of space
+        // the box can still be halved along); else the nearest is halved.
+        // The params of the rest are held.
+        let held = |signed: &Tape, mid: &Ctx, shares: &[(u32, f64)]| -> Vec<u32> {
+            let gs = scope::groups(signed, ctx, &ps);
+            if gs.is_empty() {
+                return Vec::new();
+            }
+            // The param the search would halve first: the largest share, then
+            // the least halved.
+            let next =
+                |g: &[u32]| g.iter().copied().max_by(|&i, &j| share(shares, i).total_cmp(&share(shares, j)).then(scope::halvings(ctx, j).total_cmp(&scope::halvings(ctx, i))));
+            let halves = |g: &(Vec<u32>, Tape)| {
+                next(&g.0).is_some_and(|k| {
+                    let (lo, hi) = scope::halves(ctx, k);
+                    eval_interval(&g.1, &lo, b, None).lo >= 0.0 || eval_interval(&g.1, &hi, b, None).lo >= 0.0
+                })
+            };
+            let near = |g: &(Vec<u32>, Tape)| eval_interval(&g.1, mid, b, None).lo - g.0.iter().map(|&k| share(shares, k)).sum::<f64>();
+            let nearest = |only: &dyn Fn(&(Vec<u32>, Tape)) -> bool| {
+                gs.iter()
+                    .enumerate()
+                    .filter(|g| only(g.1))
+                    .map(|(j, g)| (j, near(g)))
+                    .fold(None, |a: Option<(usize, f64)>, (j, x)| if a.is_some_and(|a| !(x > a.1)) { a } else { Some((j, x)) })
+            };
+            let halvable = |k: usize| n.b[k].hi - n.b[k].lo > 1.5 * self.finest;
+            let space_narrows = gs.iter().any(|g| g.1.space_read().iter().enumerate().any(|(k, &r)| r && halvable(k)));
+            let best = nearest(&halves).or_else(|| if space_narrows { None } else { nearest(&|_| true) });
+            gs.iter().enumerate().filter(|&(j, _)| Some(j) != best.map(|x| x.0)).flat_map(|(_, g)| g.0.iter().copied()).collect()
+        };
         let mid = (!ps.is_empty() || ts).then(|| scope::middle(ctx, ts));
         let (mut params, mut t, mut rates, mut centred) = (Vec::new(), 0.0, None, false);
         if let Some(mid) = &mid {
-            let m = eval_interval(&sub, mid, b, None);
+            let m = eval_interval(&signed, mid, b, None);
             if m.all_inside() && self.deep(&sub, &wide, &mut Confirm::new(mid), c) {
                 return Found((c, At::of(mid), eval_point(&sub, mid, c)));
             }
             if m.none_inside() {
-                chp = vec![BOTH; sub.len()];
-                let (r1, blur) = ink_core::eval::eval_interval_scope_blur(&sub, ctx, b, Some(&mut chp));
-                if r1.none_inside() && by_h(self.grown(b)) {
-                    return Settled;
+                let mut chp = vec![BOTH; signed.len()];
+                let (r1, blur) = ink_core::eval::eval_interval_scope_blur(&signed, ctx, b, Some(&mut chp));
+                if r1.none_inside() && shallow() != Allowed::No {
+                    return settled(shallow(), b);
                 }
-                sub = simple(&sub, &chp);
-                if by_h(self.grown(b)) && crate::centred::centred_at_least(&[(&sub, 0.0)], ctx, b, 0.0) {
-                    return Settled;
+                signed = simple(&signed, &chp);
+                if shallow() != Allowed::No && crate::centred::centred_at_least(&[(&signed, 0.0)], ctx, b, 0.0) {
+                    return settled(shallow(), b);
                 }
                 centred = true;
                 let (shares, tb) = scope_shares(ctx, &[(&blur, 1.0)]);
-                params = ps.iter().map(|&k| (k, share(&shares, k))).collect();
+                let held = held(&signed, mid, &shares);
+                params = ps.iter().filter(|k| !held.contains(k)).map(|&k| (k, share(&shares, k))).collect();
                 t = if ts { tb } else { 0.0 };
-                rates = Some(ink_core::eval::eval_interval_grad(&sub, ctx, b));
+                rates = Some(ink_core::eval::eval_interval_grad(&signed, ctx, b));
             }
         }
+        let still = signed.space_read().map(|r| !r);
         let pts = box_samples(b, 4);
         let mut v = Vec::new();
         eval_points(&sub, ctx, &pts, &mut v);
@@ -1681,22 +1681,60 @@ impl search::Question for Empty {
         // still covers the box, whatever its size.
         use crate::centred::Settles;
         let bounded = below.is_empty() && !centred;
+        // Split where pieces meet flush (ink_core::sign::air), no point of
+        // the box is the question's; for "inside a and not inside b", none
+        // but where b reads 0 and a is below it (`shallow`, or `by_h` over
+        // the box: none there); where b is solid over the box grown by the
+        // tolerance (pieces of it meeting flush, its 0 of no volume: no face
+        // of b there), points of no depth, held to the tolerance.
+        if bounded && ink_core::sign::air(&sub, ctx, b) {
+            if shallow() != Allowed::No {
+                return settled(shallow(), b);
+            }
+            if let Some(e) = except()
+                && Self::by_h(Some(e), ctx, b)
+                && let at @ (Allowed::Exact | Allowed::Loose) = self.at_edge(e, ctx, b)
+            {
+                return settled(at, b);
+            }
+            // b as narrowed over the box grown by the tolerance holds there.
+            if self.tol > 0.0 && except().is_some_and(|e| ink_core::sign::solid(&e.b, ctx, self.grown(b))) {
+                self.keep_loose(r.lo, b, ctx);
+                return Settled;
+            }
+        }
+        // A point within the tolerance of one where h is at least 0 is within
+        // it of the question's outside only where `by_h` decides.
         let settles = match self.tol > 0.0 {
-            _ if !by_h(self.grown(b)) => Settles::No,
-            true => crate::centred::centred_settles(&sub, ctx, b, self.tol, bounded),
-            false if bounded && crate::centred::centred_at_least(&[(&sub, 0.0)], ctx, b, 0.0) => Settles::AtLeast,
+            _ if shallow() == Allowed::No => Settles::No,
+            true => match crate::centred::centred_settles(&signed, ctx, b, self.tol, bounded) {
+                Settles::Covered if !by_h(self.grown(b)) => Settles::No,
+                s => s,
+            },
+            false if bounded && crate::centred::centred_at_least(&[(&signed, 0.0)], ctx, b, 0.0) => Settles::AtLeast,
             false => Settles::No,
         };
         match settles {
-            Settles::AtLeast => return Settled,
+            Settles::AtLeast => return settled(shallow(), b),
             Settles::Covered => {
                 self.keep_loose(r.lo, b, ctx);
                 return Settled;
             }
             Settles::No => {}
         }
+        // Each case of the switches the box leaves undecided bounded apart
+        // (a slope's clamp read in several terms: each case's rate one
+        // number, not every rate between its branches' in each).
+        if bounded
+            && sub.ssa.iter().any(|x| matches!(x.op, ink_core::tape::Op::Select))
+            && ink_core::eval::eval_interval_cases(&sub, ctx, b).none_inside()
+            && shallow() != Allowed::No
+        {
+            return settled(shallow(), b);
+        }
         let sides = b.map(|x| x.hi - x.lo);
-        if self.cover().covered(&sub, &|| &wide, &|r, x, p| self.out_at(r, x, p), ctx, b, sides, &pts, &v) {
+        let cover = Cover { still, ..self.cover() };
+        if cover.covered(&signed, &|| &wide, &|r, x, p| Self::out_at(except(), r, x, p), ctx, b, sides, &pts, &v) {
             self.keep_loose(r.lo, b, ctx);
             return Settled;
         }
@@ -1704,9 +1742,10 @@ impl search::Question for Empty {
         // halved least so far is halved first (time's halvings of the
         // search's span).
         if let Some(mid) = mid.as_ref().filter(|_| params.is_empty() && t == 0.0)
-            && self.cover().covered(&sub, &|| &wide, &|r, x, p| self.out_at(r, x, p), mid, b, sides, &pts, &v)
+            && cover.covered(&signed, &|| &wide, &|r, x, p| Self::out_at(except(), r, x, p), mid, b, sides, &pts, &v)
         {
-            let halved = ps.iter().map(|&k| (Some(k), scope::halvings(ctx, k))).chain(ts.then(|| (None, self.t_halvings(ctx))));
+            let held = held(&signed, mid, &[]);
+            let halved = ps.iter().filter(|k| !held.contains(k)).map(|&k| (Some(k), scope::halvings(ctx, k))).chain(ts.then(|| (None, self.t_halvings(ctx))));
             match halved.min_by(|x, y| x.1.total_cmp(&y.1)).map(|x| x.0) {
                 Some(Some(k)) => params.push((k, f64::INFINITY)),
                 Some(None) => t = f64::INFINITY,
@@ -1726,7 +1765,7 @@ impl search::Question for Empty {
         // Space is halved as an octree halves its cells (on the lattice's
         // widths: cubes, which the tolerance's cover settles), its spread
         // shared out by width where params compete with it.
-        let hw = n.b.map(|x| 0.5 * (x.hi - x.lo));
+        let hw: V3 = std::array::from_fn(|k| if still[k] { 0.0 } else { 0.5 * (n.b[k].hi - n.b[k].lo) });
         let space = match &rates {
             // Settled at the scope's middle (where rates are taken), the
             // scope's spread is what keeps it open; where space's is not
@@ -1744,7 +1783,13 @@ impl search::Question for Empty {
         // it grown by the tolerance only where that has halved the one it
         // was tested with (no tolerance reads no `wide`).
         let wide = if self.tol > 0.0 && 2 * wide.len() <= given.len() { Kept::after(&given, vec![chw]) } else { n.state.1.clone() };
-        Open { bound: 0.0, smear: search::Smear { space, params, t }, state: (Kept::after(&from, vec![ch, chp]), wide) }
+        // a and b as simplified here where they were read (the halves' grown
+        // boxes lie in this one's), else as they came.
+        let except = match cell.into_inner() {
+            Some(Some((_, (a, cha), (z, chz)))) => Some((Kept::after(&a, vec![cha]), Kept::after(&z, vec![chz]))),
+            _ => n.state.2.clone(),
+        };
+        Open { bound: 0.0, smear: search::Smear { space, params, t, still }, state: (Kept::after(&from, vec![ch]), wide, except) }
     }
 
     /// From the deepest samples of the box, a step down the field's slope:
@@ -1780,43 +1825,116 @@ impl search::Question for Empty {
 }
 
 impl Empty {
-    /// Whether h's reading at least 0 over box x decides "no point" for the
-    /// question: always, but for "inside a and not inside b", where it does
-    /// only if every part of x (halved up to three times where needed) has
-    /// no point inside a, or no 0 of b (bounds of one sign), or b rising or
-    /// falling throughout along some axis (its 0 then has no volume, and is
-    /// b's surface: a point there with a below 0 has points of b's outside,
-    /// h below 0, beside it).
-    fn by_h(&self, ctx: &Ctx, x: [I; 3]) -> bool {
+    /// For "inside a and not inside b", what h reading at least 0 over box
+    /// x leaves of the question's points there: 0s of b where a is below 0
+    /// (h reads 0). None where a has no point inside x (Exact). Where every
+    /// 0 of b over x grown by the tolerance has points above 0 beside it
+    /// (Tape::zeros_rise), or `by_h` (given) decides over that box, each has
+    /// points inside a and outside b beside it, h below 0 there, which no
+    /// box settles outright: it settles as `at_edge` says. A 0 of b with no
+    /// outside of b beside it is a point of the question's of no depth,
+    /// which no test here excuses: the search refines it, or holds it to
+    /// the tolerance where a cover does.
+    fn shallow(&self, except: Option<&Except>, by_h: &dyn Fn([I; 3]) -> bool, ctx: &Ctx, x: [I; 3]) -> Allowed {
+        let Some(e) = except else { return Allowed::Exact };
+        worked(&e.a);
+        if eval_interval(&e.a, ctx, x, None).none_inside() {
+            return Allowed::Exact;
+        }
+        let grown = self.grown(x);
+        worked(&e.b);
+        // b for its sign alone over that box (`signed`): its 0s and their
+        // sides are b's.
+        let sb = signed(&e.b, ctx, grown);
+        if !(sb.zeros_rise(&ink_core::eval::eval_interval_grad_every(&sb, ctx, grown)) || by_h(grown)) {
+            return Allowed::No;
+        }
+        self.at_edge(e, ctx, x)
+    }
+
+    /// How a box x settles whose question's points (0s of b where a is
+    /// below 0) each have points inside a and outside b beside them (h
+    /// below 0, which no box settles outright): Exact where a has no point
+    /// inside on each face of the region asked x reaches (a clipped to it
+    /// reads 0 there), so those points lie in the region and in a box;
+    /// else, with a tolerance, Loose (such 0s hold no ball, so none is
+    /// deeper than it); else No.
+    fn at_edge(&self, e: &Except, ctx: &Ctx, x: [I; 3]) -> Allowed {
+        let faces = (0..3).flat_map(|k| [(k, self.asked[k].lo, x[k].lo <= self.asked[k].lo), (k, self.asked[k].hi, x[k].hi >= self.asked[k].hi)]);
+        let inside = faces.filter(|f| f.2).all(|(k, at, _)| {
+            let mut face = x;
+            face[k] = I::point(at);
+            worked(&e.a);
+            eval_interval(&e.a, ctx, face, None).none_inside()
+        });
+        if inside {
+            Allowed::Exact
+        } else if self.tol > 0.0 {
+            Allowed::Loose
+        } else {
+            Allowed::No
+        }
+    }
+
+    /// Whether every point of box x where b reads 0 and a is below 0 has
+    /// points inside b beside it, so lies on the edge of the question's
+    /// solid (a point within the tolerance of it is within the tolerance
+    /// of the outside): where every part of x (halved up to three times
+    /// where needed) has no point inside a, or no 0 of b (bounds of one
+    /// sign), or b rising or falling throughout along some axis (its 0 then
+    /// has no volume, and is b's surface).
+    fn by_h(except: Option<&Except>, ctx: &Ctx, x: [I; 3]) -> bool {
         fn parts(e: &Except, ctx: &Ctx, x: [I; 3], depth: u32) -> bool {
-            if eval_interval(&e.a, ctx, x, None).none_inside() {
-                return true;
-            }
+            // b's 0 there is that of its tape for its sign (`signed`), at
+            // any size of part; b first, the container (a is often a whole
+            // assembly).
+            let e = &Except { a: e.a.clone(), b: signed(&e.b, ctx, x) };
             let rb = eval_interval(&e.b, ctx, x, None);
             if rb.clear_of_surface() || rb.all_inside() {
                 return true;
             }
-            if depth == 0 {
-                let g = ink_core::eval::eval_interval_grad(&e.b, ctx, x);
-                return (0..3).any(|k| g.d[k].lo > 0.0 || g.d[k].hi < 0.0);
+            let g = ink_core::eval::eval_interval_grad(&e.b, ctx, x);
+            if (0..3).any(|k| g.d[k].lo > 0.0 || g.d[k].hi < 0.0) {
+                return true;
             }
-            (0..8).all(|o: usize| parts(e, ctx, std::array::from_fn(|k| if o >> k & 1 == 0 { I::new(x[k].lo, x[k].mid()) } else { I::new(x[k].mid(), x[k].hi) }), depth - 1))
+            worked(&e.a);
+            let mut ch = vec![BOTH; if depth > 0 { e.a.len() } else { 0 }];
+            if eval_interval(&e.a, ctx, x, (depth > 0).then_some(&mut ch)).none_inside() {
+                return true;
+            }
+            if depth == 0 {
+                return false;
+            }
+            // The parts read a as simplified over x.
+            let e = Except { a: simple(&e.a, &ch), b: e.b.clone() };
+            (0..8).all(|o: usize| parts(&e, ctx, std::array::from_fn(|k| if o >> k & 1 == 0 { I::new(x[k].lo, x[k].mid()) } else { I::new(x[k].mid(), x[k].hi) }), depth - 1))
         }
-        self.except.as_ref().is_none_or(|e| parts(e, ctx, x, 3))
+        except.is_none_or(|e| parts(e, ctx, x, 3))
     }
 
-    /// Whether a point is shown not one of the question's, h's bounds there
-    /// `r`: at least 0, and for "inside a and not inside b" above 0 or a not
-    /// inside.
-    fn out_at(&self, r: I, ctx: &Ctx, p: V3) -> bool {
-        r.none_inside() && (r.clear_of_surface() || self.except.as_ref().is_none_or(|e| eval_interval(&e.a, ctx, p.map(I::point), None).none_inside()))
+    /// Whether every point of box p (a point, or one spanning a box's still
+    /// axes) is shown not one of the question's, h's bounds there `r` (or
+    /// those of a tape of its sign there): at least 0, and for "inside a
+    /// and not inside b" above 0 or a not inside.
+    fn out_at(except: Option<&Except>, r: I, ctx: &Ctx, p: [I; 3]) -> bool {
+        r.none_inside() && (r.clear_of_surface() || except.is_none_or(|e| eval_interval(&e.a, ctx, p, None).none_inside()))
+    }
+
+    /// The field over box b (`sub`, simplified over it) for its sign alone
+    /// (`signed`), and the space axes it reads not there: along them the
+    /// question is the same all through b (an extrusion's span, inside its
+    /// profile's walls), so b is never halved on them.
+    fn signed(sub: &Arc<Tape>, ctx: &Ctx, b: [I; 3]) -> (Arc<Tape>, [bool; 3]) {
+        let t = signed(sub, ctx, b);
+        let read = t.space_read();
+        (t, read.map(|r| !r))
     }
 
     /// For "inside a and not inside b", a witness where h is at most 0 and a
     /// below 0 over box x (b at least 0: not inside it), at x's centre,
     /// where x holds the tolerance's cube about it or that cube is so.
-    fn found_except(&self, r: I, ctx: &Ctx, x: [I; 3]) -> Option<Witness> {
-        let e = self.except.as_ref()?;
+    fn found_except(&self, except: Option<&Except>, r: I, ctx: &Ctx, x: [I; 3]) -> Option<Witness> {
+        let e = except?;
         if !(r.hi <= 0.0 && eval_interval(&e.a, ctx, x, None).all_inside()) {
             return None;
         }
@@ -1885,7 +2003,7 @@ impl Empty {
 
     /// The tolerance's rule (Cover) for this search's solid.
     fn cover(&self) -> Cover {
-        Cover { tol: self.tol, region: self.region, asked: self.asked, sign: 1.0 }
+        Cover { tol: self.tol, region: self.region, asked: self.asked, sign: 1.0, read: self.read, still: self.read.map(|r| !r) }
     }
 
     /// How far a point of the material's box in box b (as clipped) can lie
@@ -1899,6 +2017,7 @@ impl Empty {
     fn to_faces(&self, b: [I; 3]) -> f64 {
         use ink_core::interval::{add_up, mul_up};
         (0..3)
+            .filter(|&k| self.read[k])
             .map(|k| {
                 let (r, x) = (self.region[k], b[k]);
                 let half = mul_up(add_up(r.hi, -r.lo), 0.5);
@@ -1914,21 +2033,29 @@ impl Empty {
     /// faces where nearer; the most of those.
     fn depth(&self, n: &search::Node<Pieces>) -> f64 {
         let Some(b) = self.clip(n.b) else { return 0.0 };
-        let (ctx, sub) = (&*n.ctx, &n.state.0.read());
+        let (ctx, read) = (&*n.ctx, n.state.0.read());
+        let except = n.state.2.as_ref().map(|(a, z)| Except { a: a.read(), b: z.read() });
+        let Some(b) = contract(&read, ctx, b) else { return 0.0 };
+        let (sub, still) = Self::signed(&read, ctx, b);
         let pts = box_samples(b, 4);
         let half: V3 = b.map(|x| 0.125 * (x.hi - x.lo));
         let mut v = Vec::new();
-        eval_points(sub, ctx, &pts, &mut v);
+        eval_points(&sub, ctx, &pts, &mut v);
         let mut slots = Vec::new();
         let within = |p: &V3| (0..3).all(|k| b[k].contains(p[k]));
+        // Each shown outside along the box's span of its still axes.
+        let column = |p: V3| -> [I; 3] { std::array::from_fn(|k| if still[k] { b[k] } else { I::point(p[k]) }) };
         let out: Vec<V3> = (0..pts.len())
-            .filter(|&k| !inside(v[k]) && within(&pts[k]) && self.out_at(ink_core::eval::eval_interval_in(sub, ctx, pts[k].map(I::point), None, &mut slots), ctx, pts[k]))
+            .filter(|&k| {
+                let at = column(pts[k]);
+                !inside(v[k]) && within(&pts[k]) && Self::out_at(except.as_ref(), ink_core::eval::eval_interval_in(&sub, ctx, at, None, &mut slots), ctx, at)
+            })
             .map(|k| pts[k])
             .collect();
         pts.iter()
             .map(|&c| {
                 let around: [I; 3] = std::array::from_fn(|k| I::new((c[k] - half[k]).next_down().max(b[k].lo), (c[k] + half[k]).next_up().min(b[k].hi)));
-                out.iter().map(|&q| far(q, c, half, b)).fold(self.to_faces(around), f64::min)
+                out.iter().map(|&q| far(q, c, half, b, still)).fold(self.to_faces(around), f64::min)
             })
             .fold(0.0, f64::max)
     }
@@ -1954,9 +2081,13 @@ impl Empty {
 
 /// The farthest a point of the box about c (half-sides `half`) is from q,
 /// rounded up, with room for the coordinates' rounding (sub-boxes tile box
-/// b to within a few ulps of its coordinates).
-fn far(q: V3, c: V3, half: V3, b: [I; 3]) -> f64 {
+/// b to within a few ulps of its coordinates), along the axes not `still`
+/// (along which q stands for every point of the box's span).
+fn far(q: V3, c: V3, half: V3, b: [I; 3], still: [bool; 3]) -> f64 {
     ink_core::interval::norm(std::array::from_fn(|k| {
+        if still[k] {
+            return 0.0;
+        }
         let ulps = 16.0 * f64::EPSILON * c[k].abs().max(q[k].abs()).max(b[k].lo.abs()).max(b[k].hi.abs());
         ((q[k] - c[k]).abs().next_up() + half[k] + ulps).next_up().next_up()
     }))
@@ -2025,7 +2156,7 @@ pub fn slice(tape: &Arc<Tape>, ctx: &Ctx, axis: usize, at: f64, lo: V3, hi: V3, 
 }
 
 /// `slice`, and the samples on 0 its loops read that no bound near them
-/// decides (`ink_core::sign::undecided`): drawn as air, unresolved.
+/// decides (`ink_core::sign::drawn`): drawn as air, unresolved.
 pub fn slice_checked(tape: &Arc<Tape>, ctx: &Ctx, axis: usize, at: f64, lo: V3, hi: V3, h: f64) -> (Vec<Loop>, Vec<V3>) {
     let (u, v) = slice_axes(axis);
     let o = [lo[u] - h, lo[v] - h];
@@ -2185,7 +2316,7 @@ fn march(full: &Tape, tape: &Tape, ctx: &Ctx, to3: &(dyn Fn([f64; 2]) -> V3 + Sy
     // on 0 inside the material reads with it, so a 0 with one sign round it
     // draws nothing. Every cell sharing the corner reads the same
     // neighbours (unsimplified: they lie outside the cell).
-    let undecided = undecided(full, ctx, &pts, &v, None);
+    let undecided = drawn(full, ctx, &pts, &mut v, None);
     if !undecided.is_empty() {
         open.lock().unwrap().extend(undecided);
     }
@@ -2282,6 +2413,54 @@ const WITNESS_STARTS: usize = 8;
 /// over it then certifies nothing).
 fn grow(bx: [I; 3], d: f64) -> [I; 3] {
     bx.map(|x| I::new((x.lo - d).next_down(), (x.hi + d).next_up()))
+}
+
+/// Box b narrowed along each axis to where the tape can be at most 0 by
+/// its terms reading that axis alone (Tape::conjuncts: a slab's span), each
+/// end found to 1/256 of the side by halving; None where it is nowhere.
+/// The tape is above 0 at every point of b past the box returned.
+fn contract(t: &Tape, ctx: &Ctx, b: [I; 3]) -> Option<[I; 3]> {
+    // The first end where `may` holds in x, to `depth` halvings, from the
+    // low end (`up`) or the high.
+    fn end(may: &dyn Fn(I) -> bool, x: I, depth: u32, up: bool) -> Option<f64> {
+        if !may(x) {
+            return None;
+        }
+        if depth == 0 || !(x.lo < x.mid() && x.mid() < x.hi) {
+            return Some(if up { x.lo } else { x.hi });
+        }
+        let (l, h) = (I::new(x.lo, x.mid()), I::new(x.mid(), x.hi));
+        let (first, then) = if up { (l, h) } else { (h, l) };
+        end(may, first, depth - 1, up).or_else(|| end(may, then, depth - 1, up))
+    }
+    let mut b = b;
+    for (i, below, axes) in t.conjuncts() {
+        let Some(k) = (0..3).find(|&k| axes == 1 << k) else { continue };
+        let term = t.cone(i);
+        // Whether the term can be at most 0 (at least 0, not `below`) with
+        // axis k in x (NaN: it can).
+        let may = |x: I| {
+            let mut c = b;
+            c[k] = x;
+            let v = eval_interval(&term, ctx, c, None);
+            if below { !(v.lo > 0.0) } else { !(v.hi < 0.0) }
+        };
+        let lo = end(&may, b[k], 8, true)?;
+        let hi = end(&may, b[k], 8, false)?;
+        b[k] = I::new(lo, hi);
+    }
+    Some(b)
+}
+
+/// The tape over box b for its sign alone (Tape::sign_choices): below, at
+/// and above 0 where `t` is, there; the same where no choice is made.
+fn signed(t: &Arc<Tape>, ctx: &Ctx, b: [I; 3]) -> Arc<Tape> {
+    let mut vals = Vec::new();
+    let mut ch = vec![BOTH; t.len()];
+    match ink_core::eval::eval_interval_clamped(t, ctx, b, &[], &mut vals) {
+        Some(_) if t.sign_choices(&vals, &mut ch) => Arc::new(t.simplify(&ch)),
+        _ => t.clone(),
+    }
 }
 
 /// A tape simplified by the choices an evaluation over a box made (the
@@ -2425,7 +2604,7 @@ impl search::Question for Clear<'_> {
             0.0 => 0.0,
             s => s * hw[k],
         });
-        Open { bound: bound.clamp(0.0, d), smear: search::Smear { space, params, t }, state: (sa, sb) }
+        Open { bound: bound.clamp(0.0, d), smear: search::Smear { space, params, t, still: [false; 3] }, state: (sa, sb) }
     }
 
     /// From samples of B in the box (its 4 x 4 x 4), nearest A first,
@@ -2861,10 +3040,36 @@ pub struct RayHit {
 /// a hit is sure where bounds show a point of it within eps after t.
 /// None: no point of the ray is on that side, but for stretches shorter
 /// than eps.
-pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, eps: f64) -> Option<RayHit> {
+pub fn ray_to(local: &Local, o: V3, dir: V3, range: (f64, f64), side: Side, eps: f64) -> Option<RayHit> {
+    ray_to_within(local, o, dir, range, side, eps, f64::INFINITY)
+}
+
+/// A ray's evaluations, counted on its Local when it ends
+/// (Local::ray_evals).
+struct Evals<'l, 'a>(&'l Local<'a>, std::cell::Cell<usize>);
+
+impl Evals<'_, '_> {
+    fn add(&self, n: usize) {
+        self.1.set(self.1.get() + n);
+    }
+}
+
+impl Drop for Evals<'_, '_> {
+    fn drop(&mut self) {
+        self.0.count_ray_evals(self.1.get());
+    }
+}
+
+/// ray_to's answer where it is at most `stop`; else None, or a hit past
+/// `stop`, searched no further than the segment holding `stop`. Segments
+/// are searched in order along the ray, so those before `stop` are the
+/// ones ray_to searches: a hit at most `stop` is the one it finds.
+pub fn ray_to_within(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, eps: f64, stop: f64) -> Option<RayHit> {
     let ctx = local.ctx();
+    let evals = Evals(local, std::cell::Cell::new(0));
     let at = |t: f64| [o[0] + t * dir[0], o[1] + t * dir[1], o[2] + t * dir[2]];
     let f = |t: f64| {
+        evals.add(1);
         let p = at(t);
         eval_point(&local.tape_over(&p.map(I::point)), ctx, p)
     };
@@ -2876,6 +3081,7 @@ pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, e
     };
     // The bounds at t: of the ray's real point there, and its float.
     let point = |t: f64| {
+        evals.add(1);
         let (p, b) = (at(t), segment_box(o, dir, t, t));
         let b = std::array::from_fn(|k| I::new(b[k].lo.min(p[k]), b[k].hi.max(p[k])));
         eval_interval(&local.tape_over(&b), ctx, b, None)
@@ -2908,6 +3114,10 @@ pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, e
             }
             None => return None,
         };
+        if a > stop {
+            return None;
+        }
+        evals.add(1);
         let bx = segment_box(o, dir, a, b);
         let tape = local.tape_over(&bx);
         let r = eval_interval_in(&tape, ctx, bx, None, &mut slots);
@@ -2915,6 +3125,7 @@ pub fn ray_to(local: &Local, o: V3, dir: V3, (t0, t1): (f64, f64), side: Side, e
         if !none && !all {
             // Its middle's bound and its rate along the ray: the real field
             // over the segment lies within their mean value bound.
+            evals.add(2);
             let g = ink_core::eval::eval_interval_grad(&tape, ctx, bx);
             let rate = (0..3).fold(I::point(0.0), |s, k| add_o(s, mul_o(g.d[k], I::point(dir[k]))));
             let m = span_mid((a, b));
@@ -3003,90 +3214,6 @@ fn segment_box(o: V3, dir: V3, t0: f64, t1: f64) -> [I; 3] {
     std::array::from_fn(|k| add_o(I::point(o[k]), mul_o(I::new(t0, t1), I::point(dir[k]))))
 }
 
-// ---------------------------------------------------------------- integrals
-
-/// Integrals of each of `gs` (None: 1) over the region shape < 0 at cells
-/// of `h`; with `moments`, the first's times [1, x, y, z, xx, yy, zz, xy,
-/// yz, zx] in its place (mass moments, rho the first). Cells full of
-/// material use their 2x2x2 Gauss points, exact where an integrand is
-/// linear across them, halved where the first is not and its integral
-/// there is not bounded (`full_integral`) to ACCURACY of itself, down to
-/// cells of one grid step: points alone miss a layer of density between
-/// them at every cell size; bounds see it. Cells the surface may cross use
-/// samples weighted by the material in them (`occupancy`). Every integrand
-/// at the same points, in one descent.
-pub fn sums(shape: &Arc<Tape>, gs: &[Option<&Tape>], moments: bool, ctx: &Ctx, lo: V3, hi: V3, h: f64) -> Sums {
-    let (grid, root) = root_for(lo, hi, h, 1);
-    let n = gs.len() + if moments && !gs.is_empty() { 9 } else { 0 };
-    // Each integral at points weighted `w`.
-    let at = |pts: &[V3], w: &[f64]| -> Vec<f64> {
-        let mut out = vec![0.0; n];
-        let mut k = 0;
-        for (i, g) in gs.iter().enumerate() {
-            let mut v = Vec::new();
-            match g {
-                Some(t) => eval_points(t, ctx, pts, &mut v),
-                None => v.resize(pts.len(), 1.0),
-            }
-            let terms: &[fn(V3) -> f64] = if i == 0 && moments { &MOMENTS } else { &MOMENTS[..1] };
-            for term in terms {
-                out[k] = v.iter().zip(pts).zip(w).map(|((a, p), b)| a * term(*p) * b).sum();
-                k += 1;
-            }
-        }
-        out
-    };
-    let gauss = |c: Cell| -> Vec<f64> {
-        let (a, b) = grid.cell_bounds(c);
-        let g = 0.5 / 3f64.sqrt();
-        let pts: Vec<V3> = (0..8).map(|k| std::array::from_fn(|ax| 0.5 * (a[ax] + b[ax]) + if (k >> ax) & 1 == 1 { g } else { -g } * (b[ax] - a[ax]))).collect();
-        at(&pts, &[(grid.h * c.size as f64).powi(3) / 8.0; 8])
-    };
-    fn full(first: Option<&Tape>, ctx: &Ctx, grid: &Grid, c: Cell, gauss: &(dyn Fn(Cell) -> Vec<f64> + Sync)) -> ([usize; 2], Vec<f64>) {
-        if let Some(r) = first
-            && c.size > 1
-        {
-            let (b, linear) = full_integral(r, ctx, grid, c, c.size);
-            if !linear && !(b.hi - b.lo <= ACCURACY * ink_core::interval::mag(b)) {
-                let halves: Vec<([usize; 2], Vec<f64>)> = c.children().par_iter().map(|&k| full(first, ctx, grid, k, gauss)).collect();
-                return add_sums(halves);
-            }
-        }
-        ([1, 0], gauss(c))
-    }
-    let first = gs.first().copied().flatten();
-    let parts: Vec<([usize; 2], Vec<f64>)> = descend(
-        shape,
-        ctx,
-        &grid,
-        root,
-        1,
-        &|t: &Arc<Tape>, c| {
-            let pts = samples(&grid, c, 2);
-            let fg = eval_grads(t, ctx, &pts);
-            let vol = cell_volume(&grid, c) / pts.len() as f64;
-            let s = grid.cell_sides(c).map(|x| x / 2.0);
-            let w: Vec<f64> = fg.iter().map(|f| occupancy(f, s) * vol).collect();
-            Some(([0, 1], at(&pts, &w)))
-        },
-        &|_: &Arc<Tape>, c| Some(full(first, ctx, &grid, c, &gauss)),
-    );
-    let (cells, mut sums) = add_sums(parts);
-    sums.resize(n, 0.0);
-    Sums { sums, cells }
-}
-
-/// The terms of mass moments: [1, x, y, z, xx, yy, zz, xy, yz, zx].
-const MOMENTS: [fn(V3) -> f64; 10] = [|_| 1.0, |p| p[0], |p| p[1], |p| p[2], |p| p[0] * p[0], |p| p[1] * p[1], |p| p[2] * p[2], |p| p[0] * p[1], |p| p[1] * p[2], |p| p[2] * p[0]];
-
-/// `sums`' parts, summed in order.
-fn add_sums(parts: Vec<([usize; 2], Vec<f64>)>) -> ([usize; 2], Vec<f64>) {
-    parts.into_iter().fold(([0; 2], Vec::new()), |(n, s), (m, x)| {
-        let s = if s.is_empty() { x } else { s.iter().zip(&x).map(|(a, b)| a + b).collect() };
-        ([n[0] + m[0], n[1] + m[1]], s)
-    })
-}
-
 /// Eigenvalues and eigenvectors (columns) of a symmetric 3x3 matrix (Jacobi).
 pub fn sym_eigen(m: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut a = m;
@@ -3127,14 +3254,14 @@ pub fn sym_eigen(m: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ink_core::graph::{BinOp, Graph, UnOp, Var};
+    use ink_core::graph::{BinOp, Graph, NodeId, UnOp, Var};
 
     /// `extent_now`, the instructions it evaluated and the longest tape
     /// among them.
     fn extent_work(tape: &Tape) -> (Extent, (usize, usize)) {
-        EXTENT_WORK.with(|w| w.set((0, 0)));
+        WORK.with(|w| w.set((0, 0)));
         let e = extent_now(&Arc::new(tape.clone()), &Ctx::new(0.0, vec![]), ([-500.0; 3], [500.0; 3]));
-        (e, EXTENT_WORK.with(|w| w.get()))
+        (e, WORK.with(|w| w.get()))
     }
 
     /// A field with material where no model reaches (a half-space, a
@@ -3219,6 +3346,176 @@ mod tests {
         assert!(longest <= part, "a tape {longest} long searched, a part with the box's outside {part}, the whole {}", tape.len());
     }
 
+    /// "Inside an assembly and not inside a box" (a within claim) reads
+    /// the assembly and the box as simplified over each box searched, as
+    /// the question's own tape is: never the whole assembly at every box.
+    /// 40 plates, each a hole cut, in a box holding them: a is read less
+    /// than once whole a box searched, on average (ten times, read whole
+    /// at each).
+    #[test]
+    fn a_subsets_search_reads_its_parts_near_each_box() {
+        let mut b = crate::test_fields::B::new();
+        let (x, y) = (b.v(Var::X), b.v(Var::Y));
+        let mut parts = Vec::new();
+        for i in 0..40 {
+            let c = [-195.0 + 10.0 * i as f64, 7.0, 3.0];
+            let plate = b.cuboid(c, [4.0, 4.0, 1.0]);
+            let (cx, cy) = (b.c(c[0]), b.c(c[1]));
+            let (dx, dy) = (b.bin(BinOp::Sub, x, cx), b.bin(BinOp::Sub, y, cy));
+            let (dx, dy) = (b.un(UnOp::Square, dx), b.un(UnOp::Square, dy));
+            let r = b.bin(BinOp::Add, dx, dy);
+            let r = b.un(UnOp::Sqrt, r);
+            let one = b.c(1.0);
+            let hole = b.bin(BinOp::Sub, one, r);
+            parts.push(b.bin(BinOp::Max, plate, hole));
+        }
+        let plate = b.tape(parts[0]).len();
+        while parts.len() > 1 {
+            parts = parts.chunks(2).map(|p| if p.len() == 2 { b.bin(BinOp::Min, p[0], p[1]) } else { p[0] }).collect();
+        }
+        let asked = b.cuboid([0.0; 3], [200.0, 20.0, 20.0]);
+        let outside = b.un(UnOp::Neg, asked);
+        let f = b.bin(BinOp::Max, parts[0], outside);
+        let (a, z) = (Arc::new(b.tape(parts[0])), Arc::new(b.tape(asked)));
+        let except = Except { a: a.clone(), b: z };
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let (p, tested, (read, _)) = pool.install(|| {
+            WORK.with(|w| w.set((0, 0)));
+            let (p, tested) = empty_now(&Arc::new(b.tape(f)), Some(&except), &Ctx::new(0.0, vec![]), [-250.0; 3], [250.0; 3], None, 0.025, 0.05);
+            (p, tested, WORK.with(|w| w.get()))
+        });
+        assert_eq!(p.verdict, Verdict::Proven);
+        assert!(read < tested * a.len(), "{read} instructions of a read over {tested} boxes; a plate's tape {plate}, the whole {}", a.len());
+    }
+
+    /// "Inside a and not inside b" where h reads at least 0 over a box is
+    /// settled there by one bound of a and one pass over b's slopes, not by
+    /// bounds over the box's parts: a pin 0.03 inside its bore's wall and
+    /// flush with its ends, at accuracy 0.05, reads a and b, each as long,
+    /// under four times a's length a box searched (where h's bound is 0 at
+    /// its ends, reading them over each box's parts had read a about 50
+    /// times a box, and left 12 times the boxes open).
+    #[test]
+    fn a_subset_flush_with_b_reads_a_and_b_seldom() {
+        let mut b = crate::test_fields::B::new();
+        let (x, y, z) = (b.v(Var::X), b.v(Var::Y), b.v(Var::Z));
+        let (xx, yy) = (b.un(UnOp::Square, x), b.un(UnOp::Square, y));
+        let rr = b.bin(BinOp::Add, xx, yy);
+        let r = b.un(UnOp::Sqrt, rr);
+        let ends = b.slab(z, 0.0, 1.0);
+        let mut pin = |radius: f64| {
+            let k = b.c(radius);
+            let wall = b.bin(BinOp::Sub, r, k);
+            b.bin(BinOp::Max, wall, ends)
+        };
+        let (inner, outer) = (pin(1.0), pin(1.03));
+        let out = b.un(UnOp::Neg, outer);
+        let f = b.bin(BinOp::Max, inner, out);
+        let (a, z) = (Arc::new(b.tape(inner)), Arc::new(b.tape(outer)));
+        let except = Except { a: a.clone(), b: z };
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let (p, tested, (read, _)) = pool.install(|| {
+            WORK.with(|w| w.set((0, 0)));
+            let (p, tested) = empty_now(&Arc::new(b.tape(f)), Some(&except), &Ctx::new(0.0, vec![]), [-3.0; 3], [3.0; 3], None, 0.025, 0.05);
+            (p, tested, WORK.with(|w| w.get()))
+        });
+        assert_eq!(p.verdict, Verdict::Proven);
+        assert!(read < 4 * tested * a.len(), "{read} instructions of a and b read over {tested} boxes; a's tape {}", a.len());
+    }
+
+    /// A subset settled where a's points reading 0 on b lie on a 0 of no
+    /// volume holds to the accuracy, not outright: those points are not in
+    /// b. b reads 0 on a sphere and is below 0 off it, the sphere inside a
+    /// cube: b holds the cube but for the sphere, a sheet of no depth.
+    #[test]
+    fn a_subset_across_a_sheet_of_0_in_b_holds_only_to_the_accuracy() {
+        let mut b = crate::test_fields::B::new();
+        let cube = b.cuboid([0.0; 3], [1.0; 3]);
+        let (x, y, z) = (b.v(Var::X), b.v(Var::Y), b.v(Var::Z));
+        let (xx, yy, zz) = (b.un(UnOp::Square, x), b.un(UnOp::Square, y), b.un(UnOp::Square, z));
+        let xy = b.bin(BinOp::Add, xx, yy);
+        let rr = b.bin(BinOp::Add, xy, zz);
+        let quarter = b.c(0.25);
+        let d = b.bin(BinOp::Sub, rr, quarter);
+        let dd = b.un(UnOp::Square, d);
+        let sheet = b.un(UnOp::Neg, dd);
+        let out = b.un(UnOp::Neg, sheet);
+        let f = b.bin(BinOp::Max, cube, out);
+        let except = Except { a: Arc::new(b.tape(cube)), b: Arc::new(b.tape(sheet)) };
+        let p = prove_empty_except(&Arc::new(b.tape(f)), &except, &Ctx::new(0.0, vec![]), [-3.0; 3], [3.0; 3], None, 0.025, 0.05);
+        assert_eq!(p.verdict, Verdict::Proven);
+        assert!(!p.exact && !p.loose.is_empty(), "held outright, with a's points on b's sheet of 0 outside b");
+    }
+
+    /// A subset's points on b's 0 at the edge of the region asked, whose
+    /// outside of b beside them lies past it, are not shown absent: a cube
+    /// about the origin and b = max(-x, -y), asked over x, y at least 0,
+    /// reads 0 on b at (0, 0.5, 0) inside a. At accuracy 0.05 it holds to
+    /// the accuracy, not outright; exactly, it is not proven.
+    #[test]
+    fn a_subsets_0s_on_b_at_the_edge_asked_are_not_held_outright() {
+        let mut b = crate::test_fields::B::new();
+        let cube = b.cuboid([0.0; 3], [1.0; 3]);
+        let (x, y) = (b.v(Var::X), b.v(Var::Y));
+        let (nx, ny) = (b.un(UnOp::Neg, x), b.un(UnOp::Neg, y));
+        let quadrant = b.bin(BinOp::Max, nx, ny);
+        let out = b.un(UnOp::Neg, quadrant);
+        let f = b.bin(BinOp::Max, cube, out);
+        let except = Except { a: Arc::new(b.tape(cube)), b: Arc::new(b.tape(quadrant)) };
+        let tape = Arc::new(b.tape(f));
+        let ctx = Ctx::new(0.0, vec![]);
+        let held = prove_empty_except(&tape, &except, &ctx, [0.0, 0.0, -3.0], [3.0; 3], None, 0.025, 0.05);
+        assert_eq!(held.verdict, Verdict::Proven);
+        assert!(!held.exact && !held.loose.is_empty(), "held outright, with a's points on b's 0 at the edge asked outside b");
+        let exactly = prove_empty_except(&tape, &except, &ctx, [0.0, 0.0, -3.0], [3.0; 3], None, 0.025, 0.0);
+        assert_ne!(exactly.verdict, Verdict::Proven, "proven exactly, with a's points on b's 0 at the edge asked outside b");
+    }
+
+    /// A subset's points on b's 0 at the edge of the region asked, where
+    /// b falls throughout, are not shown absent by any settling of a box: a
+    /// cube about the origin and b = -x, asked over x at least 0, reads 0
+    /// on b at (0, 0.5, 0) inside a, b's outside past the region; and b
+    /// written with switches that cancel (-x + (y < 0 ? 1 : 2) + (y < 0 ?
+    /// -1 : -2)), whose boxes settle by the switches' cases. At accuracy
+    /// 0.05 each holds to the accuracy, not outright; exactly, neither is
+    /// proven.
+    #[test]
+    fn a_subsets_0s_on_a_falling_b_at_the_edge_asked_are_not_held_outright() {
+        for switched in [false, true] {
+            let mut g = Graph::new();
+            let (x, y, z) = (g.var(Var::X), g.var(Var::Y), g.var(Var::Z));
+            let one = g.constant(1.0);
+            let sides: Vec<_> = [x, y, z]
+                .into_iter()
+                .map(|v| {
+                    let av = g.un(UnOp::Abs, v);
+                    g.sub(av, one)
+                })
+                .collect();
+            let xy = g.max(sides[0], sides[1]);
+            let cube = g.max(xy, sides[2]);
+            let nx = g.neg(x);
+            let b = if switched {
+                let (two, mone, mtwo) = (g.constant(2.0), g.constant(-1.0), g.constant(-2.0));
+                let (p, n) = (g.select(y, one, two), g.select(y, mone, mtwo));
+                let pn = g.add(p, n);
+                g.add(nx, pn)
+            } else {
+                nx
+            };
+            let out = g.neg(b);
+            let f = g.max(cube, out);
+            let except = Except { a: Arc::new(Tape::new(&g, cube)), b: Arc::new(Tape::new(&g, b)) };
+            let tape = Arc::new(Tape::new(&g, f));
+            let ctx = Ctx::new(0.0, vec![]);
+            let held = prove_empty_except(&tape, &except, &ctx, [0.0, -3.0, -3.0], [3.0; 3], None, 0.025, 0.05);
+            assert_eq!(held.verdict, Verdict::Proven, "switched {switched}");
+            assert!(!held.exact && !held.loose.is_empty(), "switched {switched}: held outright, with a's points on b's 0 at the edge asked outside b");
+            let exactly = prove_empty_except(&tape, &except, &ctx, [0.0, -3.0, -3.0], [3.0; 3], None, 0.025, 0.0);
+            assert_ne!(exactly.verdict, Verdict::Proven, "switched {switched}: proven exactly, with a's points on b's 0 at the edge asked outside b");
+        }
+    }
+
     /// A field rewritten (x to p, y to
     /// a name of p) and then untagged is p - p = 0 and 1e16 + 0.5 above it
     /// in real numbers: +0.25 everywhere, the probe outside. Untagging is
@@ -3299,11 +3596,11 @@ mod tests {
         let rho = b.bin(BinOp::Add, base, layer);
         let rho = b.tape(rho);
         let (lo, hi, _) = bounds(&tape, &ctx, LO, HI).unwrap();
-        let m = measured(&tape, &[Some(&rho), None], true, &ctx, lo, hi, None);
-        assert!((m.sums[0] / 1.2 - 1.0).abs() <= ACCURACY, "{m:?}");
+        let m = measured(&tape, &[Some(&rho), None], true, &ctx, lo, hi, Until::Accuracy(ACCURACY));
+        assert!(m.settled && m.lo[0] <= 1.2 && 1.2 <= m.hi[0] && m.error(0) <= ACCURACY * m.sums[0], "{m:?}");
         // At a cell size asked for, the layer is resolved to it.
-        let m = measured(&tape, &[Some(&rho), None], true, &ctx, lo, hi, Some(0.025));
-        assert!((m.sums[0] / 1.2 - 1.0).abs() <= ACCURACY, "{m:?}");
+        let m = measured(&tape, &[Some(&rho), None], true, &ctx, lo, hi, Until::Res(0.025));
+        assert!(m.lo[0] <= 1.2 && 1.2 <= m.hi[0] && (m.sums[0] / 1.2 - 1.0).abs() <= ACCURACY, "{m:?}");
     }
 
     #[test]
@@ -3320,7 +3617,7 @@ mod tests {
         let sums = |at: usize| {
             let mut gs = vec![None; 65];
             gs[at] = Some(&two);
-            measured(&shape, &gs, false, &ctx, [-1.0; 3], [1.0; 3], Some(0.5)).sums
+            measured(&shape, &gs, false, &ctx, [-1.0; 3], [1.0; 3], Until::Res(0.5)).sums
         };
         let (a, b) = (sums(0), sums(64));
         let near = |x: f64, y: f64| (x - y).abs() <= 1e-9 * y;
@@ -3341,14 +3638,53 @@ mod tests {
         for f in [cube, both] {
             let tape = Arc::new(b.tape(f));
             let (grid, root) = try_root_for([-40.0; 3], [40.0; 3], 0.25, 1).unwrap();
-            let (found, work) = bounds_cells(&tape, &ctx, &grid, root);
+            let (found, work, _) = bounds_cells(&tape, &ctx, &grid, root);
             // The descent's leaves that may hold a point inside (it keeps
             // those that only touch 0, for surface on a face).
             let held = |t: &Arc<Tape>, c: Cell| eval_interval(t, &ctx, grid.cell_box(c), None).may_be_inside().then(|| grid.cell_bounds(c));
-            let leaves: Vec<(V3, V3)> = descend(&tape, &ctx, &grid, root, 1, &held, &|_, c| Some(grid.cell_bounds(c)));
+            let leaves: Vec<(V3, V3)> = crate::octree::descend(&tape, &ctx, &grid, root, 1, &held, &|_, c| Some(grid.cell_bounds(c)));
             assert_eq!(found, leaves.into_iter().fold(ink_core::v3::EMPTY_BOX, ink_core::v3::box_union));
             assert!(work < 10_000, "bounding a flat face must not visit all its leaves: {work} cells");
         }
+    }
+
+    /// An assembly's box is bounded part by part, each part (clipped to
+    /// the window, as a claim's field is) on its own tape into the one
+    /// box: no cell reads the whole assembly, and the box is the full
+    /// descent's.
+    #[test]
+    fn an_assemblys_bounds_read_each_part_on_its_own() {
+        let mut b = crate::test_fields::B::new();
+        let (x, y) = (b.v(Var::X), b.v(Var::Y));
+        let mut parts = Vec::new();
+        for i in 0..40 {
+            // A plate, four holes through it.
+            let c = [-195.0 + 10.0 * i as f64, 7.0 * (i % 3) as f64, 3.0];
+            let mut part = b.cuboid(c, [4.0, 4.0, 1.0]);
+            for h in 0..4 {
+                let (cx, cy) = (b.c(c[0] + [-2.0, 2.0][h % 2]), b.c(c[1] + [-2.0, 2.0][h / 2]));
+                let (dx, dy) = (b.bin(BinOp::Sub, x, cx), b.bin(BinOp::Sub, y, cy));
+                let (dx, dy) = (b.un(UnOp::Square, dx), b.un(UnOp::Square, dy));
+                let r = b.bin(BinOp::Add, dx, dy);
+                let r = b.un(UnOp::Sqrt, r);
+                let one = b.c(1.0);
+                let hole = b.bin(BinOp::Sub, one, r);
+                part = b.bin(BinOp::Max, part, hole);
+            }
+            parts.push(part);
+        }
+        while parts.len() > 1 {
+            parts = parts.chunks(2).map(|p| if p.len() == 2 { b.bin(BinOp::Min, p[0], p[1]) } else { p[0] }).collect();
+        }
+        let tape = b.clip(parts[0]);
+        let piece = material_parts(&tape).iter().map(|t| t.len()).max().unwrap();
+        let ctx = Ctx::new(0.0, vec![]);
+        let (grid, root) = try_root_for([-250.0; 3], [250.0; 3], 500.0 / 64.0, 1).unwrap();
+        let (found, _, longest) = bounds_cells(&tape, &ctx, &grid, root);
+        let held = |t: &Arc<Tape>, c: Cell| eval_interval(t, &ctx, grid.cell_box(c), None).may_be_inside().then(|| grid.cell_bounds(c));
+        let leaves: Vec<(V3, V3)> = crate::octree::descend(&tape, &ctx, &grid, root, 1, &held, &|_, c| Some(grid.cell_bounds(c)));
+        assert_eq!(found, leaves.into_iter().fold(ink_core::v3::EMPTY_BOX, ink_core::v3::box_union));
+        assert!(longest <= piece && 4 * piece < tape.len(), "a tape {longest} long read; a part clipped {piece}, the whole {}", tape.len());
     }
 
     #[test]
@@ -3419,6 +3755,109 @@ mod tests {
         assert!(matches!(prove_empty(&tape, &nominal, lo, hi, None, 0.025, 0.05).verdict, Verdict::Proven));
     }
 
+    /// Where each of several views settles a region apart, only the view
+    /// nearest settling a box, by halving its reach, has it halved: a block
+    /// with a round hole bored in from its +x face and one through it
+    /// along z, a point of their air hidden where material lies ahead of it
+    /// along each of +z, -z and +x, at some distance each searches (a
+    /// ranged param per view, std's `hidden`). Only +x sees out of the
+    /// bore, +z and -z out of the through hole. Halving every view's reach
+    /// multiplied the boxes by each view's pieces.
+    #[test]
+    fn several_views_halve_only_the_one_nearest_settling() {
+        use crate::test_fields::B;
+        let mut b = B::new();
+        let (x, y, z) = (b.v(Var::X), b.v(Var::Y), b.v(Var::Z));
+        // max(sqrt(u^2 + v^2) - r, slab of half width h about c along w): a
+        // round hole's field, or with r and h shrunk by 0.5, its air clear of
+        // the wall.
+        let round = |b: &mut B, (u, v): (NodeId, NodeId), (cu, cv): (f64, f64), r: f64, (w, c, h): (NodeId, f64, f64)| {
+            let (cu, cv) = (b.c(cu), b.c(cv));
+            let (du, dv) = (b.bin(BinOp::Sub, u, cu), b.bin(BinOp::Sub, v, cv));
+            let (uu, vv) = (b.bin(BinOp::Mul, du, du), b.bin(BinOp::Mul, dv, dv));
+            let d = b.bin(BinOp::Add, uu, vv);
+            let d = b.un(UnOp::Sqrt, d);
+            let r = b.c(r);
+            let d = b.bin(BinOp::Sub, d, r);
+            let along = b.slab(w, c, h);
+            b.bin(BinOp::Max, d, along)
+        };
+        // The block less the bore (radius 1.6 about y = 0, z = 8, x 7 to
+        // 37) and the through hole (radius 2.2 about x = -15, y = 0).
+        let part = |b: &mut B, x, y, z| {
+            let stock = {
+                let (a, c, d) = (b.slab(x, 0.0, 30.0), b.slab(y, 0.0, 20.0), b.slab(z, 8.0, 8.0));
+                b.max3(a, c, d)
+            };
+            let bore = round(b, (y, z), (0.0, 8.0), 1.6, (x, 22.0, 15.0));
+            let hole = round(b, (x, y), (-15.0, 0.0), 2.2, (z, 8.0, 20.0));
+            let holes = b.bin(BinOp::Min, bore, hole);
+            let out = b.un(UnOp::Neg, holes);
+            b.bin(BinOp::Max, stock, out)
+        };
+        // Their air 0.5 clear of the walls, inside the block.
+        let band = {
+            let bore = round(&mut b, (y, z), (0.0, 8.0), 1.1, (x, 18.5, 11.0));
+            let hole = round(&mut b, (x, y), (-15.0, 0.0), 1.7, (z, 8.0, 8.0));
+            b.bin(BinOp::Min, bore, hole)
+        };
+        // The part read s ahead along each view: 16 up, 16 down, 60 along +x.
+        let ahead = |b: &mut B, k: u32, axis: usize, by: f64| {
+            let s = b.v(Var::Param(k));
+            let d = b.c(by);
+            let d = b.bin(BinOp::Mul, s, d);
+            let mut p = [x, y, z];
+            p[axis] = b.bin(BinOp::Add, p[axis], d);
+            part(b, p[0], p[1], p[2])
+        };
+        let (up, down, side) = (ahead(&mut b, 0, 2, 16.0), ahead(&mut b, 1, 2, -16.0), ahead(&mut b, 2, 0, 60.0));
+        let f = b.max3(band, up, down);
+        let f = b.bin(BinOp::Max, f, side);
+        let tape = Arc::new(b.tape(f));
+        let ctx = Ctx { p_spans: ink_core::eval::ParamSpans::new((0..3).map(|k| (k, (0.0, 1.0)))), ..Ctx::new(0.0, vec![0.5; 3]) };
+        let (s, n) = empty_now(&tape, None, &ctx, [-30.0, -20.0, 0.0], [30.0, 20.0, 16.0], None, 0.025, 0.05);
+        assert!(matches!(s.verdict, Verdict::Proven) && n < 2_000, "{s:?} after {n} boxes");
+    }
+
+    /// Groups of terms that read their params alone, not space, are still
+    /// halved where no halving of one settles a half: a unit cube where
+    /// cos(p) + 0.5 and cos(q) + 0.5 are both below 0 (p, q from 0 to 12)
+    /// holds a point at p = q = 3, and one where each of 10 (1.6 + cos(v) +
+    /// sin(v)) (at least 1.8 everywhere) is below 0 is empty; one halving
+    /// of either param settles neither half, and halving space narrows
+    /// neither.
+    #[test]
+    fn groups_reading_params_alone_are_halved() {
+        use crate::test_fields::B;
+        let field = |g: &dyn Fn(&mut B, NodeId) -> NodeId| {
+            let mut b = B::new();
+            let cube = b.cuboid([0.0; 3], [0.5; 3]);
+            let (p, q) = (b.v(Var::Param(0)), b.v(Var::Param(1)));
+            let (gp, gq) = (g(&mut b, p), g(&mut b, q));
+            let f = b.max3(cube, gp, gq);
+            Arc::new(b.tape(f))
+        };
+        let ctx = Ctx { p_spans: ink_core::eval::ParamSpans::new((0..2).map(|k| (k, (0.0, 12.0)))), ..Ctx::new(0.0, vec![6.0; 2]) };
+        let (lo, hi) = ([-1.0; 3], [1.0; 3]);
+        let below = field(&|b: &mut B, v| {
+            let c = b.un(UnOp::Cos, v);
+            let h = b.c(0.5);
+            b.bin(BinOp::Add, c, h)
+        });
+        let s = prove_empty(&below, &ctx, lo, hi, None, 0.025, 0.05);
+        assert!(matches!(s.verdict, Verdict::Disproven { .. }), "{s:?}");
+        let above = field(&|b: &mut B, v| {
+            let (c, s) = (b.un(UnOp::Cos, v), b.un(UnOp::Sin, v));
+            let d = b.bin(BinOp::Add, c, s);
+            let h = b.c(1.6);
+            let d = b.bin(BinOp::Add, d, h);
+            let ten = b.c(10.0);
+            b.bin(BinOp::Mul, ten, d)
+        });
+        let s = prove_empty(&above, &ctx, lo, hi, None, 0.025, 0.05);
+        assert!(matches!(s.verdict, Verdict::Proven), "{s:?}");
+    }
+
     /// A search that would test far more boxes than it may ends in a few
     /// thousand: a ball exactly inside an envelope of its size written
     /// otherwise ((r^2 - 400) / 40, the same sphere), asked to 0.0001,
@@ -3438,9 +3877,18 @@ mod tests {
         let sq = [x, y, z].map(|v| b.un(UnOp::Square, v));
         let rr = b.bin(BinOp::Add, sq[0], sq[1]);
         let rr = b.bin(BinOp::Add, rr, sq[2]);
-        let (r, size, area, scale) = (b.un(UnOp::Sqrt, rr), b.c(20.0), b.c(400.0), b.c(40.0));
+        let (r, size, area, scale) = (b.un(UnOp::Sqrt, rr), b.c(20.0), b.c(1600.0), b.c(160.0));
         let ball = b.bin(BinOp::Sub, r, size);
-        let envelope = b.bin(BinOp::Sub, rr, area);
+        // The same sphere written apart, (2x)^2 + ... - 1600: shared, its
+        // squared radius would split the boxes where the faces meet.
+        let two = b.c(2.0);
+        let sq2 = [x, y, z].map(|v| {
+            let v2 = b.bin(BinOp::Mul, two, v);
+            b.un(UnOp::Square, v2)
+        });
+        let rr2 = b.bin(BinOp::Add, sq2[0], sq2[1]);
+        let rr2 = b.bin(BinOp::Add, rr2, sq2[2]);
+        let envelope = b.bin(BinOp::Sub, rr2, area);
         let envelope = b.bin(BinOp::Div, envelope, scale);
         let outside = b.un(UnOp::Neg, envelope);
         let f = b.bin(BinOp::Max, ball, outside);
@@ -3449,8 +3897,10 @@ mod tests {
         assert!(matches!(s.verdict, Verdict::Unknown { ended: Ended::Limit, .. }) && n < 100_000, "{s:?} after {n} boxes");
     }
 
-    /// Faces that touch are settled whatever their area, to the tolerance:
-    /// a plate on its envelope's floor, whose bounds overlap the floor's by
+    /// Faces that touch are settled whatever their area: a plate on its
+    /// envelope's floor, both faces at z = 0, is apart exactly, the boxes
+    /// split there. Dipping a few ulps into the floor,
+    /// whose bounds overlap the floor's by
     /// a few ulps across the face,
     /// settled box by box only by the tolerance's cover of its samples, at
     /// about four tolerances across (it ended unknown after 4.2 million
@@ -3466,7 +3916,8 @@ mod tests {
     fn faces_that_touch_are_covered_whatever_their_area() {
         use crate::test_fields::B;
         use ink_core::graph::{BinOp, UnOp};
-        for (side, lift, holds, most) in [(49.0, 2.0, true, 5_000), (49.0, 1.9, false, 5_000), (50.0, 2.0, true, 200_000)] {
+        let dip = 1.9999999999999996;
+        for (side, lift, holds, most) in [(49.0, 2.0, true, 10), (49.0, dip, true, 5_000), (49.0, 1.9, false, 5_000), (50.0, dip, true, 200_000)] {
             let mut b = B::new();
             let plate = b.cuboid([0.0, 0.0, lift], [side, side, 2.0]);
             let envelope = b.cuboid([0.0, 0.0, 15.0], [50.0, 50.0, 15.0]);
@@ -3475,12 +3926,54 @@ mod tests {
             let tape = Arc::new(b.tape(f));
             let (s, n) = empty_now(&tape, None, &Ctx::new(0.0, vec![]), [-51.0, -51.0, -1.0], [51.0, 51.0, 31.0], None, 0.005, 0.01);
             let ok = match s.verdict {
-                Verdict::Proven => holds && !s.exact,
+                Verdict::Proven => holds && s.exact == (lift == 2.0),
                 Verdict::Disproven { witness, .. } => !holds && witness[2] < 0.0,
                 _ => false,
             };
             assert!(ok && n < most, "plate {side} lifted {lift}: {s:?} after {n} boxes");
         }
+    }
+
+    /// A ring's band 1.1 wide extruded 1 (z 3 to 4) inside its outer disc
+    /// extruded 1.2 (2.9 to 4.1): the band's outer wall lies on the disc's
+    /// all round, which the plane settles in one box (the walls facing). In
+    /// space, a box inside both spans reads no z, and one at the band's top
+    /// or bottom face (its slab at most 0 there) the band's sign alone,
+    /// so the search is the plane's, never halved along z (it halved the
+    /// walls' boxes as an octree's, along z too: 4,153 boxes).
+    #[test]
+    fn an_extrusion_is_searched_as_its_profile() {
+        use crate::test_fields::B;
+        use ink_core::graph::{BinOp, UnOp};
+        let boxes = |solid: bool| {
+            let mut b = B::new();
+            let (x, y) = (b.v(Var::X), b.v(Var::Y));
+            let (xx, yy) = (b.un(UnOp::Square, x), b.un(UnOp::Square, y));
+            let rr = b.bin(BinOp::Add, xx, yy);
+            let (d, r) = (b.un(UnOp::Sqrt, rr), b.c(18.9));
+            let disc = b.bin(BinOp::Sub, d, r);
+            let w = b.c(1.1);
+            let inner = b.bin(BinOp::Add, disc, w);
+            let hole = b.un(UnOp::Neg, inner);
+            let band = b.bin(BinOp::Max, disc, hole);
+            let mut extrude = |g, z0: f64, z1: f64| match solid {
+                true => {
+                    let z = b.v(Var::Z);
+                    let s = b.slab(z, 0.5 * (z0 + z1), 0.5 * (z1 - z0));
+                    b.bin(BinOp::Emax, g, s)
+                }
+                false => g,
+            };
+            let (a, c) = (extrude(band, 3.0, 4.0), extrude(disc, 2.9, 4.1));
+            let out = b.un(UnOp::Neg, c);
+            let h = b.bin(BinOp::Max, a, out);
+            let e = Except { a: Arc::new(b.tape(a)), b: Arc::new(b.tape(c)) };
+            let (s, n) = empty_now(&Arc::new(b.tape(h)), Some(&e), &Ctx::new(0.0, vec![]), [-25.0, -25.0, 0.0], [25.0, 25.0, 5.0], None, 0.025, 0.05);
+            assert!(matches!(s.verdict, Verdict::Proven), "{s:?} after {n} boxes");
+            n
+        };
+        let (solid, plane) = (boxes(true), boxes(false));
+        assert!(solid <= 4 * plane, "extruded {solid} boxes, the profile {plane}");
     }
 
     /// A block 1.5 x 4 x 4 about x = 1e16 + 1, which is no float: its
@@ -3600,18 +4093,24 @@ mod tests {
         use crate::test_fields::B;
         // Sixty-four cubes in rows, each touching the next, under a plate
         // pressed 0.015 into their tops (thinner than twice the tolerance,
-        // too thick for the faces' own cover): the boxes along the contact
+        // too thick for the faces' own cover), tilted 1e-4 along x (so no
+        // face of it reads one axis alone): the boxes along the contact
         // keep narrowing the union to the cubes near them.
+        use ink_core::graph::BinOp;
         let mut b = B::new();
         let cubes: Vec<_> = (0..64).map(|k| b.cuboid([(k % 8) as f64, (k / 8) as f64, 0.0], [0.5, 0.5, 0.5])).collect();
-        let union = cubes.into_iter().reduce(|x, y| b.bin(ink_core::graph::BinOp::Min, x, y)).unwrap();
-        let plate = b.cuboid([3.5, 3.5, 0.985], [4.0, 4.0, 0.5]);
-        let f = b.bin(ink_core::graph::BinOp::Max, union, plate);
+        let union = cubes.into_iter().reduce(|x, y| b.bin(BinOp::Min, x, y)).unwrap();
+        let (x, y, z, tilt) = (b.v(Var::X), b.v(Var::Y), b.v(Var::Z), b.c(1e-4));
+        let rise = b.bin(BinOp::Mul, tilt, x);
+        let up = b.bin(BinOp::Sub, z, rise);
+        let (sx, sy, sz) = (b.slab(x, 3.5, 4.0), b.slab(y, 3.5, 4.0), b.slab(up, 0.985, 0.5));
+        let plate = b.max3(sx, sy, sz);
+        let f = b.bin(BinOp::Max, union, plate);
         let tape = Arc::new(b.tape(f));
         let (lo, hi) = ([-0.5, -0.5, -0.5], [7.5, 7.5, 1.5]);
         let region = std::array::from_fn(|k| I::new(lo[k], hi[k]));
-        let q = Empty { tol: 0.01, region, asked: region, loose: Default::default(), t_band: None, except: None };
-        let root = search::Node { b: lattice(lo, hi, 0.01).unwrap(), ctx: Arc::new(Ctx::new(0.0, vec![])), state: (Kept::of(&tape), Kept::of(&tape)) };
+        let q = Empty { tol: 0.01, region, asked: region, loose: Default::default(), t_band: None, read: [true; 3], finest: 0.01 };
+        let root = search::Node { b: lattice(lo, hi, 0.01).unwrap(), ctx: Arc::new(Ctx::new(0.0, vec![])), state: (Kept::of(&tape), Kept::of(&tape), None) };
         let mut s = search::Search::new(&q, vec![root], search::Precision::holds(0.015));
         for _ in 0..20 {
             if s.round(&q, BOXES).is_some() {

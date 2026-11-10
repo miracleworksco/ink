@@ -158,7 +158,11 @@ impl Server {
     }
     /// A tool call: whether it is an error, and its content.
     pub fn call(&mut self, id: u64, args: Value) -> (bool, Vec<Value>) {
-        let r = self.rpc(id, "tools/call", json!({"name": "ink", "arguments": args}));
+        self.call_on(id, "ink", args)
+    }
+    /// A call to the tool named.
+    pub fn call_on(&mut self, id: u64, tool: &str, args: Value) -> (bool, Vec<Value>) {
+        let r = self.rpc(id, "tools/call", json!({"name": tool, "arguments": args}));
         let res = &r["result"];
         assert!(res.is_object(), "call {id}: no result: {}", pretty(&r));
         (res["isError"] == true, res["content"].as_array().unwrap().clone())
@@ -243,7 +247,7 @@ fn mcp_initializes_lists_its_tool_and_ends_with_its_input() {
     assert!(
         init["capabilities"] == json!({"tools": {}})
             && init["instructions"].as_str().is_some_and(|i| i.contains("spec"))
-            && tools.as_array().map(|t| t.len()) == Some(1)
+            && tools.as_array().map(|t| t.len()) == Some(2)
             && tools[0]["name"] == "ink"
             && tools[0]["inputSchema"]["properties"].get("query").is_none()
             && tools[0]["inputSchema"]["properties"]["file"]["description"].as_str().is_some_and(|d| !d.contains("words"))
@@ -296,6 +300,148 @@ fn mcp_initializes_lists_its_tool_and_ends_with_its_input() {
     assert!(Path::new(&full).parent() == Some(&*mine) && !mine.exists(), "its files ({full}) are in {mine:?}, removed when its input ends");
 }
 
+/// Every file under `dir` but a server's own directory, with its bytes.
+pub fn files_in(dir: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut found = std::collections::BTreeMap::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        match p.is_dir() {
+            true if !e.file_name().to_string_lossy().starts_with("ink-mcp-") => found.extend(files_in(&p)),
+            true => {}
+            false => _ = found.insert(p.clone(), std::fs::read(&p).unwrap_or_default()),
+        }
+    }
+    found
+}
+
+/// The destinations a command may be given, one of each kind of file ink
+/// writes; each is seeded with other bytes first, so an overwrite shows.
+pub const DESTS: [&str; 6] = ["probe.stl", "probe.3mf", "probe.glb", "probe.dxf", "probe.png", "probe.json"];
+
+/// What a call did: the tool that took it (the other refused it), whether
+/// it failed, its text, and the files it made or changed.
+pub struct Took {
+    pub tool: &'static str,
+    pub err: bool,
+    pub text: String,
+    pub changed: Vec<std::path::PathBuf>,
+}
+
+/// `args` to both tools, in `dir`, its destinations seeded first. Panics
+/// unless exactly one takes it.
+pub fn to_one_tool(dir: &Path, call_on: &mut dyn FnMut(&str, Value) -> (bool, Vec<Value>), args: Value) -> Took {
+    for d in DESTS {
+        std::fs::write(dir.join(d), "old").unwrap();
+    }
+    let mut took = Vec::new();
+    for tool in ["ink", "ink_write"] {
+        let before = files_in(dir);
+        let (err, c) = call_on(tool, args.clone());
+        let text = c[0]["text"].as_str().unwrap_or("").to_string();
+        if err && text.contains("tool with these arguments") {
+            continue;
+        }
+        let changed = files_in(dir).into_iter().filter(|(p, b)| before.get(p) != Some(b)).map(|(p, _)| p).collect();
+        took.push(Took { tool, err, text, changed });
+    }
+    assert!(took.len() == 1, "{args} is one tool's, not {:?}", took.iter().map(|t| t.tool).collect::<Vec<_>>());
+    took.pop().unwrap()
+}
+
+/// Each tool gives a title and all four hints, which a client decides by
+/// whether to ask before a call. Every option the command table lists is
+/// tried, at each kind of destination: every call is one tool's (the other
+/// refuses it before it runs); `ink` (read-only) changes no file; and each
+/// option that writes, called on `ink_write`, makes or overwrites the file
+/// it names.
+#[test]
+fn mcp_every_call_is_one_tools_and_its_hints_say_what_it_does() {
+    use ink::lang::command::Writes;
+    let s = Scratch::new("mcp-hints");
+    let mut srv = Server::start(&s.to_string_lossy(), &s, &[]);
+    let tools = srv.rpc(1, "tools/list", json!({}))["result"]["tools"].as_array().cloned().unwrap_or_default();
+    let hints = |t: &Value| ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"].map(|h| t["annotations"][h].as_bool());
+    for t in &tools {
+        assert!(t["title"].is_string() && hints(t).iter().all(Option::is_some), "{} gives a title and all four hints: {}", t["name"], pretty(t));
+    }
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(names == ["ink", "ink_write"], "a tool that reads and one that writes: {names:?}");
+    let hint = |name: &str| hints(tools.iter().find(|t| t["name"] == name).unwrap());
+    assert!(hint("ink") == [Some(true), Some(false), Some(true), Some(false)] && hint("ink_write") == [Some(false), Some(true), Some(true), Some(false)], "{tools:?}");
+    let meta = &tools[1]["_meta"]["ink/writes"];
+    assert!(
+        meta["mesh"] == json!({"always": true, "given": []})
+            && meta["slice"] == json!({"always": false, "given": ["out"]})
+            && meta["render"] == json!({"always": false, "given": ["out"]})
+            && meta.get("check").is_none(),
+        "ink_write says which calls write: {meta}"
+    );
+    let commands: Vec<_> = ink_cli::commands(ink::registry()).into_iter().filter(|c| c.0 != "mcp").collect();
+    // Each command on a server of its own, side by side.
+    let wrote = par(commands.len(), |i| {
+        let (cmd, opts) = commands[i];
+        let s = Scratch::new(&format!("mcp-hints-{cmd}"));
+        let model = s.model("ball.ink", "(import \"std\")\n(body b (shape (sphere 5)))\n");
+        let file = (!ink_cli::NO_FILE.contains(&cmd)).then_some(&model);
+        let mut srv = Server::start(&s.to_string_lossy(), &s, &[]);
+        let mut id = 0;
+        let mut call_on = |tool: &str, args: Value| {
+            id += 1;
+            srv.call_on(id, tool, args)
+        };
+        let mut wrote = Vec::new();
+        let base = to_one_tool(&s, &mut call_on, json!({"command": cmd, "file": file}));
+        assert!(base.tool == "ink" || !base.changed.is_empty(), "ink {cmd} on {} changed nothing: {}", base.tool, cut(&base.text));
+        for o in opts {
+            let mut written = false;
+            for d in DESTS {
+                let t = to_one_tool(&s, &mut call_on, json!({"command": cmd, "file": file, "options": {o.name: d}}));
+                assert!(t.tool == "ink_write" || t.changed.is_empty(), "ink {cmd} {{{}: {d}}} ran on the read-only tool and changed {:?}: {}", o.name, t.changed, cut(&t.text));
+                written |= o.writes != Writes::No && !t.err && t.tool == "ink_write" && t.changed.contains(&s.join(d));
+            }
+            assert!(o.writes == Writes::No || written, "ink {cmd} --{} writes, yet wrote no destination it was given", o.name);
+            if written {
+                wrote.push(format!("{cmd} {}", o.name));
+            }
+        }
+        wrote
+    });
+    let wrote: Vec<String> = wrote.into_iter().flatten().collect();
+    assert!(wrote == ["slice out", "mesh out", "render out"], "the options that write wrote: {wrote:?}");
+}
+
+/// A call names a write only by an option the command reads: an option
+/// named otherwise (`out=probe.dxf`, which the command line would read as
+/// out) is refused on either tool, and a file or query is never read as an
+/// option. Nothing is written.
+#[test]
+fn mcp_no_encoding_of_an_option_or_word_writes_a_file() {
+    let s = Scratch::new("mcp-encodings");
+    let model = s.model("ball.ink", "(import \"std\")\n(body b (shape (sphere 5)))\n");
+    let mut srv = Server::start(&s.to_string_lossy(), &s, &[]);
+    let mut id = 0;
+    let mut call_on = |tool: &str, args: Value| {
+        id += 1;
+        srv.call_on(id, tool, args)
+    };
+    for opts in [json!({"out=probe.dxf": true}), json!({"out=probe.dxf": "x"}), json!({"OUT": "probe.dxf"}), json!({"out ": "probe.dxf"}), json!({"--out": "probe.dxf"})] {
+        for tool in ["ink", "ink_write"] {
+            let before = files_in(&s);
+            let (err, c) = call_on(tool, json!({"command": "slice", "file": model, "options": opts}));
+            assert!(err && text(&c).contains("is no option name") && files_in(&s) == before, "{tool} slice {opts}: {}", cut(text(&c)));
+        }
+    }
+    // A value is the option's own, whatever it holds; a file is a file.
+    for args in [
+        json!({"command": "slice", "file": model, "options": {"keys": "kind --out=probe.dxf"}}),
+        json!({"command": "check", "file": "--out=probe.dxf"}),
+        json!({"command": "help", "query": "--out=probe.dxf"}),
+    ] {
+        let t = to_one_tool(&s, &mut call_on, args.clone());
+        assert!(t.tool == "ink" && t.changed.is_empty(), "{args} on {}: {:?} {}", t.tool, t.changed, cut(&t.text));
+    }
+}
+
 #[test]
 fn every_option_example_in_the_description_runs() {
     // An agent copies them: each is checked to run, so slice's and ray's
@@ -303,33 +449,35 @@ fn every_option_example_in_the_description_runs() {
     let s = Scratch::new("mcp-examples");
     let model = s.model(
         "examples.ink",
-        "(import \"std\")\n(param w 40 (tol -1 1))\n(param h 5)\n(t-span 0 2)\n(body arm (shape (box w 10 h)) (attr density 1.24g/cm3))\n(body base (shape (move (box 60 60 5) 0 0 -10)))\n(assembly root (instance arm arm) (instance base base))\n(assert fit (clearance (shape-of arm) (shape-of base) 1))\n(optimize lightest (vary w 30 50) (minimize (volume (shape-of arm))) (budget 4))\n",
+        "(import \"std\")\n(param w 40 (tol -1 1))\n(param h 5)\n(def reach (* 2 w))\n(t-span 0 2)\n(body arm (shape (box w 10 h)) (attr density 1.24g/cm3))\n(body base (shape (move (box 60 60 5) 0 0 -10)))\n(assembly root (instance arm arm) (instance base base))\n(assert fit (clearance (shape-of arm) (shape-of base) 1))\n(optimize lightest (vary w 30 50) (minimize (volume (shape-of arm))) (budget 4))\n",
     );
     // Run in the scratch directory, where the examples' files are written.
     let mut srv = Server::start(&s.to_string_lossy(), &s, &[]);
     let tools = srv.rpc(1, "tools/list", json!({}));
-    let desc = tools["result"]["tools"][0]["description"].as_str().unwrap_or("").to_string();
     let mut ran = 0;
-    for line in desc.lines().skip(1) {
-        let Some((cmd, rest)) = line.split_once(": ") else { continue };
-        let Some(mut call) = rest.rfind(" {").and_then(|i| serde_json::from_str::<Value>(&rest[i + 1..]).ok()) else { continue };
-        // Each option alone, with the others the command needs.
-        let alone = call.as_object().unwrap().clone();
-        for (k, v) in alone.iter().filter(|_| cmd == "spec" || cmd == "std") {
-            ran += 1;
-            let (err, c) = srv.call(ran, json!({"command": cmd, "options": {k: v}}));
-            assert!(!err, "{cmd} {{\"{k}\": {v}}}, as the description gives it: {}", cut(text(&c)));
-        }
-        if cmd == "ray" {
-            call.as_object_mut().unwrap().remove("rays");
-        }
-        if cmd != "spec" && cmd != "std" {
-            ran += 1;
-            let (err, c) = srv.call(ran, json!({"command": cmd, "file": model, "options": call}));
-            assert!(!err, "{cmd} {call}, as the description gives it: {}", cut(text(&c)));
+    for t in tools["result"]["tools"].as_array().unwrap() {
+        let (tool, desc) = (t["name"].as_str().unwrap(), t["description"].as_str().unwrap_or(""));
+        for line in desc.lines().skip(1) {
+            let Some((cmd, rest)) = line.split_once(": ") else { continue };
+            let Some(mut call) = rest.rfind(" {").and_then(|i| serde_json::from_str::<Value>(&rest[i + 1..]).ok()) else { continue };
+            // Each option alone, with the others the command needs.
+            let alone = call.as_object().unwrap().clone();
+            for (k, v) in alone.iter().filter(|_| cmd == "spec" || cmd == "std") {
+                ran += 1;
+                let (err, c) = srv.call_on(ran, tool, json!({"command": cmd, "options": {k: v}}));
+                assert!(!err, "{cmd} {{\"{k}\": {v}}}, as the description gives it: {}", cut(text(&c)));
+            }
+            if cmd == "ray" {
+                call.as_object_mut().unwrap().remove("rays");
+            }
+            if cmd != "spec" && cmd != "std" {
+                ran += 1;
+                let (err, c) = srv.call_on(ran, tool, json!({"command": cmd, "file": model, "options": call}));
+                assert!(!err, "{tool} {cmd} {call}, as the description gives it: {}", cut(text(&c)));
+            }
         }
     }
-    assert!(ran > 15, "the description's examples: {ran} of them in {desc}");
+    assert!(ran > 18, "the descriptions' examples: {ran} of them in {tools}");
 }
 
 #[test]
@@ -348,6 +496,12 @@ fn mcp_a_call_is_the_command_lines_answer() {
         "render comes back as an image: {:?}",
         c.iter().map(|x| &x["type"]).collect::<Vec<_>>()
     );
+    // An empty list repeats an option no times: no params set.
+    let (err, c) = srv.answer(21, json!({"command": "check", "file": shelf, "options": {"param": []}}));
+    assert!(!err && c["ok"] == true, "an empty list sets nothing: {}", pretty(&c));
+    // help asked of one command gives it and what its options do.
+    let (err, c) = srv.call(22, json!({"command": "help", "query": "assert"}));
+    assert!(!err && text(&c).starts_with("usage: ink assert <file.ink> [options]") && text(&c).contains("  --own "), "{}", cut(text(&c)));
     let (err, c) = srv.call(5, json!({"command": "check", "file": shelf, "options": {"bogus": 1}}));
     assert!(err && text(&c).contains("unknown option --bogus"), "an error is the command line's, flagged as one: {}", cut(text(&c)));
     // An option beside options is rejected with an error showing where it
@@ -410,7 +564,8 @@ fn mcp_spec_and_std_answer_by_section() {
     let t = ask(6, "spec", json!({"section": "motion"}));
     assert!(t.starts_with("## Motion") && !t.contains("\n## "), "spec by section: {}", cut(&t));
     let t = ask(12, "std", json!({"contents": true}));
-    let sigs: Vec<&str> = t.lines().filter(|l| l.starts_with('(')).collect();
+    let own = &t[..t.find("## built in").expect("std's contents end with the built-in forms")];
+    let sigs: Vec<&str> = own.lines().filter(|l| l.starts_with('(')).collect();
     let mut files: Vec<_> = std::fs::read_dir(root("std")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "ink")).collect();
     files.sort();
     let std_src: String = files.iter().map(|f| std::fs::read_to_string(f).unwrap()).collect();
@@ -422,6 +577,11 @@ fn mcp_spec_and_std_answer_by_section() {
         t.len(),
         std_src.len()
     );
+    // A built-in form's name finds its entries, not a name holding it
+    // (std's htd-groove-polygon); std's contents list it by signature.
+    let t = ask(13, "spec", json!({"section": "polygon"}));
+    assert!(t.contains("(vec u v b r)") && !t.contains("htd"), "a built-in form by name: {}", cut(&t));
+    assert!(ask(15, "std", json!({"contents": true})).contains("\n(polygon pts [drafts z0 z1])\n"), "std's contents list the built-in forms");
     let t = ask(14, "std", json!({"section": "lattices"}));
     assert!(t.contains("(fn gyroid"), "std by part of a section's banner gives the section: {}", cut(&t));
     let t = ask(18, "std", json!({"section": "belt"}));
@@ -644,7 +804,13 @@ fn mcp_a_call_stopped_keeps_what_was_asked_at_one_moment() {
     let a: Value = t.find("\n{").map_or(Value::Null, |i| serde_json::from_str(&t[i..]).unwrap_or(Value::Null));
     let instant = a["asserts"].as_array().and_then(|r| r.iter().find(|r| r["name"] == "instant")).cloned().unwrap_or_default();
     assert!(
-        a["stopped"] == true && instant["status"] == "holds" && instant["one_moment"] == 0.0 && a["note"].as_str().is_some_and(|n| n.contains("claim instant at t = 0")),
+        a["stopped"] == true
+            && instant["status"] == "holds"
+            && instant["one_moment"] == 0.0
+            && a["note"].as_str().is_some_and(|n| n.contains("claim instant at t = 0"))
+            // The claim left says what it was estimated to cost.
+            && a["finished"]["left_estimated"][0]["name"] == "heavy"
+            && a["finished"]["left_estimated"][0]["cost_estimate"]["basis"].as_str().is_some_and(|b| b.contains("a proof")),
         "{}",
         &t[..t.floor_char_boundary(1500)]
     );

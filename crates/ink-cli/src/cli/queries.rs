@@ -130,6 +130,20 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
     // in full with --imports: an agent checking its design reads its own
     // names, not a catalog part's internals.
     let all = a.flag("imports")?;
+    // --name: one def's value, whole (the list below shortens long ones).
+    if let Some(name) = a.get("name") {
+        let Some(v) = s.doc.def(name).cloned() else {
+            let defs = s.doc.defs.iter().map(|(k, _)| k.as_str()).filter(|k| !k.contains(':'));
+            return Err(InkError { hint: Some(ink::lang::choices(name, "its defs", defs)), ..InkError::msg(format!("no def named '{name}'")) });
+        };
+        // What it was found from, as an answer reading it says: sampled
+        // data, solved values; of every field its value holds.
+        let mut roots = Vec::new();
+        v.fields_into(&mut roots, false);
+        let mut out = json!({"name": name, "value": s.describe(&v)});
+        inexact_fields(&mut out, &s.doc.inexact(&roots, &s.certified()), &param_names(s));
+        return Ok(out);
+    }
     // Fields that interval arithmetic cannot bound degrade everything downstream
     // (meshing resolution, proofs, rendering); flag them early.
     let shapes: Vec<(String, u32)> = if load { Vec::new() } else { s.doc.bodies.iter().map(|b| (b.name.clone(), b.shape)).collect() };
@@ -138,7 +152,7 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
     // all at once.
     s.bounds_all(&shapes.iter().map(|b| b.1).collect::<Vec<_>>());
     let mut looks = Vec::new();
-    for (name, shape) in shapes {
+    for (name, shape) in shapes.iter().cloned() {
         let (whole, b) = (s.whole(shape), s.bounds(shape));
         let named = if whole && b.is_some() { s.doc.named_parts(&name, shape) } else { Vec::new() };
         looks.push((name, whole, b, Arc::new(Tape::new(&s.doc.g, shape)), named));
@@ -154,7 +168,8 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
             })
         })
         .collect();
-    for ((name, whole, _, _, named), found) in looks.into_iter().zip(found) {
+    let mut surveyed = Vec::new();
+    for (((name, whole, _, _, named), found), shape) in looks.into_iter().zip(found).zip(shapes.iter().map(|b| b.1)) {
         if !whole {
             warnings.push(format!(
                 "body '{name}' is not proven bounded. Either it is unbounded, or interval arithmetic cannot bound it \
@@ -164,7 +179,10 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
         }
         match found {
             None if whole => warnings.push(format!("body '{name}' is empty: its field is never negative. {EMPTY_CAUSE}")),
-            Some(Ok(survey)) => warnings.extend(survey_warnings(s, &name, named, &survey)),
+            Some(Ok(survey)) => {
+                warnings.extend(survey_warnings(s, &name, named, &survey));
+                surveyed.push((shape, survey.sketch));
+            }
             Some(Err((cases, points))) => warnings.extend(undefined_warnings(s, &name, &cases, points)),
             None => {}
         }
@@ -192,6 +210,22 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
         }
     }
     let certified = s.certified_in(&over_bands);
+    // What each claim will cost assert, estimated (ink::cost): not with
+    // --load. Own claims, and imported ones listed in full (--imports).
+    let costs: Vec<Option<ink::cost::Cost>> = match load {
+        true => vec![None; s.doc.asserts.len()],
+        false => {
+            let res = a.cell("res")?;
+            // What the surveys found of the bodies' surfaces, and nothing
+            // more: an estimate samples nothing check does not.
+            let mut sk = ink::cost::Sketches::default();
+            for (shape, sketch) in surveyed {
+                sk.seed(shape, sketch);
+            }
+            let listed: Vec<bool> = s.doc.asserts.iter().map(|x| all || s.doc.is_own(x)).collect();
+            listed.into_iter().enumerate().map(|(k, l)| if l { ink::cost::of_assert(s, &sk, k, res) } else { None }).collect()
+        }
+    };
     let samples: Vec<std::sync::Arc<ink::grid::Source>> = s.doc.g.grids.iter().filter_map(|g| g.source().cloned()).collect();
     let d = &s.doc;
     // Each imported file in brief: its bodies and assemblies, each with its
@@ -243,8 +277,32 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
             if let Some((written, at)) = d.set_at.get(&k) {
                 (j["written"], j["set_at"]) = (n(*written), json!(at));
             }
+            if let Some((_, c)) = d.cases.iter().find(|c| c.0 == p.name) {
+                j["cases"] = json!(c.iter().map(|g| n(g.value)).collect::<Vec<_>>());
+            }
             j
         })
+        .collect();
+    // Text params after the number params: each value, and what values it
+    // allows (a client asking a customer for one checks them first).
+    let params: Vec<J> = params
+        .into_iter()
+        .chain(d.texts.iter().filter(|p| own(d.written_in(&p.name), "params", None)).map(|p| {
+            let mut j = json!({"name": p.name, "default": p.default, "value": p.value});
+            if let Some(c) = &p.chars {
+                j["chars"] = json!(c);
+            }
+            if let Some((lo, hi)) = p.len {
+                j["len"] = json!([lo, hi]);
+            }
+            if let Some(at) = &p.set_at {
+                j["set_at"] = json!(at);
+            }
+            if let Some((_, c)) = d.cases.iter().find(|c| c.0 == p.name) {
+                j["cases"] = json!(c.iter().map(|g| g.text.as_deref().unwrap_or_default()).collect::<Vec<_>>());
+            }
+            j
+        }))
         .collect();
     // A def holding a function is called as a fn is: listed with them, by
     // its params (a builtin's are not written: `...`).
@@ -258,7 +316,7 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
     let mut fns: Vec<(&String, String)> = Vec::new();
     let mut defs: Vec<J> = Vec::new();
     for (i, (k, v)) in d.defs.iter().enumerate() {
-        if d.def_index_of(&format!("std:{k}")) == Some(i) {
+        if d.def_index_of(&format!("std:{k}")) == Some(i) || d.texts.iter().any(|p| p.name == *k) {
             continue;
         }
         match called(v) {
@@ -398,8 +456,15 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
     let asserts: Vec<J> = d
         .asserts
         .iter()
-        .filter(|x| own(Some(&x.file), "asserts", None))
-        .map(|x| json!({"name": x.name, "claim": x.text, "source": format!("{}:{}", x.file, x.line), "own": d.is_own(x)}))
+        .zip(&costs)
+        .filter(|(x, _)| own(Some(&x.file), "asserts", None))
+        .map(|(x, c)| {
+            let mut j = json!({"name": x.name, "claim": x.text, "source": format!("{}:{}", x.file, x.line), "own": d.is_own(x)});
+            if let Some(c) = c {
+                j["cost_estimate"] = c.json();
+            }
+            j
+        })
         .collect();
     let imports: Vec<J> = imports
         .into_iter()
@@ -437,7 +502,10 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
 
     // Conditions builders stated (check): those failing here, at these
     // params and this moment.
-    warnings.extend(s.doc.check_failures(&s.ctx, s.accuracy(), &s.unsolved.iter().map(|u| u.0).collect::<Vec<_>>()));
+    // In the context proofs use: over the ranges and the solves over them.
+    let ranges = (0..s.doc.params.len()).any(|k| s.doc.has_range(k));
+    let scope = if ranges { ink::eval::Ctx { p_spans: over_bands.clone(), ..s.ctx.clone() } } else { s.ctx.clone() };
+    warnings.extend(s.doc.check_failures(&scope, s.accuracy(), &s.unsolved.iter().map(|u| u.0).collect::<Vec<_>>()));
     // A solve that does not solve at this moment (one depending on t, at a
     // moment its mechanism does not close): claims reading it are refused
     // here, so say so.
@@ -574,17 +642,17 @@ pub(crate) fn cmd_bounds(s: &mut Session, a: &Args) -> Result<J, InkError> {
     Ok(json!({"targets": out, "union": union}))
 }
 
-/// A measured answer's cells: `res`, where halved to them the mass's
-/// `spread` relative to it, `coarse_res` and `relative_change`, and
+/// A measured answer's smallest box side (`res`), how far its first
+/// integral can be from its estimate relative to it (`spread`; `sampled`
+/// where that is its estimate's last move, not its bounds), and
 /// `unsettled` where it stopped short.
 fn measured_json(r: &mut J, m: &query::Measured) {
     r["res"] = n(m.res);
-    if let Some(s) = m.relative_spread() {
+    if let Some(s) = m.relative_error() {
         r["spread"] = n(s);
     }
-    if let Some((coarse, change)) = m.coarse {
-        r["coarse_res"] = n(coarse);
-        r["relative_change"] = n(change);
+    if m.sampled.is_some() {
+        r["sampled"] = json!(true);
     }
     if let Some(why) = m.unsettled() {
         r["unsettled"] = json!(why);
@@ -616,7 +684,7 @@ pub(crate) fn cmd_slice(s: &mut Session, a: &Args) -> Result<J, InkError> {
         return Err(InkError::msg(format!("--out {o}: a slice writes .dxf")));
     }
     let (mut total, mut lj, mut hmin, mut tmax) = (0.0, Vec::new(), f64::INFINITY, 0.0f64);
-    // Samples on 0 no bound decides, drawn as air (sign::undecided).
+    // Samples on 0 no bound decides, drawn as air (sign::drawn).
     let mut undecided: Vec<V3> = Vec::new();
     // Each outline's layer, points, whether it closes and whether a mark.
     let mut cut: Vec<(String, Vec<[f64; 2]>, bool, bool)> = Vec::new();
@@ -757,6 +825,9 @@ pub struct MeshHow {
     /// are made again only within it, so they are the model's alone, not
     /// its host's, threads', load's or cache's.
     pub budget: f64,
+    /// For seeing, each body's own res by its surface's area (else by its
+    /// box, Plan::own).
+    pub by_area: bool,
     /// The finest res a mesh is made again at (0: any).
     pub finest: f64,
     /// Each vertex's error is wanted (render ties two objects' surfaces by
@@ -858,7 +929,15 @@ pub fn plan_meshes(s: &mut Session, a: &Args, items: &[Item], how: &MeshHow) -> 
         })
         .collect();
     let all: Vec<(V3, V3, f64)> = bounds.iter().flatten().copied().collect();
-    let Some((ulo, uhi)) = union_bounds(&all) else { return Err(InkError::msg("nothing to mesh: every target is empty")) };
+    // Empty: proven so (a max of shapes apart, a subtraction of all of it).
+    let empty = || {
+        let names: Vec<&str> = items.iter().map(|it| it.label.as_str()).collect();
+        InkError {
+            hint: Some("a shape is empty where nothing is inside it: a max (intersection) of shapes that do not overlap, say; a union is their min".into()),
+            ..InkError::msg(format!("nothing to mesh: every target is empty ({})", names.join(", ")))
+        }
+    };
+    let Some((ulo, uhi)) = union_bounds(&all) else { return Err(empty()) };
     let floor = if how.seen { 0.0 } else { max_extent(ulo, uhi) / (8.0 * how.div) };
     let mut plan = Plan { jobs: Vec::new(), boxes: Vec::new(), times: Vec::new(), targets: Vec::new(), frames: None, res, coarsest, div: how.div, floor, seen: how.seen };
     let mut shared: HashMap<(String, u64), usize> = HashMap::new();
@@ -887,7 +966,7 @@ pub fn plan_meshes(s: &mut Session, a: &Args, items: &[Item], how: &MeshHow) -> 
         plan.targets.push((it.label.clone(), plan.jobs.len() - 1, None, None));
     }
     if plan.targets.is_empty() {
-        return Err(InkError::msg("nothing to mesh: every target is empty"));
+        return Err(empty());
     }
     plan.times = vec![1.0; plan.jobs.len()];
     Ok(plan)
@@ -921,7 +1000,7 @@ pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Resu
     // For seeing, a mesh's own res gives its surface as many cells as a
     // cube `div` cells across has (Plan::own gives its box's, before its
     // surface is found): a belt looped round a large box is not coarse.
-    if sized {
+    if sized && how.by_area {
         for (b, &area) in boxes.iter_mut().zip(&areas).filter(|(_, a)| **a > 0.0) {
             b.2 = b.2.min((area / (6.0 * div * div)).sqrt());
         }
@@ -1113,10 +1192,19 @@ pub fn drawn(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &ink::eval::Ctx, lo: V3
 
 /// What making a view mesh costs, in triangles sampled: its own, or what
 /// its sampling cost where more (mesh::Unresolved::cost: a grid of bricks
-/// its field's bounds did not rule out, its search), and the instructions
-/// reading its paint ran at PAINT_PER_TRIANGLE a triangle.
+/// its field's bounds did not rule out, its search; and the instructions
+/// its field ran, `ran`), and the instructions reading its paint ran at
+/// PAINT_PER_TRIANGLE a triangle.
 fn work(v: &ink::seen::Viewed) -> f64 {
-    (v.uniform_triangles as f64).max(v.unresolved.cost) + v.paint_work as f64 / PAINT_PER_TRIANGLE
+    (v.uniform_triangles as f64).max(v.unresolved.cost).max(ran(&v.unresolved)) + v.paint_work as f64 / PAINT_PER_TRIANGLE
+}
+
+/// The triangles a mesh's evaluations of its field cost: its samples'
+/// instructions (mesh::Unresolved::sampled), and its proofs' and search's
+/// over boxes (`read`) at BOX_PER_POINT each, at RAN_PER_TRIANGLE a
+/// triangle.
+fn ran(u: &mesh::Unresolved) -> f64 {
+    (u.sampled as f64 + BOX_PER_POINT * u.read as f64) / RAN_PER_TRIANGLE
 }
 
 /// A viewing mesh as `mesh_tape` gives one.
@@ -1243,28 +1331,19 @@ pub fn left_out(u: &mesh::Unresolved, h: f64, at: V3) -> String {
         what.push(format!("{} cells hold a gap thinner than res that it closes", found - u.material));
     }
     if u.undecided > 0 {
-        what.push(format!("in {} cells the field's bounds could not rule out material or a gap thinner than {}, the finest it was searched at", u.undecided, measured(u.searched)));
-    }
-    if u.beside > 0 {
-        what.push(format!("{} of these cells are beside one its surface crosses", u.beside));
-    }
-    if u.seams > 0 {
-        what.push(format!("{} of them lie where a select switches between two fields (a seam, as at a sweep's mitres), which bounds cannot show continuous", u.seams));
-    }
-    if let Some(r) = u.regions.iter().max_by_key(|r| r.cells) {
         what.push(format!(
-            "they lie in {} regions (unresolved.regions), the largest {} cells in [{}, {}, {}] to [{}, {}, {}] in the body's frame",
-            u.regions.len(),
-            r.cells,
-            measured(r.lo[0]),
-            measured(r.lo[1]),
-            measured(r.lo[2]),
-            measured(r.hi[0]),
-            measured(r.hi[1]),
-            measured(r.hi[2])
+            "in {} cells the field's bounds could not rule out material or a gap the mesh leaves out, thinner than {} (unresolved.regions each say how thin)",
+            u.undecided,
+            measured(u.thinner_than)
         ));
     }
-    let advice = if found > 0 { "it has holes or misses features there; use a smaller --res" } else { "it may miss features there" };
+    if u.away > 0 {
+        what.push(format!("{} of them away from its drawn surface", u.away));
+    }
+    if u.seams > 0 {
+        what.push(format!("{} where a select switches between two fields (a seam, as at a sweep's mitres), which bounds cannot show continuous", u.seams));
+    }
+    let advice = if found > 0 { "it has holes or misses features there; use a smaller --res" } else { "it may miss features there; a smaller --res searches finer" };
     format!("its mesh at res {}: {} (e.g. at [{}, {}, {}]); {advice}", measured(h), what.join("; "), measured(at[0]), measured(at[1]), measured(at[2]))
 }
 
@@ -1285,11 +1364,11 @@ fn regions_json(u: &mesh::Unresolved, place: Option<&Rigid>, h: f64) -> J {
         .iter()
         .map(|r| {
             let (lo, hi) = place.map_or((r.lo, r.hi), |p| p.aabb(r.lo, r.hi));
-            json!({"lo": v3(lo), "hi": v3(hi), "cells": r.cells, "material": r.material, "gaps": r.gaps, "undecided": r.undecided, "beside": r.beside, "seams": r.seams,
+            json!({"lo": v3(lo), "hi": v3(hi), "cells": r.cells, "material": r.material, "gaps": r.gaps, "undecided": r.undecided, "beside": r.beside, "seams": r.seams, "thinner_than": n(r.thinner_than),
                    "searched": n(r.searched), "thinnest": n(r.thinnest), "at": pt(r.at), "found": r.found, "groups": r.groups})
         })
         .collect();
-    json!({"cells": u.cells, "material": u.material, "thinnest": n(u.thinnest), "undecided": u.undecided, "beside": u.beside, "seams": u.seams, "searched": n(u.searched), "refused": n(u.refused),
+    json!({"cells": u.cells, "material": u.material, "thinnest": n(u.thinnest), "undecided": u.undecided, "beside": u.beside, "away": u.away, "seams": u.seams, "thinner_than": n(u.thinner_than), "searched": n(u.searched), "refused": n(u.refused),
            "drawn_within": n(2.0 * 3f64.sqrt() * h), "at": u.at.map(pt), "regions": regions})
 }
 
@@ -1320,7 +1399,7 @@ pub(crate) fn cmd_mesh(s: &mut Session, a: &Args) -> Result<J, InkError> {
     let out = a.get("out").map(str::to_string).unwrap_or(format!("out/{}.3mf", s.stem()));
     // GLB is for seeing: no deviation measured.
     let glb = out.ends_with(".glb");
-    let how = if glb { SEEN } else { MeshHow { div: 256.0, tol_per_res: EXPORT_TOL_PER_RES, measure: true, budget: 0.0, finest: 0.0, errors: false, seen: false } };
+    let how = if glb { SEEN } else { MeshHow { div: 256.0, tol_per_res: EXPORT_TOL_PER_RES, measure: true, budget: 0.0, by_area: false, finest: 0.0, errors: false, seen: false } };
     let items = s.items(a)?;
     let (meshed, budget) = mesh_items(s, a, &items, how)?;
     let mesh_ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -1419,7 +1498,7 @@ pub fn reported(what: &str, cached: bool, t: Instant) {
 /// CPU s on 6 vCPU of a Ryzen AI Max+ 395 at corexy's 14 µs a triangle: its first
 /// meshes cost 2.5 M and the 7 it makes again 1.9 M more as predicted;
 /// A large assembly's first meshes 8.3 M, so none is made again.
-pub const SEEN: MeshHow = MeshHow { div: 128.0, tol_per_res: 0.25, measure: false, budget: 4.6e6, finest: 0.0, errors: false, seen: true };
+pub const SEEN: MeshHow = MeshHow { div: 128.0, tol_per_res: 0.25, measure: false, budget: 4.6e6, by_area: true, finest: 0.0, errors: false, seen: true };
 
 /// The triangles a model's GLB meshes are planned to sample when first
 /// made, as their surfaces' areas predict them (`view_floor`): the rest of
@@ -1431,6 +1510,19 @@ const VIEW_TRIANGLES: f64 = 2.5e6;
 /// costs 3.0 CPU ns (2.5 to 5.6 over six boards, each with and without its
 /// paint), corexy 13.4 CPU µs a triangle besides its paint.
 const PAINT_PER_TRIANGLE: f64 = 4.4e3;
+
+/// An instruction over a box costs what this many at a point do: on one
+/// thread of spark1 a sample's instruction took 0.7 to 1.1 ns (a helix
+/// sweep's 8,114 instructions, a box with holes', a cylinder's), a
+/// proof's 25 to 38 ns.
+const BOX_PER_POINT: f64 = 30.0;
+
+/// The instructions (as `ran` counts them) that cost what a triangle does
+/// (corexy's 13.4 µs, PAINT_PER_TRIANGLE), a sample's about 1 ns: a box
+/// with holes, a holed cylinder and a thin-walled cup ran 900 to 4,400 a
+/// triangle at res 0.5 and 0.3, so their triangles count; a helix sweep
+/// 180,000 to 330,000, its CPU a triangle about 290 µs.
+const RAN_PER_TRIANGLE: f64 = 13_000.0;
 
 /// The triangles a surface samples per cell of it, as predicted: a flat
 /// face's two (a folded surface samples more).
@@ -1830,7 +1922,8 @@ pub(crate) fn cmd_mass(s: &mut Session, a: &Args) -> Result<J, InkError> {
         let found = if let Some(l) = local {
             let rho = density_of(&it.attrs, &mut s.doc)?.map(|d| d.0);
             let body = s.moments(l.shape, rho, res);
-            let none = query::Measured { sums: vec![0.0; 11], spread: Vec::new(), res: 0.0, coarse: None, cells: [0; 2], settled: true };
+            let none =
+                query::Measured { sums: vec![0.0; 11], lo: vec![0.0; 11], hi: vec![0.0; 11], res: 0.0, boxes: 0, settled: true, why: None, sampled: None, moved: vec![0.0; 11] };
             body.map_or(none, |mut b| {
                 let m = l.at.moments(&b.moments());
                 b.sums[..10].copy_from_slice(&m);
@@ -1852,12 +1945,12 @@ pub(crate) fn cmd_mass(s: &mut Session, a: &Args) -> Result<J, InkError> {
                 }
             }
         };
-        // The volume, an estimate at the cells the mass was measured at (as
-        // integrals are: query::measured); of a shape not proven bounded,
-        // none.
+        // The volume, an estimate and its bounds, measured with the mass
+        // (as integrals are: query::measured); of a shape not proven
+        // bounded, none.
         let whole = s.item_whole(it);
         let volume = match whole {
-            true => json!({"estimate": n(found.volume())}),
+            true => json!({"estimate": n(found.volume()), "bounds": [n(found.lo[10]), n(found.hi[10])]}),
             false => json!({"estimate": null}),
         };
         let mut r = match density {
@@ -1865,7 +1958,13 @@ pub(crate) fn cmd_mass(s: &mut Session, a: &Args) -> Result<J, InkError> {
                 for (t, x) in total.iter_mut().zip(found.moments()) {
                     *t += x;
                 }
-                mass_json(Some(&found.moments()), &shape)
+                let mut m = mass_json(Some(&found.moments()), &shape);
+                // Of a shape not proven bounded, none: they would bound
+                // only what lies in the window.
+                if whole {
+                    m["mass_bounds"] = json!([n(found.lo[0]), n(found.hi[0])]);
+                }
+                m
             }
             None => {
                 // By the body it places (a shape that is no body: itself).
@@ -2031,9 +2130,10 @@ pub(crate) fn cmd_render(s: &mut Session, a: &Args) -> Result<J, InkError> {
     // shows what is at its centre).
     let all: Vec<(V3, V3, f64)> = items.iter().filter_map(|it| s.item_bounds(it)).collect();
     let finest = union_bounds(&all).map_or(0.0, |(lo, hi)| render::mm_per_px(lo, hi, &cameras, size) / 2.0);
-    // The meshes a GLB shows (cached: a part rendered and shared is meshed
-    // once), each vertex with how far it may be from the surface.
-    let (meshed, _) = mesh_items(s, a, &items, MeshHow { finest, errors: true, ..SEEN })?;
+    // Meshes for the picture, each vertex with how far it may be from the
+    // surface: sized by their boxes, as a picture shows them whole (a
+    // GLB's by their surfaces, for a viewer's zoom), within a GLB's budget.
+    let (meshed, _) = mesh_items(s, a, &items, MeshHow { finest, errors: true, by_area: false, ..SEEN })?;
     let worlds: Vec<Mesh> = meshed.iter().map(|m| m.world()).collect();
     // The field's normals at the corners, turned as the instance is.
     let normals: Vec<Vec<[f32; 3]>> = meshed
@@ -2300,6 +2400,27 @@ mod tests {
         let args = Args::parse(&["distance", "unused.ink", "--a", "a", "--b", "b"].map(str::to_string));
         let answer = cmd_distance(&mut s, &args).unwrap();
         assert!(answer["overlapping"].is_null() && answer["solved_inputs"] == json!(["u"]), "the solve stopped at 4; the exact root is 0, where the spheres overlap: {answer}");
+    }
+
+    /// A view mesh costs the budget what its field's evaluations run: a bar
+    /// swept along a helix (60 segments, each cell's sample reading
+    /// thousands of instructions) far more than its triangles, a box with
+    /// holes about its triangles.
+    #[test]
+    fn a_view_mesh_costs_what_its_field_runs() {
+        let cost = |shape: &str| {
+            let mut doc = ink::load_str(&format!("(import \"std\")\n(body b (shape {shape}))"), "work", Path::new(".")).unwrap();
+            let ctx = doc.ctx(&[], 0.0).unwrap();
+            let it = doc.items("b").unwrap().remove(0);
+            let f = doc.placed_field(&it);
+            let tape = Arc::new(Tape::new(&doc.g, f));
+            let how = ink::seen::How { res: 0.5, limit: mesh::Limit { bricks: usize::MAX, search: 0.0 }, tol: None, tol_per_res: 0.25, bend: None };
+            let v = ink::seen::mesh(&tape, &[], &ctx, [-35.0, -35.0, -6.0], [35.0, 35.0, 36.0], how);
+            work(&v) / v.uniform_triangles as f64
+        };
+        let sweep = cost("(sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 60) (vec 0 0 1))");
+        let block = cost("(subtract (box 40 30 20) (cylinder-z 5 30))");
+        assert!(sweep > 5.0 && block < 1.5, "a triangle of the sweep costs {sweep}, of the block {block}");
     }
 
     /// A body with no inside (move's arguments swapped: its field is 0

@@ -40,7 +40,7 @@ fn refused(args: &[&str], says: &str, hint: Option<&str>) {
 }
 
 #[test]
-fn an_option_a_command_does_not_read_or_a_stray_argument_is_refused_with_a_hint() {
+fn an_option_a_command_does_not_read_or_reads_once_given_twice_or_a_stray_argument_is_refused() {
     // A mistyped --t-span would leave a claim proven at t = 0 only.
     let s = Scratch::new("options");
     let moving = s.model("moving-value.ink", "(assert late (value t < 0.5))\n");
@@ -53,17 +53,88 @@ fn an_option_a_command_does_not_read_or_a_stray_argument_is_refused_with_a_hint(
         (&["assert", &moving, "--params", "r=2"], "unknown option --params for 'assert'", Some("did you mean '--param'?")),
         (&["std", "extra"], "unexpected argument 'extra'", None),
         (&["spec", "model.ink"], "unexpected argument 'model.ink'", Some("ink spec --section NAME; use ink check FILE")),
-        (&["help", "--typo"], "unknown option --typo for 'help'", None),
+        (&["help", "--typo"], "unknown option --typo for 'help'", Some("'help' takes no options")),
+        (&["help", "asert"], "no command 'asert'", Some("did you mean 'assert'?")),
         (&["mesh", &sphere, "--format", "stl"], "unknown option --format for 'mesh'", Some("'mesh' takes --compact --param --t --nominal --target --out --res")),
         (&["spec", "--section", "nosuch"], "no section of the reference is called 'nosuch'", Some("ink spec --contents")),
         (&["check", &moving, "--res", "1"], "unknown option --res for 'check'", Some("--res is an option of")),
         (&["assert", &moving, &sphere], &format!("unexpected argument '{sphere}'"), Some("usage: ink assert")),
         (&["render", &sphere, "--out", &jpg], "render writes a PNG", None),
         (&["mesh", &sphere, "--accuracy", "nan"], "--accuracy must be 0 (uniform) or positive", None),
+        // An option read once, given twice, would answer for the last alone.
+        (&["assert", &moving, "--name", "late", "--name", "early"], "--name takes one value, given 2: 'late', 'early'", Some("a call per value")),
+        (&["render", &sphere, "--target", "a", "--target", "b"], "--target takes one value, given 2", None),
     ];
     for (args, says, hint) in cases {
         refused(args, says, *hint);
     }
+    refused(&["check", &moving, "--name", "lat"], "no def named 'lat'", None);
+    // help asked of one command: it, and what each of its options does.
+    let h = Ink::new(["help", "assert"]).text();
+    assert!(h.starts_with("usage: ink assert <file.ink> [options]") && h.contains("  --own ") && h.contains("  --param "), "{h}");
+}
+
+#[test]
+fn a_mesh_of_empty_targets_names_them_and_why() {
+    // A max of shapes apart is empty: the set written as an intersection.
+    let s = Scratch::new("empty-mesh");
+    let m = s.model("apart.ink", "(import \"std\")\n(body set (shape (max (box 2 2 2) (move (box 2 2 2) 10 0 0))))\n");
+    refused(&["mesh", &m, "--out", &s.path("set.stl")], "nothing to mesh: every target is empty (set)", Some("a union is their min"));
+}
+
+#[test]
+fn assert_keys_pick_each_claims_fields() {
+    let s = Scratch::new("assert-keys");
+    let m = s.model("two.ink", "(import \"std\")\n(param w 4)\n(assert wide (value w > 3))\n(assert solid (subset (box 1 1 1) (box 2 2 2)))\n");
+    let d = ink(["assert", &m, "--keys", "status"]);
+    assert!(d["asserts"] == json!([{"name": "wide", "status": "holds"}, {"name": "solid", "status": "holds"}]) && d["all_hold"] == true, "{}", pretty(&d));
+    refused(&["assert", &m, "--keys", "statu"], "--keys: no record has 'statu'", Some("keys here: status"));
+}
+
+#[test]
+fn check_names_one_defs_value_whole() {
+    // Past the list's shortening: a vec of 200 numbers is listed in brief.
+    let s = Scratch::new("check-name");
+    let m = s.model("defs.ink", "(param w 40)\n(def half (/ w 2))\n(def many (map (lambda (i) (* i half)) (range 200)))\n");
+    let d = ink(["check", &m, "--name", "half", "--param", "w=10"]);
+    assert!(d["name"] == "half" && d["value"] == 5.0, "{}", pretty(&d));
+    let listed = ink(["check", &m]);
+    let many = ink(["check", &m, "--name", "many"]);
+    assert!(listed["defs"][1]["value"]["items"] == 200 && many["value"].as_array().map(Vec::len) == Some(200) && many["value"][199] == 3980.0, "{}", pretty(&many));
+    // What it was found from, as plain check says: sampled data (a box of
+    // it and what that was found from), solved values.
+    let found = s.model(
+        "found.ink",
+        "(import \"std\")\n(def baked (grid-bake (sphere 2) (res 1)))\n(def b (bounds baked))\n\
+         (solve first (unknowns (a 1)) (== (* a a) 4))\n(def twice (* 2 a))\n\
+         (def beside (at (move (nth (nth b 1) 0) 0 0)))\n(def solved-at (vec (at (move a 0 0))))\n",
+    );
+    let b = ink(["check", &found, "--name", "b"]);
+    let kinds: Vec<&Value> = b["samples"].as_array().map_or(vec![], |x| x.iter().map(|x| &x["kind"]).collect());
+    assert!(kinds == [&json!("bounds"), &json!("bake")], "{}", pretty(&b));
+    let twice = ink(["check", &found, "--name", "twice"]);
+    assert!(twice["solved_inputs"] == json!(["a"]) && twice.get("samples").is_none(), "{}", pretty(&twice));
+    // A frame's too, in a vec or not.
+    let beside = ink(["check", &found, "--name", "beside"]);
+    assert!(beside["samples"][0]["kind"] == "bounds" && beside["value"]["frame"]["origin"][0].as_f64().is_some(), "{}", pretty(&beside));
+    let at = ink(["check", &found, "--name", "solved-at"]);
+    assert!(at["solved_inputs"] == json!(["a"]), "{}", pretty(&at));
+}
+
+#[test]
+fn a_claims_corner_is_a_point_or_a_vec_of_three_numbers() {
+    // Written (x y z), as a vec, or taken from a bounds box.
+    let s = Scratch::new("corners");
+    let m = s.model(
+        "corners.ink",
+        "(import \"std\")\n(def part (box 20 20 10))\n(def b (bounds part))\n(assert listed (within part (-11 -11 -6) (11 11 6)))\n\
+        (assert vec (within part (vec -11 -11 -6) (vec 11 11 6)))\n(assert boxed (within part (nth b 0) (nth b 1)))\n\
+        (assert called (within part ((lambda () (vec -11 -11 -6))) (vec 11 11 6)))\n",
+    );
+    let d = ink(["assert", &m]);
+    assert!(d["all_hold"] == true && d["asserts"].as_array().map(Vec::len) == Some(4), "{}", pretty(&d));
+    let bad = s.model("short.ink", "(import \"std\")\n(assert a (within (box 1 1 1) (vec 1 2) (1 1 1)))\n");
+    refused(&["check", &bad], "expected a point, (x y z) or a vec of three numbers, got a vec of 2", None);
 }
 
 #[test]
@@ -110,9 +181,36 @@ fn a_curved_bodys_volume_estimate_is_close() {
     assert!((num(&v["estimate"]) - exact).abs() / exact < 1e-3, "{}", pretty(v));
 }
 
+/// A sheet 600 times wider than thick, flat or tilted, settles with
+/// bounds round its mass: a box holding one of its faces bounds it exactly,
+/// however wide the box.
+#[test]
+fn a_sheet_far_wider_than_thick_is_measured_within_its_bounds() {
+    let dir = Scratch::new("thin-sheet");
+    for shape in ["(box 150 150 0.25)", "(rotate-y (box 150 150 0.25) 30)"] {
+        let m = dir.model("sheet.ink", &format!("(import \"std\")\n(body p (shape {shape}) (attr density 2.7g/cm3))\n"));
+        let d = ink(["mass", &m]);
+        let t = &d["targets"][0];
+        let (mass, bounds) = (num(&t["mass"]), &t["mass_bounds"]);
+        assert!(t.get("unsettled").is_none() && num(&bounds[0]) <= 15.1875 && 15.1875 <= num(&bounds[1]), "{shape}: {}", pretty(t));
+        assert!((mass / 15.1875 - 1.0).abs() <= 0.02 && num(&t["spread"]) <= 0.02, "{shape}: {}", pretty(t));
+    }
+}
+
+/// A target not proven bounded has no mass bounds: they would bound only
+/// the window's part of a half-space.
+#[test]
+fn an_unbounded_targets_mass_has_no_bounds() {
+    let dir = Scratch::new("unbounded-mass");
+    let m = dir.model("half.ink", "(body half (shape x) (attr density 0.001))\n");
+    let d = ink(["mass", &m]);
+    let t = &d["targets"][0];
+    assert!(t["unbounded"] == true && t.get("mass_bounds").is_none() && t["volume"]["estimate"].is_null(), "{}", pretty(t));
+}
+
 #[test]
 fn an_empty_instance_measured_once_gives_no_spread() {
-    // A spread is shown only by a halving: `--res` measures once.
+    // Nothing measured: nothing for a spread to be relative to.
     let dir = Scratch::new("empty-instance");
     let m = dir.model("empty.ink", "(import \"std\")\n(body gone (shape (max (sphere 1) (move (sphere 1) 5 0 0))))\n(assembly root (instance g gone))\n");
     let d = ink(["mass", &m, "--res", ".1"]);
@@ -431,10 +529,10 @@ fn an_error_follows_compact_as_an_answer_does() {
 
 #[test]
 fn a_mark_s_undecided_samples_reach_the_slice_s_report() {
-    // The mark's field touches 0 from below on x = y, a line no face the
-    // field writes: samples on it are undecided.
+    // The mark's field reads 0 along x = y, air a picometre wide: samples
+    // on it are undecided.
     let s = Scratch::new("mark-unresolved");
-    let m = s.model("marks.ink", "(import \"std\")\n(body p (shape (box 12 12 12)) (mark line (vec (neg (abs (- x y))) -1)))\n");
+    let m = s.model("marks.ink", "(import \"std\")\n(body p (shape (box 12 12 12)) (mark line (vec (min 0 (- 1e-12 (abs (- x y)))) -1)))\n");
     let d = ink(["slice", &m, "--axis", "z", "--at", "0.3", "--res", "1"]);
     assert!(d["unresolved"]["samples"].as_u64().is_some_and(|n| n > 0), "{}", pretty(&d));
 }

@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 /// The pairs to check, found (`plan`): what the answer says besides its
 /// pairs, and each pair's question, built.
 pub struct Plan {
-    /// The accuracy every pair is asked to, mm.
+    /// The accuracy the pairs are asked to, mm, but those whose parts
+    /// declare tolerances (Pair::tolerances).
     pub accuracy: f64,
     /// Items resting on a solve with no value here, with its error: no
     /// pair with one is checked (as assert's claims: ModelView::refusal).
@@ -56,6 +57,8 @@ pub struct Plan {
     riding: Vec<bool>,
     questions: Vec<Question>,
     asks: Vec<(usize, usize, Option<Framed>)>,
+    /// Each pair's accuracy.
+    tols: Vec<f64>,
 }
 
 /// A pair's answer: its items, its contact zones and relations (indices
@@ -73,6 +76,9 @@ pub struct Pair {
     /// Its intersection is proven bounded. Else it was examined in the
     /// window only: apart there is not apart (`status`).
     pub whole: bool,
+    /// What gave it its accuracy, where not its default: --accuracy, or
+    /// its parts' tolerances (claims::finest).
+    pub accuracy_by: Option<claims::AccuracyBy>,
     pub answer: Answer,
     /// Wall-clock milliseconds it took: its own proof's (a still pair), or
     /// its own wall time, built, searched and finished (a moving one).
@@ -130,6 +136,7 @@ struct Facts {
     inexact: Inexact,
     whole: bool,
     one_moment: Option<f64>,
+    accuracy_by: Option<claims::AccuracyBy>,
     /// A still pair's field as placed, with its zones (Plan::world_question).
     world: Option<u32>,
 }
@@ -143,6 +150,7 @@ impl Facts {
             relations: self.relations.clone(),
             inexact: self.inexact.clone(),
             whole: self.whole,
+            accuracy_by: self.accuracy_by.clone(),
             answer,
             ms,
             cached,
@@ -157,6 +165,8 @@ struct Question {
     node: u32,
     region: (V3, V3),
     framed: bool,
+    /// The accuracy it is asked to, its pairs'.
+    tol: f64,
     /// With a zone: the intersection (clipped as `node` is) and the zone, the
     /// question being no point inside the one and not inside the other
     /// (query::Except), `node` max(f, -zone).
@@ -187,7 +197,8 @@ pub fn default_items(v: &mut ModelView) -> Result<Vec<Item>, InkError> {
 
 /// The pairs of `all` (a target's items, `target` what it places, where
 /// it names a body or assembly: Doc::target) to check, at `res`, to
-/// `accuracy` (None: the model's), and each still pair's question.
+/// `accuracy` (None: each pair's parts', claims::finest), and each still
+/// pair's question.
 pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, res: Option<f64>, accuracy: Option<f64>) -> Result<Plan, InkError> {
     if all.len() < 2 {
         return Err(InkError::msg("interfere needs a target with at least two instances"));
@@ -196,6 +207,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
     // entry points: a pointwise view (a library caller's) would box each
     // item at one value and call pairs apart that meet at another.
     v.scope_question()?;
+    let given = accuracy;
     let accuracy = accuracy.unwrap_or_else(|| v.accuracy());
     // As assert's claims (ModelView::refusal): an item resting on a solve
     // with no value here is left out, with the solve's error, and the rest
@@ -253,7 +265,12 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
     let mut fields = v.doc.placed_reads(&items);
     fields.extend(relations.iter().filter_map(|r| r.zone));
     let scope = crate::validity::scope(v);
-    crate::validity::refuse(&v.doc, &scope, &fields, bounds.iter().flatten().map(|b| (b.0, b.1)), res.unwrap_or(accuracy).min(accuracy))?;
+    // Each pair's accuracy: the one given, else its parts' (Doc::parts_of:
+    // an item's body, or what a def is made of), as a claim's.
+    let mut made_of: HashMap<u32, Vec<Option<(String, f64)>>> = HashMap::new();
+    let parts: Vec<Vec<Option<(String, f64)>>> = items.iter().map(|it| made_of.entry(it.shape).or_insert_with(|| v.doc.parts_of(it.shape)).clone()).collect();
+    let finest = given.or_else(|| parts.iter().flatten().flatten().map(|t| t.1).reduce(f64::min)).map_or(accuracy, |t| t.min(accuracy));
+    crate::validity::refuse(&v.doc, &scope, &fields, bounds.iter().flatten().map(|b| (b.0, b.1)), res.unwrap_or(finest).min(finest))?;
     let exact: Vec<bool> = measured.iter().map(|m| !m).collect();
     let (candidates, boxed_apart, among) = pairs::candidate_pairs(&bounds, &whole, &over, &[&exact]);
     drop(over);
@@ -349,6 +366,18 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
         }
     }
     let zone_inexact: Vec<bool> = zones.iter().map(|z| z.is_some_and(|z| *reads_inexact.entry(z).or_insert_with(|| v.doc.inexact(&[z], &certified).any()))).collect();
+    let (mut tols, mut pair_by) = (Vec::with_capacity(candidates.len()), Vec::with_capacity(candidates.len()));
+    for &(i, j) in &candidates {
+        let (tol, by) = match given {
+            Some(x) => (x, Some(claims::AccuracyBy::Run)),
+            None => {
+                let (tol, parts) = claims::finest(accuracy, parts[i].iter().chain(&parts[j]).cloned());
+                (tol, Some(parts).filter(|p| !p.is_empty()).map(claims::AccuracyBy::Tolerance))
+            }
+        };
+        tols.push(tol);
+        pair_by.push(by);
+    }
     let facts: Vec<Facts> = (0..candidates.len())
         .map(|k| {
             let (i, j) = candidates[k];
@@ -363,6 +392,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
                 inexact,
                 whole: pair_whole[k],
                 one_moment: pair_one_moment[k],
+                accuracy_by: pair_by[k].take(),
                 world: None,
             }
         })
@@ -388,6 +418,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
         riding,
         questions: Vec::new(),
         asks: Vec::with_capacity(still.len()),
+        tols,
     };
     // Each still pair's question: asked in a frame of its own (pairs::framed:
     // one of its parts', else the deepest instance holding it), where its
@@ -395,14 +426,14 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
     // coordinates, so pairs placed alike (every copy of a sub-assembly, a
     // screw on each of its nuts, on a carriage or not) are one question; else
     // where it lies, its fields placed.
-    let mut asked: HashMap<u32, usize> = HashMap::new();
+    let mut asked: HashMap<(u32, u64), usize> = HashMap::new();
     for &k in &still {
         let world = plan.world_question(v, k);
         plan.facts[k].world = Some(world.node);
         let (i, j) = plan.candidates[k];
         let parts: Option<Vec<(u32, &str)>> =
             plan.facts[k].zones.iter().map(|&z| plan.relations[z].local.filter(|l| l.b.is_none()).map(|l| (l.a, plan.relations[z].a.as_str()))).collect();
-        let frame = parts.filter(|_| plan.facts[k].whole && !plan.facts[k].inexact.any()).and_then(|p| pairs::framed(v, &plan.items[i], &plan.items[j], &p, plan.accuracy));
+        let frame = parts.filter(|_| plan.facts[k].whole && !plan.facts[k].inexact.any()).and_then(|p| pairs::framed(v, &plan.items[i], &plan.items[j], &p, plan.tols[k]));
         let Some(fr) = frame else {
             // Riding a group, it is asked in its frame or over t: the
             // world's question holds at one moment.
@@ -423,8 +454,9 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
         if plan.riding[k] && claims::reads_t(v, &[node]) {
             continue;
         }
-        let q = *asked.entry(node).or_insert_with(|| {
-            plan.questions.push(Question { node, region: fr.region, framed: true, except });
+        let tol = plan.tols[k];
+        let q = *asked.entry((node, tol.to_bits())).or_insert_with(|| {
+            plan.questions.push(Question { node, region: fr.region, framed: true, tol, except });
             plan.questions.len() - 1
         });
         plan.asks.push((k, q, Some(fr)));
@@ -526,13 +558,24 @@ pub fn at_one_moment(v: &mut ModelView) -> Vec<String> {
 }
 
 impl Plan {
+    /// What each pair is estimated to cost (ink::cost), by its name as
+    /// its progress gives it ("a ~ b"): null where it is not estimated.
+    pub fn estimates(&self, v: &mut ModelView) -> serde_json::Map<String, serde_json::Value> {
+        let mut out = serde_json::Map::new();
+        for (k, &(i, j)) in self.candidates.iter().enumerate().filter(|(k, _)| self.unsolved[*k].is_none()) {
+            let (fa, fb) = (v.doc.placed_field(&self.items[i]), v.doc.placed_field(&self.items[j]));
+            out.insert(self.facts[k].items.join(" ~ "), crate::cost::proof(v, &[fa, fb]).json());
+        }
+        out
+    }
+
     /// Pair k's question where it lies, its fields placed.
     fn world_question(&self, v: &mut ModelView, k: usize) -> Question {
         let (i, j) = self.candidates[k];
         let (fa, fb) = (v.doc.placed_field(&self.items[i]), v.doc.placed_field(&self.items[j]));
         let f = v.doc.g.max(fa, fb);
         let (node, except) = outside(v, f, self.zones[k], self.regions[k]);
-        Question { node, region: self.regions[k], framed: false, except }
+        Question { node, region: self.regions[k], framed: false, tol: self.tols[k], except }
     }
 
     /// Every pair checked, in order, at cell size `res` (None: automatic). Each is reported as it is decided
@@ -540,11 +583,15 @@ impl Plan {
     /// a call stopped at its time limit gives the rows of the pairs done.
     pub fn run(self, v: &mut ModelView, res: Option<f64>, row: &Row) -> Result<Vec<Pair>, InkError> {
         claims::progress(serde_json::json!({"total": self.candidates.len(), "of": "pairs", "kept": true}));
+        // What each will cost, for a caller that may stop the run.
+        if ink_kernel::progress::reporting() {
+            claims::progress(serde_json::json!({"estimates": self.estimates(v)}));
+        }
         let n = self.candidates.len();
         let mut rows: Vec<Option<Pair>> = (0..n).map(|_| None).collect();
         let mut again = Vec::new();
-        let opts = ClaimOptions { res, accuracy: Some(self.accuracy), ..Default::default() };
-        for (k, pair) in prove_pairs(v, &self.questions, &self.asks, &self.facts, opts, row) {
+        let opts = ClaimOptions { res, ..Default::default() };
+        for (k, pair) in prove_pairs(v, &self.questions, &self.asks, &self.facts, res, row) {
             match pair {
                 Some(p) => rows[k] = Some(p),
                 None => again.push(k),
@@ -556,7 +603,7 @@ impl Plan {
         again.sort_unstable();
         let questions: Vec<Question> = again.iter().map(|&k| self.world_question(v, k)).collect();
         let asks: Vec<(usize, usize, Option<Framed>)> = again.iter().enumerate().map(|(q, &k)| (k, q, None)).collect();
-        for (k, pair) in prove_pairs(v, &questions, &asks, &self.facts, opts, row) {
+        for (k, pair) in prove_pairs(v, &questions, &asks, &self.facts, res, row) {
             rows[k] = pair;
         }
         // Moving pairs, in order: each one's question is built here, in the
@@ -608,7 +655,7 @@ impl Plan {
                     claims::progress(serde_json::json!({"running": self.facts[k].items}));
                     let (i, j) = self.candidates[k];
                     let (a, b) = (v.doc.placed_field(&self.items[i]), v.doc.placed_field(&self.items[j]));
-                    let asked = over_motion(v, (a, b), self.zones[k], opts)?;
+                    let asked = over_motion(v, (a, b), self.zones[k], ClaimOptions { accuracy: Some(self.tols[k]), ..opts })?;
                     (k, asked, start.elapsed(), misses() > before)
                 }
                 // Every pair answered: an upgrade begun as a runner frees.
@@ -690,12 +737,9 @@ impl Plan {
 /// cells the accuracy reaches, and moved to each pair's world (`framed`).
 /// The first pair asking a question gives its proof's time; the others are
 /// `cached`.
-fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Option<Framed>)], facts: &[Facts], opts: ClaimOptions, row: &Row) -> Vec<(usize, Option<Pair>)> {
+fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Option<Framed>)], facts: &[Facts], res: Option<f64>, row: &Row) -> Vec<(usize, Option<Pair>)> {
     use rayon::prelude::*;
     let ctx = v.ctx.clone();
-    let (res, tol) = (opts.res, opts.accuracy.unwrap_or_else(|| v.accuracy()));
-    let world = v.proof_options(res, tol);
-    let shared = ProofOptions { tol: Framed::asked(tol), ..world };
     let mut of: Vec<Vec<usize>> = vec![Vec::new(); questions.len()];
     for (n, &(_, q, _)) in asks.iter().enumerate() {
         of[q].push(n);
@@ -706,13 +750,18 @@ fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Opt
     let quantity = Some(crate::units::Quantity::Length);
     let g = &v.doc.g;
     let why: Vec<Option<String>> =
-        asks.iter().map(|(_, q, fr)| crate::validity::outside_region(&v.doc, &ctx, questions[*q].region, fr.as_ref().map(|fr| &fr.at), tol, res)).collect();
+        asks.iter().map(|(_, q, fr)| crate::validity::outside_region(&v.doc, &ctx, questions[*q].region, fr.as_ref().map(|fr| &fr.at), questions[*q].tol, res)).collect();
+    // Each question's proof options, at its accuracy.
+    let proving: Vec<ProofOptions> = questions.iter().map(|q| v.proof_options(res, q.tol)).collect();
     questions
         .par_iter()
+        .enumerate()
         .zip(&of)
         .zip(&reads)
-        .flat_map_iter(|((q, of), read)| {
+        .flat_map_iter(|(((n, q), of), read)| {
             let (lo, hi) = q.region;
+            let (tol, world) = (q.tol, &proving[n]);
+            let shared = ProofOptions { tol: Framed::asked(tol), ..*world };
             let asked = Instant::now();
             // The proof focuses it on the region (when not cached); the
             // volume's descent prunes it cell by cell.
@@ -732,7 +781,7 @@ fn prove_pairs(v: &ModelView, questions: &[Question], asks: &[(usize, usize, Opt
                     .collect::<Vec<_>>();
             }
             let except = q.except.map(|(a, z)| ink_kernel::query::Except { a: Arc::new(Tape::new(g, a)), b: Arc::new(Tape::new(g, z)) });
-            let p = ranged::prove_except(&tape, except.as_ref(), &ctx, lo, hi, if q.framed { &shared } else { &world });
+            let p = ranged::prove_except(&tape, except.as_ref(), &ctx, lo, hi, if q.framed { &shared } else { world });
             let proof_ms = asked.elapsed();
             // Overlap volume for colliding pairs, measured once a pair gives
             // it (a frame's witness not shown in the world gives none: the
@@ -842,7 +891,7 @@ fn over_motion(v: &mut ModelView, (a, b): (u32, u32), zone: Option<u32>, opts: C
 /// box.
 fn overlap_volume(tape: &Arc<Tape>, ctx: &Ctx, (lo, hi): (V3, V3)) -> Option<f64> {
     let (blo, bhi, _) = query::bounds_quick(tape, ctx, lo, hi)?;
-    Some(query::measured(tape, &[None], false, ctx, blo, bhi, None).sums[0])
+    Some(query::measured(tape, &[None], false, ctx, blo, bhi, query::Until::Accuracy(query::ACCURACY)).sums[0])
 }
 
 #[cfg(test)]

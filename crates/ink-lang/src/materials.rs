@@ -156,7 +156,7 @@ impl PublishedMass {
     /// unsettled, the finest measurement reached, and why.
     fn measure(&self, shape: &Arc<Tape>, rho: Option<&Arc<Tape>>, ctx: &Ctx) -> Result<(f64, Option<String>), String> {
         let Some((lo, hi)) = self.bounds(shape, ctx)? else { return Ok((0.0, None)) };
-        let v = query::measured(shape, &[rho.map(|r| &**r), None], true, ctx, lo, hi, None);
+        let v = query::measured(shape, &[rho.map(|r| &**r), None], true, ctx, lo, hi, query::Until::Accuracy(query::ACCURACY));
         Ok((v.sums[0], v.unsettled()))
     }
 
@@ -566,7 +566,7 @@ impl Doc {
         let derived = format!("{name}.mass-density");
         // Not a number until measured: a reader that misses Doc::want
         // weighs nothing it could take for a mass (0 is a density).
-        self.params.push(Param { name: derived.clone(), default: f64::NAN, tol: None });
+        self.add_param(Param { name: derived.clone(), default: f64::NAN, tol: None });
         let reads: Vec<NodeId> = std::iter::once(mass).chain(shared.iter().map(|s| s.0)).chain(own.iter().flat_map(|o| [o.0, o.1])).collect();
         let uses_t = reads.iter().any(|&r| self.g.depends_on(r, |v| v == Var::T));
         let tape = |g: &Graph, n: NodeId| Arc::new(Tape::new(g, n));

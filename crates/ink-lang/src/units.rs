@@ -314,23 +314,44 @@ pub fn kept(a: &'static Unit, b: &'static Unit) -> Result<&'static Unit, String>
 /// A value given a param from outside the model (`--param m=50g`, an
 /// optimizer's design): a number in the language's unit, and the unit it
 /// was given in, if any. A param given a unit reads as said in it
-/// (Doc::param_given), wherever the value travels.
-#[derive(Clone, Copy, Debug)]
+/// (Doc::param_given), wherever the value travels. `text`: the value as
+/// written, which a text param (`(param name "Ada")`) takes; one that is
+/// no number has a NaN `value`, refused by a number param.
+#[derive(Clone, Debug)]
 pub struct Given {
     pub value: f64,
     pub unit: Option<&'static Unit>,
+    pub text: Option<std::sync::Arc<str>>,
+    /// A param's declared case by its place among them (from 0), as `ink
+    /// assert` asks it: the load takes that case's value where it reads
+    /// the param (its expression there, every param set before it), and
+    /// at a load given one, a text a param does not allow is recorded
+    /// (Doc::refused), not an error.
+    pub case: Option<usize>,
 }
 
 impl PartialEq for Given {
     fn eq(&self, o: &Given) -> bool {
-        self.value == o.value && self.unit.map(|u| u.name) == o.unit.map(|u| u.name)
+        (self.value == o.value || self.value.is_nan() && o.value.is_nan()) && self.unit.map(|u| u.name) == o.unit.map(|u| u.name) && self.text == o.text && self.case == o.case
     }
 }
 
 impl From<f64> for Given {
     /// A number in the language's unit, saying none.
     fn from(value: f64) -> Given {
-        Given { value, unit: None }
+        Given { value, unit: None, text: None, case: None }
+    }
+}
+
+impl Given {
+    /// Text only: what a text param takes, no number.
+    pub fn text(s: &str) -> Given {
+        Given { value: f64::NAN, unit: None, text: Some(s.into()), case: None }
+    }
+
+    /// A param's k-th declared case (`case`), its value the load's.
+    pub fn case(k: usize) -> Given {
+        Given { value: f64::NAN, unit: None, text: None, case: Some(k) }
     }
 }
 

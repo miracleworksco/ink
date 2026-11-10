@@ -25,6 +25,8 @@
 ; expect-status: lip-meets-zone fails
 ; expect-status: zones-meet fails
 ; expect-status: zone-off-flange fails
+; expect-status: across-acute fails
+; expect-status: hole-near-angled-end fails
 (import "std")
 
 (def th 2)
@@ -136,6 +138,77 @@
 (assert tray-flanges (empty (sheet-short-flanges ts 4)))
 (assert tray-reliefs (empty (sheet-unrelieved ts)))
 (assert tray-collisions (empty (sheet-collisions ts)))
+
+; A bend at an angle to the strip's edges: 100 x 30, up 90 along
+; x = 40 + y / 3 (18.4 degrees off y), its ends squared to the bend 8
+; either side of its line and a to b between them. Its flange's flat
+; at the foot (45, 15) runs 47.43416 along n = (0.94868, -0.31623) to
+; the edge y = 0; folded, the wall's inside face is r - BA / 2 = -0.19911
+; along n from the line and its outside 1.80089, and the flat's end is
+; th + r + 47.43416 - BA / 2 = 49.23505 up. The hole at (80, 15), 33.20392
+; along n, is 35.00480 up, its centre on the outside face at
+; (50.20847, 24.93051).
+(def skew (sheet (polygon (vec (vec 0 0) (vec 30 0) (vec 33.41053 5.52982) (vec 48.58947 0.47018) (vec 55 0) (vec 100 0)
+                               (vec 100 30) (vec 65 30) (vec 56.58947 24.47018) (vec 41.41053 29.52982) (vec 35 30) (vec 0 30)))
+                 (vec (move (circle-2d 2.5) 80 15 0)) th k
+                 (vec (sheet-bend (vec 49 27) (vec 41 3) 90 r))))
+(def sb (sheet-folded skew))
+(body skewed (shape sb) (frame wall (sheet-frame skew 80 15 -1)))
+(assert skew-outside-in (subset (probe 46.69814 14.43395 20) sb))
+(assert skew-outside-out (disjoint sb (probe 46.71712 14.42763 20)))
+(assert skew-inside-in (subset (probe 44.81975 15.06008 20) sb))
+(assert skew-inside-out (disjoint sb (probe 44.80078 15.06641 20)))
+(assert skew-top-in (subset (probe 45.75894 14.74684 49.2) sb))
+(assert skew-top-out (disjoint sb (probe 45.75894 14.74684 49.27)))
+(assert skew-hole (disjoint sb (probe 49.25979 25.24674 35.00480)))
+(assert skew-hole-rim (subset (probe 49.25979 25.24674 38.0) sb))
+(assert skew-flanges (empty (sheet-short-flanges skew 4)))
+(assert skew-holes (empty (sheet-holes-near-bends skew 2.5)))
+(assert skew-reliefs (empty (sheet-unrelieved skew)))
+(assert skew-collisions (empty (sheet-collisions skew)))
+; The same bend across the plain strip, a and b past its edges so its
+; zone spans the material: past the edges is air, not a short flange,
+; but where an edge meets the bend at 71.6 degrees its flange tapers
+; under 4 th.
+(def across (sheet (polygon (vec (vec 0 0) (vec 100 0) (vec 100 30) (vec 0 30))) (vec) th k
+                   (vec (sheet-bend (vec 51 33) (vec 39 -3) 90 r))))
+(assert across-reliefs (empty (sheet-unrelieved across)))
+(assert across-air (disjoint (sheet-short-flanges across 4) (probe 35.92 -0.54 1)))
+(assert across-acute (empty (sheet-short-flanges across 4)))
+; A 45 degree bend across a plain plate, its line leaving the outline at
+; (40, 0). Past there, level with the foot (39.5, -0.5), the zone's
+; material is only its base side (BA / 2 = 2.19911 across from the line,
+; the plate's edge 0.70711 from it), so the bend is there and its flange
+; is not: air 3 past the line is a short flange (z 0.318 is the place
+; across at -1.5). A hole of r 0.5 at (35, 3), its projection on the line
+; past the outline too, is 2.96 from that material.
+(def angled (sheet (polygon (vec (vec 0 0) (vec 100 0) (vec 100 30) (vec 0 30)))
+                   (vec (move (circle-2d 0.5) 35 3 0)) th k
+                   (vec (sheet-bend (vec 75 35) (vec 35 -5) 90 r))))
+(assert angled-end-short (subset (probe 41.62132 -2.62132 0.318) (sheet-short-flanges angled 4)))
+(assert hole-near-angled-end (empty (sheet-holes-near-bends angled 2.5)))
+
+; An open hem: a 30 mm strip folded 180 degrees back over its top along
+; x = 50, inside radius 1 (inside diameter th, Protolabs' least). BA =
+; pi (1 + 0.8) = 5.65487, so the zone starts at 47.17257, the fold's
+; outside reaches r + th past it, 50.17257, and the return, the 12 of
+; flat past the zone, lies over the base from 47.17257 back to 35.17257,
+; its inside face 2r above the base's top, z 4 to 6.
+(def hem (sheet (polygon (vec (vec 0 0) (vec 64.82743 0) (vec 64.82743 30) (vec 0 30))) (vec) th k
+                (vec (sheet-bend (vec 50 30) (vec 50 0) 180 1))))
+(def hb (sheet-folded hem))
+(body hemmed (shape hb))
+(assert hem-gap (disjoint hb (probe 40 15 3)))
+(assert hem-under-in (subset (probe 40 15 4.01) hb))
+(assert hem-under-out (disjoint hb (probe 40 15 3.99)))
+(assert hem-top-in (subset (probe 40 15 5.99) hb))
+(assert hem-top-out (disjoint hb (probe 40 15 6.01)))
+(assert hem-end-in (subset (probe 35.18 15 5) hb))
+(assert hem-end-out (disjoint hb (probe 35.16 15 5)))
+(assert hem-fold-in (subset (probe 50.16 15 3) hb))
+(assert hem-fold-out (disjoint hb (probe 50.18 15 3)))
+(assert hem-flanges (empty (sheet-short-flanges hem 4)))
+(assert hem-collisions (empty (sheet-collisions hem)))
 
 ; Controls, each failing its rule: a flange 2.8 past its zone (4 th from
 ; the mold line needs 8 - 4 = 4); a hole 5 from the bend line (2.5 th + r

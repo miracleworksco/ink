@@ -26,9 +26,9 @@ pub use crate::records::{Records, to_compact, to_pretty};
 pub struct Command {
     pub name: &'static str,
     /// The options it reads besides those every command on a file reads
-    /// (`--param`, `--t`, `--nominal`, `--compact`): any other is refused
-    /// before it runs.
-    pub options: &'static [&'static str],
+    /// (`--param`, `--t`, `--nominal`, `--compact`: they write nothing),
+    /// each with what it writes: any other is refused before it runs.
+    pub options: &'static [Opt],
     /// What `ink help` says of it: a line of what it does, and lines of its
     /// options (each indented 16 spaces).
     pub help: &'static str,
@@ -37,6 +37,40 @@ pub struct Command {
     pub tool: &'static str,
     /// What it runs on, and how: its answer.
     pub run: Run,
+}
+
+/// An option a command reads, and the file it has the command write
+/// besides its answer (which decides the MCP tool a call is served by).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Opt {
+    pub name: &'static str,
+    pub writes: Writes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Writes {
+    /// None.
+    No,
+    /// The file it names, when given.
+    File,
+    /// The file it names, else one of the command's own: the command
+    /// writes a file either way.
+    FileOrOwn,
+}
+
+impl Opt {
+    /// An option that writes nothing.
+    pub const fn reads(name: &'static str) -> Opt {
+        Opt { name, writes: Writes::No }
+    }
+    /// One naming a file it writes, when given.
+    pub const fn writes(name: &'static str) -> Opt {
+        Opt { name, writes: Writes::File }
+    }
+    /// One naming the file it writes, else the command writes its own.
+    pub const fn writes_or_own(name: &'static str) -> Opt {
+        Opt { name, writes: Writes::FileOrOwn }
+    }
 }
 
 /// What a command runs on.
@@ -71,6 +105,11 @@ impl Args {
         let mut opts: HashMap<String, Vec<String>> = HashMap::new();
         let mut i = 0;
         while i < v.len() {
+            // After `--`, every word is positional.
+            if v[i] == "--" {
+                pos.extend(v[i + 1..].iter().cloned());
+                break;
+            }
             if let Some(k) = v[i].strip_prefix("--") {
                 let (k, val) = match k.split_once('=') {
                     Some((k, val)) => (k.to_string(), val.to_string()),
@@ -195,20 +234,55 @@ pub fn param_word(w: &str) -> bool {
 
 /// --param values: name=v sets a value (a declared tolerance band follows
 /// it); name=lo:hi a range (the value at its middle), which assert and
-/// interfere prove over; name=v:v pins a value (no band).
+/// interfere prove over; name=v:v pins a value (no band). A text param
+/// takes the text as written (name=Grace); written as a JSON string
+/// (name="Smith, Ada"), it may hold commas, colons and escapes.
 pub struct ParamArgs {
     /// Each value, with the unit it was given in (d=0.25in), if any: a
-    /// load reads the param as said in it (crate::Given).
+    /// load reads the param as said in it (crate::Given), and the text it
+    /// was written as, which a text param takes.
     pub values: Vec<(String, crate::Given)>,
     pub ranges: Vec<(String, (f64, f64))>,
     pub pinned: Vec<String>,
+}
+
+/// The `name=value` specs of `--param` options: each option split at
+/// commas outside a quoted text ("...", escapes as JSON's).
+fn param_specs(raw: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted, mut escaped) = (Vec::new(), String::new(), false, false);
+    for c in raw.chars() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                out.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    out.push(cur);
+    out
+}
+
+/// Why `--param k=v`, text no number param takes, is no number or range:
+/// what a number param given it says.
+pub fn not_a_number(k: &str, v: &str) -> String {
+    let num = |v: &str| crate::sexp::number(v.trim()).map(|_| ());
+    let e = match v.split_once(':') {
+        Some((lo, hi)) => num(lo).and_then(|_| num(hi)).err(),
+        None => num(v).err(),
+    };
+    format!("--param {k}: {}", e.unwrap_or_else(|| format!("'{v}' is no number")))
 }
 
 pub fn param_args(a: &Args) -> Result<ParamArgs, InkError> {
     let mut p = ParamArgs { values: Vec::new(), ranges: Vec::new(), pinned: Vec::new() };
     // A value may say its unit (d=0.25in), read in the language's.
     let num = |k: &str, v: &str| crate::sexp::number(v.trim()).map_err(|e| InkError::msg(format!("--param {k}: {e}")));
-    for spec in a.opts.get("param").into_iter().flatten().flat_map(|s| s.split(',')) {
+    for spec in a.opts.get("param").into_iter().flatten().flat_map(|s| param_specs(s)) {
         let (k, v) = spec.split_once('=').ok_or_else(|| InkError::msg(format!("--param expects name=value or name=lo:hi, got '{spec}'")))?;
         let k = k.trim().to_string();
         // One meaning per name: given twice, which one a command used would
@@ -216,13 +290,23 @@ pub fn param_args(a: &Args) -> Result<ParamArgs, InkError> {
         if p.values.iter().any(|(n, _)| *n == k) {
             return Err(InkError::msg(format!("--param {k} is given twice: give each param one value (name=v), range (name=lo:hi) or pin (name=v:v)")));
         }
-        match v.split_once(':') {
-            None => {
-                let (value, unit) = num(&k, v)?;
-                p.values.push((k.clone(), crate::Given { value, unit }));
-            }
-            Some((lo, hi)) => {
-                let ((lo, ul), (hi, uh)) = (num(&k, lo)?, num(&k, hi)?);
+        // Quoted: text, whole.
+        if v.trim_start().starts_with('"') {
+            let t: String =
+                serde_json::from_str(v.trim()).map_err(|e| InkError::msg(format!("--param {k}: a quoted text is a JSON string, \"...\" with escapes as JSON's ({e}), got {v}")))?;
+            p.values.push((k, crate::Given::text(&t)));
+            continue;
+        }
+        let text = Some(std::sync::Arc::<str>::from(v));
+        let range = v.split_once(':').map(|(lo, hi)| (num(&k, lo), num(&k, hi)));
+        match range {
+            None | Some((Err(_), _) | (_, Err(_))) => match num(&k, v) {
+                Ok((value, unit)) => p.values.push((k.clone(), crate::Given { value, unit, text, case: None })),
+                // No number: text, refused by a number param with this
+                // error (Doc's param form).
+                Err(_) => p.values.push((k.clone(), crate::Given { value: f64::NAN, unit: None, text, case: None })),
+            },
+            Some((Ok((lo, ul)), Ok((hi, uh)))) => {
                 // A range's ends are one quantity, said as a sum's terms are
                 // (units::kept).
                 let unit = match (ul, uh) {
@@ -232,7 +316,7 @@ pub fn param_args(a: &Args) -> Result<ParamArgs, InkError> {
                 if !(lo <= hi && lo.is_finite() && hi.is_finite()) {
                     return Err(InkError::msg(format!("--param {k}={lo}:{hi}: a range needs finite lo <= hi")));
                 }
-                p.values.push((k.clone(), crate::Given { value: ink_core::eval::span_mid((lo, hi)), unit }));
+                p.values.push((k.clone(), crate::Given { value: ink_core::eval::span_mid((lo, hi)), unit, text: None, case: None }));
                 if lo == hi {
                     p.pinned.push(k);
                 } else {

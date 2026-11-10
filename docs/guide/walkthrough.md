@@ -389,9 +389,7 @@ The agent writes the shop's rules as claims:
 (def part (shape-of bracket))
 (def stock (move (box 90 20 (+ bore-z 12)) 0 0 (/ (+ bore-z 12) 2)))   ; the bar it's cut from: the base's outline, the lug's height
 (def air (clear-air part stock 0.5))              ; what the mill removes: the bar's air, 0.5 clear of the part
-(def through-lug (move (cylinder-y 5 6) 0 0 bore-z))   ; round the bore, through the lug
-(assert top-reaches (empty (hidden part stock (max air (neg through-lug)) (vec (vec 0 0 1)))))   ; setup 1, from the top: all but the bore
-(assert side-reaches (empty (hidden part stock (max air through-lug) (vec (vec 0 1 0)))))        ; setup 2, on its side: the bore
+(assert setups-reach (empty (hidden part stock air (vec (vec 0 0 1) (vec 0 1 0)))))   ; setup 1 from the top, setup 2 on its side
 (assert walls (min-thickness part > 0.8))         ; no wall under 0.8 mm
 (assert holes (min-thickness (air-around part 10) > 2.5))   ; no hole or gap under 2.5 mm across
 ```
@@ -403,8 +401,7 @@ ink assert make.ink --own
 
 ```json
 {"ok": true, "all_hold": true, "all_hold_guaranteed": false,
- "asserts": [{"name": "top-reaches", "status": "holds", "accuracy": 0.05},
-             {"name": "side-reaches", "status": "holds", "accuracy": 0.05},
+ "asserts": [{"name": "setups-reach", "status": "holds", "accuracy": 0.05},
              {"name": "walls", "status": "holds", "accuracy": null, "value": 5},
              {"name": "holes", "status": "holds", "accuracy": null, "value": 5.5}]}
 ```

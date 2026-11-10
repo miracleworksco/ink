@@ -8,8 +8,7 @@ use ink_core::graph::{Var, wild};
 use ink_core::interval::I;
 use ink_core::tape::Tape;
 
-/// The farthest coordinate (mm): 1,000 km.
-const REACH: f64 = 1e9;
+use ink_kernel::query::REACH;
 /// The finest length asked (mm), and the finest relative to the farthest
 /// coordinate: a nanometre, a micrometre at 1 km, a millimetre at 1,000 km.
 const FINEST: f64 = 1e-6;

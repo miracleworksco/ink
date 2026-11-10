@@ -50,18 +50,16 @@ fn least(p: V3) -> f64 {
     1e-9 * p.iter().fold(1.0f64, |m, x| m.max(x.abs()))
 }
 
-/// How many times `undecided` halves the cube about a sample on 0 looking
-/// for air.
+/// How many times a sample on 0's cube is halved looking for air.
 const AIR_DEPTH: u32 = 2;
 
 /// Whether some part of box b (halved up to `depth` times) holds no point
-/// inside: air there, shown by bounds.
+/// inside: air there, shown by bounds (`air`).
 fn air_in(tape: &Tape, ctx: &Ctx, b: [I; 3], depth: u32) -> bool {
-    let r = crate::eval::eval_interval(tape, ctx, b, None);
-    if r.none_inside() {
+    if air(tape, ctx, b) {
         return true;
     }
-    if r.all_inside() || depth == 0 {
+    if depth == 0 || crate::eval::eval_interval(tape, ctx, b, None).all_inside() {
         return false;
     }
     (0..8).any(|o| air_in(tape, ctx, halves(b, o), depth - 1))
@@ -72,27 +70,33 @@ fn halves(b: [I; 3], o: usize) -> [I; 3] {
     std::array::from_fn(|k| if o >> k & 1 == 0 { I::new(b[k].lo, b[k].mid()) } else { I::new(b[k].mid(), b[k].hi) })
 }
 
-/// The samples on 0 (`vals`, the field at `pts`) that nothing near them
-/// decides. A sample on 0 is not inside, whatever is round it: drawn as
-/// air, never filled. Neither bounds nor samples can show that a 0 has no
-/// thickness (faces meeting flush, or air the field reads as 0 however
-/// thin, read alike), so none is read as material. It is decided where a
-/// few billionths of its size away the field shows air beside it: a
+/// The value a sample on 0 is drawn with where it is material (`drawn`):
+/// the least below 0.
+pub const SOLID: f64 = -f64::MIN_POSITIVE;
+
+/// Samples on 0 (`vals`, the field at `pts`) as drawn, and those nothing
+/// near decides, returned for the caller to report. A sample on 0 is not
+/// inside; a surface is where the field changes sign, so where the 0 is
+/// one the field keeps one sign around it is none. Each is read a few
+/// billionths of its size about it, the finest length ink speaks of: a
 /// surface crossing it (a point inside one way along the field's slope and
 /// one not the other, each decided by its own value), or a part of the
-/// cube about it with no point inside by bounds (halved twice: air read as
-/// 0). Else it is returned, for the caller to report: a wall may be drawn
-/// there where pieces meet flush. `within`: the box `tape` holds over (a
+/// cube about it with no point inside by bounds (`air`, halved twice: air
+/// read as 0), leave it air; the cube solid by bounds (`solid`: inside but
+/// on a 0 of no volume, pieces meeting flush) draws it as material (its
+/// value set to SOLID). Else it is drawn as air and returned: neither
+/// samples nor bounds show which. `within`: the box `tape` holds over (a
 /// brick's simplified tape) and the whole field: a side sample past the
 /// box is read by the whole field, the cube clipped to the box.
-pub fn undecided(tape: &Tape, ctx: &Ctx, pts: &[V3], vals: &[f64], within: Option<([I; 3], &Tape)>) -> Vec<V3> {
-    let zeros: Vec<V3> = pts.iter().zip(vals).filter(|(_, v)| **v == 0.0).map(|(p, _)| *p).collect();
+pub fn drawn(tape: &Tape, ctx: &Ctx, pts: &[V3], vals: &mut [f64], within: Option<([I; 3], &Tape)>) -> Vec<V3> {
+    let zeros: Vec<usize> = (0..vals.len()).filter(|&i| vals[i] == 0.0).collect();
     if zeros.is_empty() {
         return Vec::new();
     }
-    let grads = crate::eval::eval_grads(tape, ctx, &zeros);
+    let at: Vec<V3> = zeros.iter().map(|&i| pts[i]).collect();
+    let grads = crate::eval::eval_grads(tape, ctx, &at);
     let mut sides = Vec::with_capacity(2 * zeros.len());
-    for (p, g) in zeros.iter().zip(&grads) {
+    for (p, g) in at.iter().zip(&grads) {
         let n = (g[1] * g[1] + g[2] * g[2] + g[3] * g[3]).sqrt();
         let d = 4.0 * least(*p) / if n > 0.0 && n.is_finite() { n } else { f64::INFINITY };
         sides.extend([-d, d].map(|t| -> V3 { std::array::from_fn(|k| p[k] + t * g[k + 1]) }));
@@ -108,8 +112,8 @@ pub fn undecided(tape: &Tape, ctx: &Ctx, pts: &[V3], vals: &[f64], within: Optio
         }
     }
     let mut open = Vec::new();
-    for (i, p) in zeros.iter().enumerate() {
-        if inside(sv[2 * i]) != inside(sv[2 * i + 1]) {
+    for (z, (&i, p)) in zeros.iter().zip(&at).enumerate() {
+        if inside(sv[2 * z]) != inside(sv[2 * z + 1]) {
             continue;
         }
         let near = 4.0 * least(*p);
@@ -117,89 +121,127 @@ pub fn undecided(tape: &Tape, ctx: &Ctx, pts: &[V3], vals: &[f64], within: Optio
         if let Some((w, _)) = within {
             cube = std::array::from_fn(|k| I::new(cube[k].lo.max(w[k].lo), cube[k].hi.min(w[k].hi)));
         }
-        if !(cube.iter().all(|x| x.lo <= x.hi) && air_in(tape, ctx, cube, AIR_DEPTH)) {
+        if !cube.iter().all(|x| x.lo <= x.hi) {
+            open.push(*p);
+        } else if solid(tape, ctx, cube) {
+            vals[i] = SOLID;
+        } else if !air_in(tape, ctx, cube, AIR_DEPTH) {
             open.push(*p);
         }
     }
     open
 }
 
-/// Where a tape's value may be split by sign: a coordinate less a
-/// constant (a plane square to an axis: the box is cut there), and a value
-/// it reads more than once (pieces meeting on a curved face each read it:
-/// its sign is fixed for every read). Coordinates and constants aside.
-enum Cut {
-    Plane(usize, f64),
-    Value,
+/// Whether bounds show every point of box b inside, or inside but on a 0
+/// of no volume (pieces meeting flush: the field at most 0 throughout, by
+/// `holds_by_cuts`, and its 0 holding no ball, Tape::zeros_thin): no
+/// surface meets the box, since a surface needs air beside material, and
+/// there the material is dense. Drawn, it is material throughout.
+pub fn solid(tape: &Tape, ctx: &Ctx, b: [I; 3]) -> bool {
+    let r = crate::eval::eval_interval(tape, ctx, b, None);
+    r.all_inside() || r.may_be_inside() && holds_by_cuts(tape, ctx, b, &|r: I| r.hi <= 0.0) && tape.zeros_thin(&crate::eval::eval_interval_grad_every(tape, ctx, b))
 }
 
-fn cuts(tape: &Tape) -> Vec<(usize, Cut)> {
-    let mut writer = vec![usize::MAX; tape.nslots];
-    let mut reads = vec![0usize; tape.code.len()];
-    let mut out = Vec::new();
-    let axis = |op: &Op| match op {
+/// Whether bounds show no point of box b inside, by `holds_by_cuts`: a 0
+/// between pieces that meet flush in air (a cut ending flush with a face)
+/// is decided across it.
+pub fn air(tape: &Tape, ctx: &Ctx, b: [I; 3]) -> bool {
+    holds_by_cuts(tape, ctx, b, &|r: I| r.none_inside())
+}
+
+/// Where pieces of a tape may meet flush, as the levels a value is split
+/// at: (instruction, c), a value the tape reads more than once (or a
+/// coordinate) and a constant it is compared with, v - c (c - v, v + -c),
+/// or |v - c1| - c2 (a slab, as std's box writes its faces: c1 +- c2 where
+/// that sum is exact), or 0 (pieces meeting on a face each read it). An
+/// instruction is the same in the SSA form and the slot code.
+pub fn levels(tape: &Tape) -> &[(u32, f64)] {
+    tape.levels.get_or_init(|| {
+        use crate::graph::{BinOp, UnOp, Var};
+        let ssa = &tape.ssa;
+        let mut reads = vec![0usize; ssa.len()];
+        let constant = |j: u32| match ssa[j as usize].op {
+            Op::Const(c) => Some(c),
+            _ => None,
+        };
+        let mut found: Vec<(u32, f64)> = Vec::new();
+        for (i, ins) in ssa.iter().enumerate() {
+            let (args, n) = Tape::reads(ssa, i);
+            for &x in &args[..n] {
+                reads[x as usize] += 1;
+            }
+            match ins.op {
+                Op::Bin(BinOp::Sub) => {
+                    if let Some(c) = constant(ins.b) {
+                        found.push((ins.a, c));
+                        // |v - c1| - c2.
+                        let abs = &ssa[ins.a as usize];
+                        if let Op::Un(UnOp::Abs) = abs.op
+                            && let inner = &ssa[abs.a as usize]
+                            && let (Op::Bin(BinOp::Sub), Some(c1)) = (inner.op, constant(inner.b))
+                        {
+                            for at in [c1 - c, c1 + c] {
+                                // Exact: the face is that float.
+                                if (at - c1).abs() == c.abs() {
+                                    found.push((inner.a, at));
+                                }
+                            }
+                        }
+                    } else if let Some(c) = constant(ins.a) {
+                        found.push((ins.b, c));
+                    }
+                }
+                Op::Bin(BinOp::Add) => {
+                    for (v, k) in [(ins.a, ins.b), (ins.b, ins.a)] {
+                        if let Some(c) = constant(k) {
+                            found.push((v, -c));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let shared = |i: usize| match ssa[i].op {
+            Op::Var(Var::X | Var::Y | Var::Z) => true,
+            Op::Const(_) | Op::Var(_) => false,
+            _ => reads[i] >= 2,
+        };
+        found.extend((0..ssa.len()).filter(|&i| shared(i)).map(|i| (i as u32, 0.0)));
+        let mut out: Vec<(u32, f64)> = Vec::new();
+        for (i, c) in found {
+            if shared(i as usize) && c.is_finite() && !out.contains(&(i, c)) {
+                out.push((i, c));
+            }
+        }
+        out
+    })
+}
+
+/// The axis of a coordinate instruction `i` reads.
+pub fn axis(tape: &Tape, i: usize) -> Option<usize> {
+    match tape.ssa[i].op {
         Op::Var(crate::graph::Var::X) => Some(0),
         Op::Var(crate::graph::Var::Y) => Some(1),
         Op::Var(crate::graph::Var::Z) => Some(2),
         _ => None,
-    };
-    for (i, ins) in tape.code.iter().enumerate() {
-        let (args, n) = ins.args();
-        for &a in &args[..n] {
-            let w = writer[a as usize];
-            if w != usize::MAX {
-                reads[w] += 1;
-            }
-        }
-        // v - c (or c - v), and |v - c1| - c2 (a slab, as std's box writes
-        // its faces): planes v = c, v = c1 +- c2 where that sum is exact.
-        if let Op::Bin(crate::graph::BinOp::Sub) = ins.op {
-            let (wa, wb) = (writer[ins.a as usize], writer[ins.b as usize]);
-            if wa != usize::MAX && wb != usize::MAX {
-                let (oa, ob) = (&tape.code[wa].op, &tape.code[wb].op);
-                match (axis(oa), ob, axis(ob), oa) {
-                    (Some(k), Op::Const(c), _, _) | (_, _, Some(k), Op::Const(c)) => out.push((i, Cut::Plane(k, *c))),
-                    _ => {}
-                }
-                if let (Op::Un(crate::graph::UnOp::Abs), Op::Const(c2)) = (oa, ob) {
-                    let inner = writer[tape.code[wa].a as usize];
-                    if inner != usize::MAX && matches!(tape.code[inner].op, Op::Bin(crate::graph::BinOp::Sub)) {
-                        let (wv, wc) = (writer[tape.code[inner].a as usize], writer[tape.code[inner].b as usize]);
-                        if wv != usize::MAX
-                            && wc != usize::MAX
-                            && let (Some(k), Op::Const(c1)) = (axis(&tape.code[wv].op), &tape.code[wc].op)
-                        {
-                            for at in [c1 - c2, c1 + c2] {
-                                // Exact: the face is that float.
-                                if (at - c1).abs() == c2.abs() {
-                                    out.push((i, Cut::Plane(k, at)));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        writer[ins.out as usize] = i;
     }
-    let planes: Vec<usize> = out.iter().map(|c| c.0).collect();
-    out.extend((0..tape.code.len()).filter(|&i| reads[i] >= 2 && !planes.contains(&i) && !matches!(tape.code[i].op, Op::Const(_) | Op::Var(_))).map(|i| (i, Cut::Value)));
-    out
 }
 
+/// How many times a box is split where pieces meet (`holds_by_cuts`).
+pub const SPLITS: usize = 3;
+
 /// Whether `test` holds of the tape's bounds over every point of box b,
-/// shown by bounds over the box, else over parts of it split where a plane
-/// square to an axis crosses it (the box cut there) or where a value it
-/// reads more than once changes sign (each part bounded with that value's
-/// sign known wherever it is read, `eval_interval_clamped`), up to SPLITS
-/// deep. Where pieces meet on a face, or a cut ends flush with one, the
-/// field is exactly 0 across it, and the bounds of the box alone (each read
-/// taken apart) can never show which side of 0 it keeps; split by the face,
-/// each part is within one piece or the other.
+/// shown by bounds over the box, else over parts of it split where a value
+/// that pieces each read crosses a level (`levels`): each part bounded with
+/// that value on one side of it wherever it is read (a coordinate's: the
+/// box cut there; else `eval_interval_clamped`), up to SPLITS deep. Where
+/// pieces meet on a face, or a cut ends flush with one, the field is
+/// exactly 0 across it, and the bounds of the box alone (each read taken
+/// apart) can never show which side of 0 it keeps; split by the face, each
+/// part is within one piece or the other.
 pub fn holds_by_cuts(tape: &Tape, ctx: &Ctx, b: [I; 3], test: &dyn Fn(I) -> bool) -> bool {
-    const SPLITS: usize = 3;
     #[allow(clippy::too_many_arguments)]
-    fn all(tape: &Tape, ctx: &Ctx, b: [I; 3], cs: &[(usize, Cut)], clamps: &mut Vec<(usize, I)>, depth: usize, test: &dyn Fn(I) -> bool, vals: &mut Vec<I>) -> bool {
+    fn all(tape: &Tape, ctx: &Ctx, b: [I; 3], ls: &[(u32, f64)], clamps: &mut Vec<(usize, I)>, depth: usize, test: &dyn Fn(I) -> bool, vals: &mut Vec<I>) -> bool {
         let Some(r) = crate::eval::eval_interval_clamped(tape, ctx, b, clamps, vals) else { return true };
         if test(r) {
             return true;
@@ -207,24 +249,20 @@ pub fn holds_by_cuts(tape: &Tape, ctx: &Ctx, b: [I; 3], test: &dyn Fn(I) -> bool
         if depth == SPLITS {
             return false;
         }
-        let straddles = |i: usize, vals: &[I]| vals[i].lo < 0.0 && vals[i].hi > 0.0;
-        let Some((i, cut)) =
-            cs.iter().find(|(i, c)| straddles(*i, vals) && !clamps.iter().any(|k| k.0 == *i) && !matches!(c, Cut::Plane(k, at) if !(b[*k].lo < *at && *at < b[*k].hi)))
-        else {
-            return false;
-        };
-        match *cut {
-            Cut::Plane(k, at) => {
+        let Some(&(i, c)) = ls.iter().find(|&&(i, c)| vals[i as usize].lo < c && c < vals[i as usize].hi) else { return false };
+        let i = i as usize;
+        match axis(tape, i) {
+            Some(k) => {
                 let (mut lo, mut hi) = (b, b);
-                lo[k] = I::new(b[k].lo, at);
-                hi[k] = I::new(at, b[k].hi);
-                all(tape, ctx, lo, cs, clamps, depth + 1, test, vals) && all(tape, ctx, hi, cs, clamps, depth + 1, test, vals)
+                lo[k] = I::new(b[k].lo, c);
+                hi[k] = I::new(c, b[k].hi);
+                all(tape, ctx, lo, ls, clamps, depth + 1, test, vals) && all(tape, ctx, hi, ls, clamps, depth + 1, test, vals)
             }
-            Cut::Value => {
-                let v = vals[*i];
-                for part in [I { lo: v.lo, hi: 0.0 }, I { lo: 0.0, hi: v.hi }] {
-                    clamps.push((*i, part));
-                    let ok = all(tape, ctx, b, cs, clamps, depth + 1, test, vals);
+            None => {
+                let v = vals[i];
+                for part in [I { lo: v.lo, hi: c }, I { lo: c, hi: v.hi }] {
+                    clamps.push((i, part));
+                    let ok = all(tape, ctx, b, ls, clamps, depth + 1, test, vals);
                     clamps.pop();
                     if !ok {
                         return false;
@@ -238,26 +276,26 @@ pub fn holds_by_cuts(tape: &Tape, ctx: &Ctx, b: [I; 3], test: &dyn Fn(I) -> bool
     if test(crate::eval::eval_interval_clamped(tape, ctx, b, &[], &mut vals).unwrap_or(I::point(0.0))) {
         return true;
     }
-    let cs = cuts(tape);
-    !cs.is_empty() && all(tape, ctx, b, &cs, &mut Vec::new(), 0, test, &mut vals)
+    let ls = levels(tape);
+    !ls.is_empty() && all(tape, ctx, b, ls, &mut Vec::new(), 0, test, &mut vals)
 }
 
 /// Where a surface crosses the line through `p` along unit `n` within
 /// `tol` of p: a point inside and one not, either side of it, `tol` or
 /// less apart, found from pairs at distances from `d` down to a billionth
 /// of p's size, each pair read as samples that far apart
-/// (`undecided`) and halved toward its crossing. None where the only
+/// (`drawn`) and halved toward its crossing. None where the only
 /// crossings are farther than `tol` (a 0 with one sign round it, a real
 /// surface beside it, is no surface).
 pub fn crossing(tape: &Tape, ctx: &Ctx, p: V3, n: V3, d: f64, tol: f64) -> Option<V3> {
     let at = |t: f64| -> V3 { std::array::from_fn(|k| p[k] + t * n[k]) };
-    // A side's membership; None where a sample on 0 there is undecided
-    // (`undecided`): no crossing is shown across it.
+    // A side's membership as drawn; None where a sample on 0 there is
+    // undecided (`drawn`): no crossing is shown across it.
     let side = |t: f64| {
         let q = at(t);
         let mut v = Vec::new();
         eval_points(tape, ctx, &[q], &mut v);
-        undecided(tape, ctx, &[q], &v, None).is_empty().then(|| inside(v[0]))
+        drawn(tape, ctx, &[q], &mut v, None).is_empty().then(|| inside(v[0]))
     };
     let least = least(p);
     let mut s = d;
@@ -300,9 +338,9 @@ mod tests {
     use crate::graph::{Graph, UnOp, Var};
 
     #[test]
-    fn a_0_is_never_material_and_is_decided_only_beside_air() {
-        // 0 on x = 0 inside the material: undecided; in a slit 1.5 wide
-        // read as 0: air, decided.
+    fn a_0_inside_the_material_is_drawn_as_material_and_one_beside_air_as_air() {
+        // -|x|: 0 on x = 0 inside the material, of no volume; a slit 1.5
+        // wide read as 0: air.
         let mut g = Graph::new();
         let x = g.var(Var::X);
         let ax = g.un(UnOp::Abs, x);
@@ -312,10 +350,39 @@ mod tests {
         let zero = g.constant(0.0);
         let slit = g.min(zero, cut);
         let ctx = Ctx::new(0.0, vec![]);
-        for (f, decided) in [(nax, false), (slit, true)] {
+        for (f, drawn_as) in [(nax, SOLID), (slit, 0.0)] {
             let t = Tape::new(&g, f);
-            assert_eq!(undecided(&t, &ctx, &[[0.0; 3]], &[0.0], None).is_empty(), decided);
+            let mut v = [0.0];
+            assert!(drawn(&t, &ctx, &[[0.0; 3]], &mut v, None).is_empty());
+            assert_eq!(v[0], drawn_as);
         }
+    }
+
+    #[test]
+    fn faces_meeting_flush_are_cut_where_they_meet_off_the_axes() {
+        // A slab and a hole that ends flush with its face, both read along
+        // u = (x + y) / sqrt 2: 0 across the mouth, air either side; the
+        // halves of a slab meeting flush on u = 1: 0 inside the material.
+        let mut g = Graph::new();
+        let (x, y) = (g.var(Var::X), g.var(Var::Y));
+        let s = g.add(x, y);
+        let k = g.constant(std::f64::consts::FRAC_1_SQRT_2);
+        let u = g.mul(s, k);
+        let (one, two) = (g.constant(1.0), g.constant(2.0));
+        let slab = g.sub(u, one);
+        let hole = g.sub(one, u);
+        let mouth = g.max(slab, hole);
+        let (below, above) = (g.sub(u, one), g.sub(u, two));
+        let above = g.max(above, hole);
+        let joined = g.min(below, above);
+        let ctx = Ctx::new(0.0, vec![]);
+        let at = std::f64::consts::FRAC_1_SQRT_2;
+        let b = [I::new(at - 0.1, at + 0.1), I::new(at - 0.1, at + 0.1), I::new(-1.0, 1.0)];
+        let (m, j) = (Tape::new(&g, mouth), Tape::new(&g, joined));
+        assert!(!crate::eval::eval_interval(&m, &ctx, b, None).none_inside(), "the box alone leaves it open");
+        assert!(air(&m, &ctx, b));
+        assert!(!crate::eval::eval_interval(&j, &ctx, b, None).all_inside());
+        assert!(solid(&j, &ctx, b));
     }
 
     #[test]

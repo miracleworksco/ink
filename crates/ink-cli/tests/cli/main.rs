@@ -20,3 +20,4 @@ mod mcp;
 mod models;
 mod motion;
 mod range;
+mod text;

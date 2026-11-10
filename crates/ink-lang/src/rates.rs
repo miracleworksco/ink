@@ -255,7 +255,7 @@ impl Doc {
         let mut owns = Vec::new();
         for &x in &s.owns {
             owns.push(self.params.len());
-            self.params.push(Param { name: format!("(diff {} {along})", self.params[x].name), default: 0.0, tol: None });
+            self.add_param(Param { name: format!("(diff {} {along})", self.params[x].name), default: 0.0, tol: None });
             let y = self.g.var(Var::Param(owns[owns.len() - 1] as u32));
             self.rates_of.insert((x, var), Some(y));
         }

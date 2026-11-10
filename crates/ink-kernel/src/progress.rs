@@ -12,19 +12,20 @@
 /// `step_over`: how many params it steps, the boxes checked of the most it
 /// may make, the share of their box proven), `{"done": name, "status": s, "ms": t,
 /// "row": r}` as one is decided (`row`: its row of the answer, where the
-/// caller gives one), and `{"answer": {...}}`, the answer's other
+/// caller gives one; a claim asked again at a param's declared case says
+/// it, `case`, and a total after the first counts every case),
+/// `{"loaded": what, "ms": t}` as something counted with none finishes
+/// (a model loaded again at a combination of cases, `{"load": {param:
+/// {"case": k}}}`, running as it loads, its `values` the cases took), and `{"answer": {...}}`, the answer's other
 /// fields (its units, scope, method). `ink interfere` reports its pairs and
 /// a package's command its items so (an optimizer its designs). Each line
 /// says when it was written (`at`, Unix seconds): a caller that stops the
-/// run knows how long the one running had run.
+/// run knows how long the one running had run. `ink assert` says first
+/// what each claim is estimated to cost, `{"estimates": {name: cost}}`
+/// (ink::cost), so a run stopped says which were the costly ones.
 pub fn progress(mut line: serde_json::Value) {
     use std::io::Write;
-    static SINK: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
-    let sink = SINK.get_or_init(|| {
-        let path = std::env::var_os("INK_PROGRESS")?;
-        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(std::sync::Mutex::new)
-    });
-    if let Some(f) = sink
+    if let Some(f) = sink()
         && let Ok(mut f) = f.lock()
     {
         if let (Some(o), Ok(now)) = (line.as_object_mut(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)) {
@@ -34,4 +35,20 @@ pub fn progress(mut line: serde_json::Value) {
         // `writeln!` on a File writes each formatted piece on its own.
         let _ = f.write_all(format!("{line}\n").as_bytes());
     }
+}
+
+type Sink = Option<std::sync::Mutex<std::fs::File>>;
+
+fn sink() -> &'static Sink {
+    static SINK: std::sync::OnceLock<Sink> = std::sync::OnceLock::new();
+    SINK.get_or_init(|| {
+        let path = std::env::var_os("INK_PROGRESS")?;
+        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(std::sync::Mutex::new)
+    })
+}
+
+/// Progress is reported (`INK_PROGRESS` names a file): what only a
+/// caller that may stop the run reads is worth working out.
+pub fn reporting() -> bool {
+    sink().is_some()
 }

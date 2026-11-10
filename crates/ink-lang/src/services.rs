@@ -10,6 +10,44 @@ const SIGNED: &str = "the distance to the mesh's triangles, negative inside the 
     signed distance unless triangles overlap in one plane (as where touching bodies share a face: parity cancels them, the distance still counts \
     them); sampled in floating point, with no error bound: measured_error is the deviation measured";
 
+/// A sampled grid as cached: its points, values and what is known of its
+/// source.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Snap {
+    origin: V3,
+    h: f64,
+    dims: [usize; 3],
+    values: Vec<f32>,
+    band: Option<(f64, Option<f64>)>,
+    measured: Option<(f64, usize)>,
+    note: Option<String>,
+    /// The box a region import is cut to (sampled_grid).
+    cut: Option<(V3, V3)>,
+    /// A mesh that bounds no solid (said at load).
+    open: bool,
+}
+
+/// The grids this process has sampled or read, by key (Doc::grid_key), up
+/// to KEPT_BYTES of values: a load again (at a case) or a form asking for
+/// one again (a letter met twice) takes it here, the disk cache on or off.
+static KEPT: std::sync::Mutex<(usize, Vec<(u128, std::sync::Arc<Snap>)>)> = std::sync::Mutex::new((0, Vec::new()));
+const KEPT_BYTES: usize = 1 << 29;
+
+impl Snap {
+    fn kept(key: u128) -> Option<Snap> {
+        KEPT.lock().unwrap().1.iter().find(|k| k.0 == key).map(|k| (*k.1).clone())
+    }
+
+    fn keep(key: u128, s: &Snap) {
+        let mut kept = KEPT.lock().unwrap();
+        let bytes = 4 * s.values.len();
+        if kept.0 + bytes <= KEPT_BYTES && !kept.1.iter().any(|k| k.0 == key) {
+            kept.0 += bytes;
+            kept.1.push((key, std::sync::Arc::new(s.clone())));
+        }
+    }
+}
+
 impl Doc {
     /// The names (tag ids) body `body` (its shape `shape`) is built from,
     /// each of which should form some of its surface (a name
@@ -150,20 +188,6 @@ impl Doc {
         // Sampled grids are cached on disk, so every command that loads the
         // file does not redo them; with what is known of their source.
         let key = self.grid_key(name, res, region, field, &stl, &ctx.params, &inner);
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct Snap {
-            origin: V3,
-            h: f64,
-            dims: [usize; 3],
-            values: Vec<f32>,
-            band: Option<(f64, Option<f64>)>,
-            measured: Option<(f64, usize)>,
-            note: Option<String>,
-            /// The box a region import is cut to (see below).
-            cut: Option<(V3, V3)>,
-            /// A mesh that bounds no solid (said at load).
-            open: bool,
-        }
         let finish = |d: &mut Doc, c: Snap| -> Value {
             // The res asked, under the grid's floor (step), was coarsened.
             if let Some(r) = res.filter(|&r| c.h > r) {
@@ -207,8 +231,9 @@ impl Doc {
             }
             Value::Field(f, None)
         };
-        if let Some(c) = crate::cache::load::<Snap>("grids", key) {
+        if let Some(c) = Snap::kept(key).or_else(|| crate::cache::load::<Snap>("grids", key)) {
             crate::cache::served();
+            Snap::keep(key, &c);
             return Ok(finish(self, c));
         }
         // Sampling a field needs it bounded (clip_bounded), and a grid of
@@ -242,12 +267,12 @@ impl Doc {
             // Mesh twice as fine as the grid, so the surface is
             // captured well below the grid's own interpolation error.
             let hm = 0.5 * step(ext);
-            let m = crate::mesh::mesh(&tape, &ctx, lo, hi, hm);
+            let m = crate::mesh::mesh_in_time(&tape, &ctx, lo, hi, hm).ok_or_else(|| self.stopped(e))?;
             if m.tris.is_empty() {
                 return Err(self.err(e, "redistance: the field has no surface"));
             }
             let tris: Vec<[V3; 3]> = m.tris.iter().map(|t| t.map(|i| m.verts[i as usize])).collect();
-            (Src::Surface(crate::grid::MeshDistance::new(&tris), tape), lo, hi)
+            (Src::Surface(crate::grid::MeshDistance::in_time(&tris).ok_or_else(|| self.stopped(e))?, tape), lo, hi)
         } else if name == "grid-bake" {
             let f = field.unwrap();
             let clipped = self.clip_bounded(e, name, f, &ctx)?;
@@ -260,7 +285,7 @@ impl Doc {
             if tris.is_empty() {
                 return Err(self.err(src, "STL has no triangles"));
             }
-            let md = crate::grid::MeshDistance::new(&tris);
+            let md = crate::grid::MeshDistance::in_time(&tris).ok_or_else(|| self.stopped(e))?;
             if md.triangles() == 0 {
                 return Err(self.err(src, format!("STL has no triangles of nonzero area ({} degenerate facet{})", tris.len(), if tris.len() == 1 { "" } else { "s" })));
             }
@@ -297,18 +322,42 @@ impl Doc {
         // A mesh's lines signed by its facets' normals, not by parity
         // (MeshDistance::sample).
         let mut unclear = 0;
+        // Each run of points taken only while the call's time limit has not
+        // passed (`stop`): past it, the load stops here.
+        let in_time = |each: &(dyn Fn(usize, &[V3]) -> Vec<f64> + Sync)| -> Option<Vec<f64>> {
+            let runs: Vec<Option<Vec<f64>>> = pts.par_chunks(4096).enumerate().map(|(k, c)| (!ink_kernel::stop::reached()).then(|| each(4096 * k, c))).collect();
+            runs.into_iter().collect::<Option<Vec<_>>>().map(|r| r.concat())
+        };
         let samples: Vec<f64> = match &source {
-            Src::Field(t) => crate::eval::eval_points_par(t, &ctx, &pts),
+            Src::Field(t) => in_time(&|_, c| {
+                let mut out = Vec::with_capacity(c.len());
+                crate::eval::eval_points(t, &ctx, c, &mut out);
+                out
+            }),
             Src::Mesh(md) => {
                 let (v, u) = md.sample(origin, h, dims);
                 unclear = u;
-                v
+                Some(v)
             }
-            Src::Surface(md, t) => {
-                let sign = crate::eval::eval_points_par(t, &ctx, &pts);
-                pts.par_iter().zip(&sign).map(|(p, s)| md.distance(*p).abs() * if ink_core::sign::inside(*s) { -1.0 } else { 1.0 }).collect()
-            }
-        };
+            Src::Surface(md, t) => ink_kernel::octree::grid_inside(t, &ctx, origin, h, dims).and_then(|(inside, _)| {
+                in_time(&|at, c| {
+                    // The mesh lies within a point's neighbour's distance
+                    // plus the step between them (and a hair, for rounding).
+                    let mut last: Option<(V3, f64)> = None;
+                    c.iter()
+                        .zip(&inside[at..])
+                        .map(|(p, i)| {
+                            let reach = last.map_or(f64::INFINITY, |(q, d)| (d + ink_core::v3::norm(ink_core::v3::sub(*p, q))) * (1.0 + 1e-6) + 1e-9);
+                            let d = md.distance_within(*p, reach).abs();
+                            last = Some((*p, d));
+                            if *i { -d } else { d }
+                        })
+                        .collect()
+                })
+            }),
+        }
+        .filter(|_| !ink_kernel::stop::reached())
+        .ok_or_else(|| self.stopped(e))?;
         // A grid keeps f32s: a finite sample past their range would be
         // infinite, and the shape lost.
         if let Some(v) = samples.iter().find(|v| v.is_finite() && !(**v as f32).is_finite()) {
@@ -344,7 +393,7 @@ impl Doc {
         let deviation = |truth: &(dyn Fn([usize; 3], V3) -> Option<f64> + Sync)| -> Option<(f64, usize)> {
             let (m, k) = probes
                 .par_iter()
-                .filter_map(|(c, p, i)| truth(*c, *p).map(|t| (i - t).abs()))
+                .filter_map(|(c, p, i)| if ink_kernel::stop::reached() { None } else { truth(*c, *p).map(|t| (i - t).abs()) })
                 .fold(|| (0.0, 0), |(m, k), d| (f64::max(m, d), k + 1))
                 .reduce(|| (0.0, 0), |a, b| (a.0.max(b.0), a.1 + b.1));
             (k > 0).then_some((m, k))
@@ -426,6 +475,9 @@ impl Doc {
                         .par_iter()
                         .zip(&values)
                         .map(|(p, v)| {
+                            if ink_kernel::stop::reached() {
+                                return 0.0;
+                            }
                             let r = crate::eval::eval_interval(t, &ctx, p.map(I::point), None);
                             (*v as f64 - r.lo).abs().max((r.hi - *v as f64).abs())
                         })
@@ -446,22 +498,62 @@ impl Doc {
                 None,
             ),
         };
+        // Past the time limit a pass above stopped short (what it measured
+        // is not the grid's): the load stops here, the grid not kept.
+        if ink_kernel::stop::reached() {
+            return Err(self.stopped(e));
+        }
         let open = matches!(&source, Src::Mesh(md) if md.odd_edges() > 0);
         let snap = Snap { origin, h, dims, values, band, measured, note, cut, open };
         crate::cache::computed();
         crate::cache::store("grids", key, &snap);
+        Snap::keep(key, &snap);
         Ok(finish(self, snap))
     }
 
-    /// An error if `f` reads t: what a load-time service finds of it (its
-    /// box, its reach) is found at one moment and would not bound it at
-    /// others (a sweep would clip its later sections to it, a pairing by
-    /// boxes miss where it moves to).
-    fn timeless_at_load(&self, e: &Sexp, f: NodeId, what: &str, hint: &str) -> R<()> {
-        match self.g.value_depends_on(f, |v| v == Var::T) {
-            false => Ok(()),
-            true => Err(self.err_hint(e, format!("{what}: it is found at load, at one moment, and would not bound the field at others"), Some(hint.into()))),
+    /// The context a load-time service finds what it finds of `f` over (a
+    /// box, a reach), so that holds wherever `f` is asked: the load's, with
+    /// t over the motion of the file whose form it is (not std's, inside a
+    /// call) and 0, where load reads it, if `f` reads t, and each ranged
+    /// param it reads over its band and its value. What it finds is a
+    /// number of the model, so the load holds over these alone: a run
+    /// beyond them is refused (`load_t`, `covered`); a param with no range
+    /// is pinned (`bake`). Err: `f` reads t and no motion is stated before.
+    fn load_scope(&mut self, e: &Sexp, f: NodeId, what: &str) -> R<Ctx> {
+        let mut ctx = self.load_ctx_for(&[f]);
+        if self.g.value_depends_on(f, |v| v == Var::T) {
+            let file = self.running.last().map_or(self.file.clone(), |&i| self.files[i as usize].name.clone());
+            let Some((a, b)) = self.span_of(&file) else {
+                return Err(self.err_hint(
+                    e,
+                    format!("{what}: found at load, it holds over the file's motion, and none is stated before it"),
+                    Some("state (t-span A B) before it, or bound the shape before it moves (one that does not read t)".into()),
+                ));
+            };
+            let span = (a.min(0.0), b.max(0.0));
+            ctx.t_span = Some(span);
+            self.load_t.push((span, self.form_at.clone()));
         }
+        let ks = self.params_read(&[f]);
+        let ranged: Vec<(usize, (f64, f64))> = ks.iter().filter_map(|&k| Some((k, self.load_band(k, &ctx)?))).collect();
+        self.pin(&ks.iter().copied().filter(|k| !ranged.iter().any(|r| r.0 == *k)).collect::<Vec<_>>());
+        for &(k, band) in &ranged {
+            self.covered.push((k, band, self.form_at.clone()));
+            // Point evaluation inside the span, as a proof keeps it.
+            ctx.params[k] = ink_core::eval::span_mid(band);
+        }
+        self.baked.borrow_mut().extend(ranged.iter().map(|r| r.0));
+        ctx.p_spans = ink_core::eval::ParamSpans::new(ranged.iter().map(|&(k, b)| (k as u32, b)));
+        Ok(ctx)
+    }
+
+    /// The values of param k in `ctx` a run may use, where it has a band:
+    /// its value and its tolerance's band (which may exclude it), or its
+    /// (ranged lo hi).
+    fn load_band(&self, k: usize, ctx: &Ctx) -> Option<(f64, f64)> {
+        let v = ctx.params[k];
+        let (lo, hi) = self.ranged.iter().find(|r| r.0 == k).map(|r| r.1).or_else(|| self.params[k].band(v))?;
+        Some((lo.min(v), hi.max(v)))
     }
 
     /// `eval` forms that call kernel services at load time.
@@ -477,27 +569,35 @@ impl Doc {
                 };
                 let fe = f;
                 let f = self.field(f, env)?;
-                // Its numbers would hide a solved or sampled value.
-                self.exact_at_load(fe, f)?;
-                self.timeless_at_load(
-                    fe,
-                    f,
-                    "bounds of a field that reads t",
-                    "bound the shape before it moves (one that does not read t), or a fixed one holding it over the motion",
-                )?;
-                self.bake(&[f]);
-                let ctx = self.load_ctx_for(&[f]);
+                // Its numbers would hide a solved value; of sampled data they
+                // are measured (measured_box).
+                let sampled = self.inexact(&[f], &[]);
+                if !sampled.solved.is_empty() {
+                    self.exact_at_load(fe, f)?;
+                }
+                let ctx = self.load_scope(fe, f, "bounds of a field that reads t")?;
                 let (clipped, reach) = self.clip_bounded(e, "bounds", f, &ctx)?;
                 let tape = std::sync::Arc::new(Tape::new(&self.g, clipped));
-                let Some((blo, bhi, _)) = crate::query::bounds(&tape, &ctx, reach.lo, reach.hi) else {
-                    return match default {
-                        Some(d) => self.eval(d, env),
-                        None => Err(self.err(e, "bounds of an empty shape")),
-                    };
+                // Every answer, decided here once: what was found of sampled
+                // data is measured, so a box of it is (measured_box), and so
+                // is finding it empty, which a default (a value of any kind)
+                // cannot say: refused.
+                let found = crate::query::bounds(&tape, &ctx, reach.lo, reach.hi);
+                let v3 = |d: &mut Doc, p: V3| Value::list(p.iter().map(|c| Value::Field(d.g.constant(*c), None)).collect());
+                return match (found, sampled.samples.is_empty(), default) {
+                    (Some((lo, hi, _)), true, _) => Ok(Value::list(vec![v3(self, lo), v3(self, hi)])),
+                    (Some((lo, hi, _)), false, _) => Ok(self.measured_box(e, fe, lo, hi, &sampled.samples)),
+                    (None, true, Some(d)) => self.eval(d, env),
+                    (None, true, None) => Err(self.err(e, "bounds of an empty shape")),
+                    (None, false, _) => Err(self.err_hint(
+                        e,
+                        format!(
+                            "bounds found no interior in sampled data ({}): whether it is empty is measured, so no default stands in for it",
+                            crate::inexact::sampled_from(&sampled.samples)
+                        ),
+                        Some("bound the shape it was sampled from, or claim it empty: (assert none (empty f))".into()),
+                    )),
                 };
-                let v3 = |d: &mut Doc, p: V3| Value::Vec(p.iter().map(|c| Value::Field(d.g.constant(*c), None)).collect());
-                let (a, b) = (v3(self, blo), v3(self, bhi));
-                return Ok(Value::Vec(vec![a, b]));
             }
             "profile-reach" => {
                 let usage = "usage: (profile-reach profile): how far a 2D profile (a field in x, y) reaches from its origin, proven; \
@@ -506,9 +606,7 @@ impl Doc {
                 let fe = f;
                 let f = self.field(f, env)?;
                 self.exact_at_load(fe, f)?;
-                self.timeless_at_load(fe, f, "profile-reach of a profile that reads t", "give a profile of fixed size (its largest over the motion), or one that does not read t")?;
-                self.bake(&[f]);
-                let ctx = self.load_ctx_for(&[f]);
+                let ctx = self.load_scope(fe, f, "profile-reach of a profile that reads t")?;
                 let reads_z = self.g.value_depends_on(f, |v| matches!(v, Var::Z));
                 // Bounded in z: the profile over z in [-1, 1].
                 let (z, one) = (self.g.var(Var::Z), self.g.constant(1.0));

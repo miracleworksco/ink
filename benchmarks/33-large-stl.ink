@@ -39,7 +39,10 @@
 ;     shroud's, declared below. The import reports a measured deviation
 ;     below the sqrt 3 / 2 h above (0.2165); its samples, in floats, are
 ;     exact to far less;
-;   - ink mass --res 0.3: estimate within 0.1% of 43 666.55;
+;   - ink mass --res 0.3: estimate within 0.2% of the mesh's 43 663.15:
+;     the samples' own volume, 43 619.5 at res 0.15 and 0.1 (proven within
+;     43 538 .. 43 706), is 0.1% under the mesh's, the trilinear samples
+;     rounding the knurl's tips and the fins' edges;
 ;   - estimates, holding (holds, accuracy null): the clearances, the press
 ;     fit, the knurl probes on the import and fine-core-full-14.35;
 ;   - estimates, failing (fails, accuracy null): the three controls on the

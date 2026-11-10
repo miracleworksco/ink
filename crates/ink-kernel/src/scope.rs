@@ -154,3 +154,46 @@ pub fn pushed(tapes: &[&Tape], ctx: &Ctx, p: ink_core::V3) -> Option<(Ctx, Vec<f
     }
     moved.then(|| (c, ds.iter().map(|d| d[0]).collect()))
 }
+
+/// The terms of `tape`'s max (Tape::conjuncts) that read params among
+/// `ps` (ranged, as `read_params` gives them), grouped where they share
+/// one: each group's params and its tape (the max of its terms). Halving a
+/// group's params narrows that group's bound alone, and the field is at
+/// least 0 over a box only where one group is (or the terms reading none).
+/// Empty where there are fewer than two, or a sampled field's form reads a
+/// param (not traced through it).
+pub fn groups(tape: &Tape, ctx: &Ctx, ps: &[u32]) -> Vec<(Vec<u32>, Tape)> {
+    if ps.len() < 2 || ps.len() > 64 || tape.forms.iter().any(|f| !f.params_read().is_empty()) {
+        return Vec::new();
+    }
+    let bit = |k: u32| ps.iter().position(|&p| p == k).map_or(0u64, |j| 1 << j);
+    // Each instruction's params, as bits of their places in ps.
+    let mut reads = vec![0u64; tape.ssa.len()];
+    for i in 0..tape.ssa.len() {
+        reads[i] = match tape.ssa[i].op {
+            Op::Var(Var::Param(k)) if ctx.p_spans.get(k).is_some() => ctx.p_spans.sources(k).into_iter().fold(0, |m, k| m | bit(k)),
+            _ => {
+                let (args, m) = Tape::reads(&tape.ssa, i);
+                args[..m].iter().fold(0, |r, &a| r | reads[a as usize])
+            }
+        };
+    }
+    let mut groups: Vec<(u64, Vec<(usize, bool)>)> = Vec::new();
+    for (i, up, _) in tape.conjuncts() {
+        let mut g = (reads[i], vec![(i, up)]);
+        if g.0 == 0 {
+            continue;
+        }
+        while let Some(j) = groups.iter().position(|h| h.0 & g.0 != 0) {
+            let h = groups.swap_remove(j);
+            g.0 |= h.0;
+            g.1.extend(h.1);
+        }
+        groups.push(g);
+    }
+    if groups.len() < 2 {
+        return Vec::new();
+    }
+    groups.sort_unstable_by_key(|g| g.0.trailing_zeros());
+    groups.into_iter().map(|(mask, terms)| ((0..ps.len()).filter(|&j| mask >> j & 1 == 1).map(|j| ps[j]).collect(), tape.cone_terms(&terms))).collect()
+}

@@ -3,6 +3,7 @@
 //! else in ink; the kernel services and the packages build on it. See
 //! docs/CORE.md for the layers.
 
+pub mod distance;
 pub mod eval;
 pub mod graph;
 pub mod grid;

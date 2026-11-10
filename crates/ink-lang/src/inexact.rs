@@ -10,6 +10,12 @@ use std::sync::Arc;
 
 pub(super) const USE_IN_FIELDS: &str = "use it in fields (placements, shapes, claims), where answers that read it are measured";
 
+/// What sampled data is, for a message: each source's kind, what it was
+/// sampled from, and where.
+pub(super) fn sampled_from(samples: &[Arc<crate::grid::Source>]) -> String {
+    samples.iter().map(|s| format!("{} of {} at {}", s.kind, s.what, s.at)).collect::<Vec<_>>().join("; ")
+}
+
 /// The inexact inputs a value reads.
 #[derive(Clone, Debug, Default)]
 pub struct Inexact {
@@ -65,7 +71,18 @@ impl Doc {
         }
         solved.sort_unstable();
         unsettled.sort_unstable();
-        Inexact { samples: self.g.sources(&all), solved, unsettled, notes }
+        // What a sample found from samples was found from, after it.
+        let mut samples = self.g.sources(&all);
+        for (found, from) in &self.found_from {
+            if samples.iter().any(|x| Arc::ptr_eq(x, found)) {
+                for f in from {
+                    if !samples.iter().any(|x| Arc::ptr_eq(x, f)) {
+                        samples.push(f.clone());
+                    }
+                }
+            }
+        }
+        Inexact { samples, solved, unsettled, notes }
     }
 
     /// A field as a number at load time (`load_value`), where the model's
@@ -83,18 +100,74 @@ impl Doc {
         if !x.any() {
             return Ok(());
         }
-        let what = if !x.solved.is_empty() { "a solved value" } else { "sampled data" };
-        Err(self.err_hint(e, format!("this reads {what}, which cannot shape the model at load time (a list, a condition, a count, a box)"), Some(USE_IN_FIELDS.into())))
+        let what = if !x.solved.is_empty() { "a solved value".to_string() } else { format!("sampled data ({})", sampled_from(&x.samples)) };
+        Err(self.err_hint(e, format!("this reads {what}, which cannot shape the model at load time (a list, a condition, a count, a form's setting)"), Some(USE_IN_FIELDS.into())))
+    }
+
+    /// The box `(bounds f)` finds at load time of a field `what` that reads
+    /// sampled data (`from`): a bound of the samples, so measured, not
+    /// proven, of what they were sampled from. Its numbers stay samples: read
+    /// from a grid of their own whose source says what they were found from,
+    /// so what is built from them is measured as what reads `from` is, and
+    /// an `if` or a count made from them is refused (`exact_at_load`). Held
+    /// as f32, as samples are, rounded outward.
+    pub(super) fn measured_box(&mut self, e: &Sexp, what: &Sexp, lo: V3, hi: V3, from: &[Arc<crate::grid::Source>]) -> Value {
+        let out = |v: f64, up: bool| {
+            let s = v as f32;
+            match (s as f64).partial_cmp(&v) {
+                Some(std::cmp::Ordering::Less) if up => s.next_up(),
+                Some(std::cmp::Ordering::Greater) if !up => s.next_down(),
+                _ => s,
+            }
+        };
+        let six: Vec<f32> = (0..6).map(|i| if i < 3 { out(lo[i], false) } else { out(hi[i - 3], true) }).collect();
+        // Six points along x (two along y and z, as a grid has at least two
+        // per axis), number i at x = i.
+        let values = (0..24).map(|l| six[l % 6]).collect();
+        let mut text = what.to_string();
+        if text.chars().count() > 80 {
+            text = text.chars().take(77).chain("...".chars()).collect();
+        }
+        let source = crate::grid::Source {
+            what: text,
+            at: format!("{}:{}", self.file, e.line),
+            kind: "bounds",
+            res: from.iter().map(|s| s.res).fold(0.0, f64::max),
+            band: None,
+            measured: None,
+            note: Some(format!("a box found from sampled data ({}): no error bound to what that was sampled from", sampled_from(from))),
+            unit: "",
+            span: None,
+            component: None,
+        };
+        let data = Arc::new(crate::grid::GridData::new([0.0; 3], 1.0, [6, 2, 2], values).holding().with_source(source));
+        if let Some(s) = data.source() {
+            self.found_from.push((s.clone(), from.to_vec()));
+        }
+        let zero = self.g.constant(0.0);
+        let mut n: Vec<Value> = (0..6)
+            .map(|i| {
+                let x = self.g.constant(i as f64);
+                Value::Field(self.g.grid(data.clone(), [x, zero, zero]), None)
+            })
+            .collect();
+        let hi = n.split_off(3);
+        Value::list(vec![Value::list(n), Value::list(hi)])
     }
 
     /// Record that these expressions were evaluated at load time, their
     /// values kept as numbers or samples: their params are materialized
     /// there (`materialized`: they cannot be ranged).
     pub(super) fn bake(&self, nodes: &[NodeId]) {
-        let ks = self.params_read(nodes);
+        self.pin(&self.params_read(nodes));
+    }
+
+    /// Record that these params' values became numbers at load time
+    /// (`bake`).
+    pub(super) fn pin(&self, ks: &[usize]) {
         {
             let mut m = self.materialized.borrow_mut();
-            for &k in &ks {
+            for &k in ks {
                 m.entry(k).or_insert_with(|| self.form_at.clone());
             }
         }

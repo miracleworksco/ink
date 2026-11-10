@@ -138,9 +138,11 @@ fn numerical_claims_cover_only_the_scope_their_methods_evaluate() {
 /// (two voids; none once the hole is left open; none past a 0.2 mm slit at
 /// (res 1)); a bearing's balls seated in its races' grooves (surfaces that
 /// touch) leave no air deeper than the accuracy between them, so hold to
-/// it; and it is bounds where cells cannot part two airs: a hole flush
-/// with the void's ceiling (f = 0 across its mouth) is unknown, as a count
-/// over a ranged param and of a shape not proven bounded are.
+/// it; a hole flush with the void's ceiling (f = 0 across its mouth) opens
+/// it, its cells split at the face both read; and it is bounds where cells
+/// cannot part two airs: the hole's height read as (z + y) - y, sharing
+/// nothing with the ceiling's, it is unknown, as a count over a ranged
+/// param and of a shape not proven bounded are.
 #[test]
 fn cavities_are_counted_by_proof() {
     use ink::claims::{ClaimOptions, Status, run_asserts};
@@ -148,7 +150,8 @@ fn cavities_are_counted_by_proof() {
     let d = doc("(param wall 3 (tol 0 0.5))
         (def outer (move (box 100 100 100) 0 0 50))
         (def opened (subtract outer (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 96 101)))
-        (def flush (subtract outer (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101)))
+        (def flush (subtract outer (move (box 94 94 94) 0 0 50) (warp (extrude-z (circle-2d 5) 97 101) x y (- (+ z y) y))))
+        (def shared (subtract outer (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101)))
         (def skinned (min opened (extrude-z (circle-2d 6) 98.5 98.8)))
         (def big (min (subtract (move (box 200 200 200) 0 0 100) (move (box 190 190 190) 0 0 100) (extrude-z (circle-2d 10) 190 201))
                         (extrude-z (circle-2d 12) 196 196.3)))
@@ -165,7 +168,8 @@ fn cavities_are_counted_by_proof() {
         (def races (subtract (extrude-z (ring-2d 7 13) -2 2) (extrude-z (ring-2d 9.5 10.5) -3 3) (torus-z 10 2)))
         (assert seated-balls (cavities (min races (pattern-polar (move (sphere 2) 10 0 0) 8)) < 1))
         (assert ranged (cavities (subtract (box 20 20 20) (box (* 2 wall) 4 4)) < 1))
-        (assert unbounded (cavities (subtract (- z) (sphere 2)) < 1))");
+        (assert unbounded (cavities (subtract (- z) (sphere 2)) < 1))
+        (assert flush-shared (cavities shared < 1))");
     let ctx = d.ctx(&[], 0.0).unwrap();
     let mut v = ModelView::new(d, ctx);
     let spans = v.declared_spans().unwrap();
@@ -173,7 +177,7 @@ fn cavities_are_counted_by_proof() {
     let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
     let s: Vec<(&str, Status)> = r.asserts.iter().map(|a| (a.name.as_str(), a.check.status)).collect();
     use Status::{Fails, Holds, Unknown};
-    let want = [Fails, Fails, Fails, Holds, Holds, Fails, Holds, Unknown, Holds, Unknown, Unknown];
+    let want = [Fails, Fails, Fails, Holds, Holds, Fails, Holds, Unknown, Holds, Unknown, Unknown, Holds];
     assert_eq!(s.iter().map(|x| x.1).collect::<Vec<_>>(), want, "{s:?}");
     // A count proven is an exact answer, not an estimate.
     assert!(r.asserts[..7].iter().all(|a| a.check.accuracy.is_some()) && r.asserts[4].check.holds_guaranteed(), "{:?}", r.asserts[4].check);
@@ -234,12 +238,13 @@ fn a_void_count_forecast_past_its_budget_stops_early() {
 /// A void count is the one search's (crate::search): what it answers is a
 /// function of the question, not of the threads, where it runs out of its
 /// budget too (a hole flush with the void's ceiling, f = 0 across its
-/// mouth, halves to the budget), and says so: the budget, not the res, is
+/// mouth, its height read as (z + y) - y so the two share no value to split
+/// at, halves to the budget), and says so: the budget, not the res, is
 /// what stopped it, with the cells it left and what to do.
 #[test]
 fn a_void_count_is_the_same_on_any_threads_and_says_its_budget_stopped_it() {
     use ink::view::ModelView;
-    let d = doc("(def flush (subtract (move (box 100 100 100) 0 0 50) (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101)))");
+    let d = doc("(def flush (subtract (move (box 100 100 100) 0 0 50) (move (box 94 94 94) 0 0 50) (warp (extrude-z (circle-2d 5) 97 101) x y (- (+ z y) y))))");
     let ink::lang::Value::Field(f, _) = *d.def("flush").unwrap() else { panic!("a field") };
     let ctx = d.ctx(&[], 0.0).unwrap();
     let mut v = ModelView::new(d, ctx);
@@ -278,17 +283,16 @@ fn a_box_over_a_motion_is_not_a_moments_found_before() {
     assert_eq!(v.bounds(f), Some(moment));
 }
 
-/// A mass is settled only where a halving showed it settling: a 0.3 mm
-/// layer of density in a 100 mm cube (29.2 g) is not settled at 42 g with
-/// the last halving having moved it 76%, nor a layer every first cell
-/// misses settled at zero without a halving.
+/// A mass is settled only where its bounds show it: a 0.3 mm layer of
+/// density in a 100 mm cube (29.2 g), and a layer the samples of the
+/// first boxes miss, lie within their bounds.
 #[test]
-fn a_mass_is_settled_only_by_a_halving_that_shows_it() {
+fn a_mass_is_settled_only_where_its_bounds_show_it() {
     for (src, mass) in [("(+ .00001 (select (max (- (abs x) .15) (- (abs y) 40) (- (abs z) 40)) .01 0))", 29.2), ("(select (- (abs x) .15) .001 0)", 3.0)] {
         let (mut v, f) = view_of(&format!("(def f (box 100 100 100)) (def rho {src})"));
         let ink::lang::Value::Field(rho, _) = *v.doc.def("rho").unwrap() else { panic!("rho is a field") };
         let m = v.moments(f, Some(rho), None).unwrap();
-        assert!(m.coarse.is_some() && (!m.settled || (m.sums[0] / mass - 1.0).abs() <= 0.05), "{src}: {m:?}");
+        assert!(m.lo[0] <= mass && mass <= m.hi[0] && (!m.settled || m.error(0) <= query::ACCURACY * m.sums[0]), "{src}: {m:?}");
         assert!(m.settled || m.unsettled().is_some());
     }
 }
@@ -1231,11 +1235,11 @@ fn mesh_reports_features_thinner_than_res() {
     let mut d = doc("(body b (shape (move (box 20 20 0.4) 0 0 0.3)))");
     let (tape, ctx) = clipped(&mut d, "b");
     let (lo, hi) = ([-10.0, -10.0, -0.2], [10.0, 10.0, 0.6]);
-    let (m, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 1.0, SEARCHED).unwrap();
+    let (m, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 1.0, SEARCHED, 0.0).unwrap();
     assert!(u.cells > 0, "{} triangles, no gap reported", m.tris.len());
     let at = u.at.unwrap();
     assert!(eval_point(&tape, &ctx, at) < 0.0, "{at:?} is not in the plate");
-    let (_, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 0.1, SEARCHED).unwrap();
+    let (_, u) = mesh::mesh_checked(&tape, &ctx, lo, hi, 0.1, SEARCHED, 0.0).unwrap();
     assert_eq!(u.cells, 0);
 }
 
@@ -1249,7 +1253,7 @@ fn every_part_a_mesh_leaves_out_is_reported_however_thick_or_near_what_is_drawn(
     let mesh_of = |model: &str, lo: [f64; 3], hi: [f64; 3]| {
         let mut d = doc(model);
         let (tape, ctx) = clipped(&mut d, "b");
-        mesh::mesh_checked(&tape, &ctx, lo, hi, 1.0, SEARCHED).unwrap()
+        mesh::mesh_checked(&tape, &ctx, lo, hi, 1.0, SEARCHED, 0.0).unwrap()
     };
     let (m, u) = mesh_of("(body b (shape (move (sphere 0.7) 0.5 0.5 0.5)))", [0.0; 3], [1.0; 3]);
     assert!(m.tris.is_empty() && u.cells > 0 && u.material > 0, "{u:?}");
@@ -1276,7 +1280,7 @@ fn a_spike_between_samples_is_reported_though_its_surface_is_one_sheet() {
     let (t, c) = body_field("(body b (shape (max (box 20 20 20) (- -8 z) (min z (+ (- z 3) (* 150 (+ (square (- x 0.5)) (square (- y 0.5)))))))))");
     assert!(eval_point(&t, &c, [0.5, 0.5, 2.0]) < 0.0);
     for search in [0.0, 1e7] {
-        let (m, u) = mesh::mesh_checked(&t, &c, [-10.0, -10.0, -8.0], [10.0, 10.0, 3.0], 1.0, mesh::Limit { bricks: 100000, search }).unwrap();
+        let (m, u) = mesh::mesh_checked(&t, &c, [-10.0, -10.0, -8.0], [10.0, 10.0, 3.0], 1.0, mesh::Limit { bricks: 100000, search }, 0.0).unwrap();
         assert!(m.verts.iter().all(|p| p[2] <= 0.001), "the spike is drawn");
         let r = u.regions.iter().find(|r| r.lo[2] <= 2.0 && r.hi[2] >= 2.0 && r.lo[0] <= 0.5 && r.hi[0] >= 0.5);
         assert!(u.cells > 0 && r.is_some(), "search {search}: {u:?}");
@@ -1288,12 +1292,40 @@ fn unresolved_regions_keep_every_cell_and_a_point_in_each() {
     // Two balls 0.04 across, far apart, beside nothing: two regions, each
     // holding its ball, their cells summing to the mesh's.
     let (t, c) = body_field("(body b (shape (min (move (sphere 0.02) 0.3 0.3 0.3) (move (sphere 0.02) 30.3 0.3 0.3) (move (box 1 1 1) 15 0 0))))");
-    let (_, u) = mesh::mesh_checked(&t, &c, [-1.0; 3], [31.0, 1.0, 1.0], 1.0, mesh::Limit { bricks: 100000, search: 0.0 }).unwrap();
+    let (_, u) = mesh::mesh_checked(&t, &c, [-1.0; 3], [31.0, 1.0, 1.0], 1.0, mesh::Limit { bricks: 100000, search: 0.0 }, 0.0).unwrap();
     assert_eq!(u.regions.iter().map(|r| r.cells).sum::<usize>(), u.cells, "{u:?}");
     for ball in [[0.3, 0.3, 0.3], [30.3, 0.3, 0.3]] {
         assert!(u.regions.iter().any(|r| (0..3).all(|a| r.lo[a] <= ball[a] && ball[a] <= r.hi[a])), "{ball:?} in no region: {:?}", u.regions);
     }
     assert!(u.regions.iter().all(|r| (0..3).all(|a| r.lo[a] <= r.at[a] && r.at[a] <= r.hi[a])), "{:?}", u.regions);
+}
+
+#[test]
+fn a_cells_proof_reads_only_the_field_that_reaches_it() {
+    // A bar swept along a helix of 60 segments, one select each: a brick of
+    // cells keeps most of them (their bounds overlap at its size), a cell's
+    // box a few. Proved in blocks, each on the field focused on it, its
+    // cells' proofs run 1.1 times the whole field's instructions per cell
+    // drawn; each cell on its brick's field, 5.7.
+    let (t, c) = body_field("(body b (shape (sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 60) (vec 0 0 1))))");
+    let (m, u) = mesh::mesh_checked(&t, &c, [-30.0, -30.0, -3.0], [30.0, 30.0, 18.0], 0.5, mesh::Limit { bricks: usize::MAX, search: 0.0 }, 0.0).unwrap();
+    let per = u.read as f64 / m.verts.len() as f64 / t.len() as f64;
+    assert!(!m.tris.is_empty() && per < 2.0, "{per} times the whole field a cell drawn ({} instructions, {} cells): {u:?}", t.len(), m.verts.len());
+}
+
+#[test]
+fn a_sweeps_seams_hide_no_material_its_mesh_draws() {
+    // A bar swept along a helix: beside its seams the surface bulges past
+    // cells' corners and past its triangles, and the search samples
+    // material there, inside the solid its mesh bounds or within the
+    // accuracy it is made to (a quarter of res, as for seeing): drawn, so
+    // none is left out (those cells undecided). Counted, it was found
+    // again at every res, and the mesh made finer for it until the budget
+    // ran out.
+    let (t, c) = body_field("(body b (shape (sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 60) (vec 0 0 1))))");
+    let limit = mesh::Limit { bricks: usize::MAX, search: 1e9 };
+    let (m, u) = mesh::mesh_checked(&t, &c, [-30.0, -30.0, -3.0], [30.0, 30.0, 18.0], 0.42, limit, 0.25 * 0.42).unwrap();
+    assert!(!m.tris.is_empty() && u.material == 0 && u.undecided > 0, "{} cells of material left out: {:?}", u.material, u.regions);
 }
 
 /// Whether the field over `b` may crease (Tape::may_crease).
@@ -1350,6 +1382,37 @@ fn a_select_switching_between_fields_is_a_seam() {
 }
 
 #[test]
+fn a_select_between_one_expression_of_the_two_it_compares_is_continuous() {
+    // select(x - y, 2 x + z, 2 y + z): where x = y both sides are one
+    // value, so it switches without a jump (2 min(x, y) + z): one sheet
+    // along +z, and no seam.
+    let src = "(body b (shape (select (- x y) (+ (* 2 x) z) (+ (* 2 y) z))))";
+    let b = [I::new(-1.0, 1.0); 3];
+    assert!(one_change(src, b, [0.0, 0.0, 1.0]));
+    let (t, c) = body_field(src);
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    eval_interval(&t, &c, b, Some(&mut ch));
+    assert!(!t.switches(&ch));
+}
+
+#[test]
+fn a_seam_says_how_thin_what_it_may_hide_is() {
+    // select(y - 0.1, y, y + 0.02): both sides rise along +y, one 0.02
+    // above the other, and it switches along y: whatever its seam hides
+    // lies within 0.02 of the sheet.
+    let (t, c) = body_field("(body b (shape (select (- y 0.1) y (+ y 0.02))))");
+    let b = [I::new(-0.5, 0.5); 3];
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    eval_interval(&t, &c, b, Some(&mut ch));
+    let g = eval_interval_grad_every(&t, &c, b);
+    let at = eval_interval_grad_every(&t, &c, [I::point(0.0); 3]);
+    match t.sheet(&ch, &g, Some((&at, [0.5; 3])), [0.0, 1.0, 0.0]) {
+        ink::tape::Sheet::Thin(w) => assert!((0.02..0.021).contains(&w), "{w}"),
+        s => panic!("{s:?}"),
+    }
+}
+
+#[test]
 fn a_select_that_may_switch_is_not_monotone() {
     // Along +x it jumps down at 0: roots at -0.25 and 0.25.
     let (t, c) = body_field("(body b (shape (select x (+ x 0.25) (- x 0.25))))");
@@ -1368,8 +1431,8 @@ fn a_mesh_past_its_grid_limit_is_not_made() {
     let mut d = doc("(body b (shape (min (sphere 0.1) (max (box 1 1 1) (+ 0.000001 (- (* 2 x) (+ x x)))))))");
     let (tape, ctx) = clipped(&mut d, "b");
     let limit = mesh::Limit { bricks: 600, search: 0.0 };
-    assert!(mesh::mesh_checked(&tape, &ctx, [-0.5; 3], [0.5; 3], 0.01, limit).is_none());
-    let (m, u) = mesh::mesh_checked(&tape, &ctx, [-0.5; 3], [0.5; 3], 0.02, limit).unwrap();
+    assert!(mesh::mesh_checked(&tape, &ctx, [-0.5; 3], [0.5; 3], 0.01, limit, 0.0).is_none());
+    let (m, u) = mesh::mesh_checked(&tape, &ctx, [-0.5; 3], [0.5; 3], 0.02, limit, 0.0).unwrap();
     assert!(!m.tris.is_empty() && u.cost <= 600.0 * mesh::BRICK_TRIANGLES, "{} triangles, {u:?}", m.tris.len());
 }
 
@@ -1478,7 +1541,7 @@ fn mass_integrates_graded_density() {
     let it = d.items("b").unwrap().remove(0);
     let ink::lang::Value::Field(g, _) = d.placed_attrs(&it)[0].1 else { panic!() };
     let gt = Tape::new(&d.g, g);
-    let r = query::sums(&tape, &[Some(&gt)], true, &ctx, [-5.0; 3], [5.0; 3], 0.1).sums[0];
+    let r = query::integrate(&tape, &[Some(&gt)], true, &ctx, [-5.0; 3], [5.0; 3], query::Until::Res(0.1)).sums[0];
     assert!((r - 1000.0).abs() < 1.0, "{r}");
 }
 
@@ -2399,12 +2462,19 @@ fn linear_bounds_are_sound_over_boxes_and_far_sectors() {
     // eval_interval_linear bounds values by collected linear forms too: of
     // rotated coordinates, of abs where its argument is one-signed, of a
     // min or max member that wins over the whole region, and of terms in
-    // time (constant over the region). Every value at a point of the region,
-    // at any moment of the span, must lie in its bound.
+    // time (constant over the region); over a far sector, also by their
+    // growth with its distance (radii, angles, products and quotients of
+    // coordinates, polar folds). Every value at a point of the region, at
+    // any moment of the span, must lie in its bound.
     let extra = [
         "(rotate-x (max (- (abs y) (+ 4 (* 0.44 z))) (slab-z -2.5 0)) 180)",
         "(move (rotate-y (box 10 20 30) (* 40 t)) (* 5 (sin t)) 0 (* 3 t))",
         "(min (abs (- x (* 3 y))) (max (+ x z) (- y 2)) (abs (+ (* 2 z) t)))",
+        "(repeat-polar (rotate-x (move (box 6 2 1) 20 0 0) 30) 10)",
+        "(repeat-polar (move (repeat-polar (move (rotate-y (box 2 1 1) 20) 4 0 0) 6) 18 0 0) 8)",
+        "(- (/ (* x y) (+ 1 (len3 x y z))) (atan2 (* x z) (+ 1 (square y))))",
+        "(emax (- (sqrt (+ (abs x) 1)) 3) (min (- y z) (* z (- z 4))))",
+        "(- (/ (+ 2 z) (+ 3 (square x))) (* (len2 x y) (sin t)))",
     ];
     let span = Ctx { t_span: Some((0.0, 1.0)), ..Ctx::new(0.5, vec![]) };
     let mut rng = Lcg(19);
@@ -2488,6 +2558,10 @@ fn extents_find_material_anywhere_and_say_when_they_cannot() {
         // terms tie its coordinates, and abs of a one-signed form is
         // linear, so far out they stay tied (the printer's Z yokes).
         "(max (rotate-x (max (- (abs y) (+ 4 (* 0.44 z))) (slab-z -2.5 0)) 180) (- (abs (- x 3)) 7.5))",
+        // Polar folds of tilted parts: far out, a sector's radius and
+        // angle are its directions' scaled by its distance.
+        "(repeat-polar (rotate-x (move (box 6 2 1) 20 0 0) 30) 10)",
+        "(repeat-polar (move (rotate-y (repeat-polar (move (rotate-x (box 2 1 1) 20) 4 0 0) 6) 15) 18 0 0) 8)",
     ] {
         assert!(bounded(src), "{src}: {:?}", extent(src));
     }
@@ -3172,6 +3246,78 @@ fn answers_outside_the_range_of_validity_are_unknown() {
     assert_eq!(in_motion(&strip("1", "0", "1", "1")).status, Status::Fails);
 }
 
+/// Switches read by value: a condition that reads t alone, strictly
+/// monotone and exactly 0 at a float, switches there (`moment`), however it
+/// is written. Two such conditions at one moment take their sides together
+/// in each case (one select's 1 before 0.75, another's after: never both,
+/// never 2), and a select whose branches are one number there is
+/// continuous, its rates bounded; a branch apart there, or a root no float
+/// is (t^2 = 1/2), is neither.
+#[test]
+fn switches_at_one_moment_are_read_by_value() {
+    use ink::graph::{BinOp, Graph, Var};
+    let span = (0.5, 1.0);
+    let ctx = Ctx { t_span: Some(span), ..Ctx::new(span_mid(span), vec![]) };
+    let at = [I::point(0.0); 3];
+    let mut g = Graph::new();
+    let (t, one, zero) = (g.var(Var::T), g.constant(1.0), g.constant(0.0));
+    let (k075, k15, k2) = (g.constant(0.75), g.constant(1.5), g.constant(2.0));
+    let rising = g.bin(BinOp::Sub, t, k075);
+    let two_t = g.bin(BinOp::Mul, k2, t);
+    let falling = g.bin(BinOp::Sub, k15, two_t);
+    let square = g.bin(BinOp::Mul, t, t);
+    let half = g.constant(0.5);
+    let curved = g.bin(BinOp::Sub, square, half);
+    let before = g.select(rising, one, zero);
+    let after = g.select(falling, one, zero);
+    let both = g.bin(BinOp::Add, before, after);
+    let tape = Tape::new(&g, both);
+    let m = |t: &Tape| moment(t, &ctx, t.ssa.len() - 1, at);
+    assert_eq!(m(&Tape::new(&g, rising)), Some(Moment { var: Var::T, at: 0.75, rising: true }));
+    assert_eq!(m(&Tape::new(&g, falling)), Some(Moment { var: Var::T, at: 0.75, rising: false }));
+    assert_eq!(m(&Tape::new(&g, curved)), None);
+    let v = eval_interval_cases(&tape, &ctx, at);
+    assert!(v.lo >= 0.0 && v.hi == 1.0, "{v:?}");
+    // 2t to 1.5 at 0.75, then t + 0.75: one number there; t + 0.8 is not.
+    let inputs = Inputs { t: true, params: Vec::new() };
+    for (lift, joined) in [(0.75, true), (0.8, false)] {
+        let k = g.constant(lift);
+        let then = g.bin(BinOp::Add, t, k);
+        let f = g.select(rising, two_t, then);
+        let r = eval_interval_rates(&Tape::new(&g, f), &ctx, at, &inputs).1[0];
+        assert_eq!(r.hi.is_finite(), joined, "lift {lift}: {r:?}");
+        if joined {
+            assert!(r.lo >= 1.0 && r.hi <= 2.0, "{r:?}");
+        }
+    }
+}
+
+/// A ranged param switches as time does: in p over [0.5, 1], one select's
+/// 1 before 0.75 and another's after are never both (at most 1, not 2), and
+/// a select from 2p to p + 0.75 at p = 0.75, one number there, has rates
+/// within its branches' ([1, 2]), not none.
+#[test]
+fn switches_on_a_ranged_param_are_read_by_value() {
+    use ink::graph::{BinOp, Graph, Var};
+    let ctx = Ctx { p_spans: ParamSpans::new([(0, (0.5, 1.0))]), ..Ctx::new(0.0, vec![0.75]) };
+    let at = [I::point(0.0); 3];
+    let mut g = Graph::new();
+    let (p, one, zero) = (g.var(Var::Param(0)), g.constant(1.0), g.constant(0.0));
+    let (k075, k15, k2) = (g.constant(0.75), g.constant(1.5), g.constant(2.0));
+    let rising = g.bin(BinOp::Sub, p, k075);
+    let two_p = g.bin(BinOp::Mul, k2, p);
+    let falling = g.bin(BinOp::Sub, k15, two_p);
+    let before = g.select(rising, one, zero);
+    let after = g.select(falling, one, zero);
+    let both = g.bin(BinOp::Add, before, after);
+    let v = eval_interval_cases(&Tape::new(&g, both), &ctx, at);
+    assert!(v.lo >= 0.0 && v.hi == 1.0, "{v:?}");
+    let then = g.bin(BinOp::Add, p, k075);
+    let f = g.select(rising, two_p, then);
+    let r = eval_interval_rates(&Tape::new(&g, f), &ctx, at, &Inputs { t: false, params: vec![0] }).1[0];
+    assert!(r.lo >= 1.0 && r.hi <= 2.0, "{r:?}");
+}
+
 /// Four angles wrapped at one moment (each a floor of t forked inside the
 /// others' windows, every pair of sides paired): read through cos, whole
 /// turns apart, they jump by rounding only (P3's crank: the mean of their
@@ -3327,4 +3473,51 @@ fn a_degree_conversions_derivative_keeps_pi_exact() {
     let mut v = ink::view::ModelView::new(d, ctx);
     let a = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap().asserts;
     assert!(!a[0].check.holds_guaranteed(), "{:?}", a[0].check);
+}
+
+/// A void count follows air down a slope into the smaller cells across a
+/// face, landing where they all do, rather than halving the cell: a cell
+/// beside cells halved is not halved for that, pass after pass. A ball's
+/// void in a cube counts 1 in 414 cells, a slanted cube's in 1,401 (505
+/// and 1,604 halving each).
+#[test]
+fn a_void_count_follows_a_slope_into_smaller_cells() {
+    for (src, most) in
+        [("(def f (subtract (box 20 20 20) (sphere 4)))", 450), ("(def f (subtract (box 20 20 20) (move (rotate-z (rotate-x (box 6 6 6) 30) 20) 0.3 0.2 0.1)))", 1500)]
+    {
+        let (mut v, f) = view_of(src);
+        let c = v.voids(f, None, 0.05).unwrap().unwrap();
+        assert!(c.count() == Some(1) && c.cells <= most, "{src}: {c:?}");
+    }
+}
+
+/// A jump is forked where the output reads it. A screw's thread, read
+/// again through a negation as the void it cuts from its nut, joins its
+/// sides only where the screws and the nuts meet, so its window holds every
+/// screw's after it; a cell beside a row of them, on the half-plane each
+/// thread's atan2 cuts at, straddles every one's jumps, and forking each
+/// inside the last doubles the work per screw. Far from every thread, no
+/// fork changes the bound and none is taken; beside one thread, its own
+/// jumps are forked, the others' not.
+#[test]
+fn jumps_are_forked_where_the_output_reads_them() {
+    let screw = |i: usize| format!("(move (thread-iso 3 0.5) {} 0 0)", 5 * i);
+    let screws: String = (0..10).map(|i| format!(" (max {} (- z 4))", screw(i))).collect();
+    let nuts: String = (0..10).map(|i| format!(" (max (neg {}) (move (box 8 8 2) {} 0 -20))", screw(i), 5 * i)).collect();
+    let (d, tape) = tape_of(&format!("(min{screws}{nuts})"));
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let forks = |b: [I; 3]| {
+        let before = forked_count();
+        let v = eval_interval(&tape, &ctx, b, None);
+        let g = eval_interval_grad(&tape, &ctx, b);
+        (forked_count() - before, v, g)
+    };
+    // On the row's line, left of every screw and far from its thread.
+    let far = [I::new(-30.0, -29.9), I::new(-0.01, 0.01), I::new(0.1, 0.12)];
+    let (n, v, g) = forks(far);
+    assert_eq!(n, 0, "{v:?} {g:?}");
+    // On the cut of the screw at x = 20, at its thread's flank.
+    let near = [I::new(18.66, 18.68), I::new(-0.01, 0.01), I::new(0.1, 0.12)];
+    let (n, v, g) = forks(near);
+    assert!(n > 0 && n <= 4 && ink::interval::lipschitz(&g).is_finite(), "{n} {v:?} {g:?}");
 }

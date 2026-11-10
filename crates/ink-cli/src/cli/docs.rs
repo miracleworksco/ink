@@ -6,7 +6,8 @@
 //!
 //! A name finds, one rule for both and case aside: the headings whose
 //! title or path (`Solving constraints/Over ranged params`) it is, std's sections
-//! whose banner it is, std's definitions it names; else those whose title,
+//! whose banner it is, the forms it names (the reference's entries for
+//! one, `polygon`, and std's definitions); else those whose title,
 //! banner or name holds it (`primitives`, `involute`). The document asked
 //! first, then the other; where neither has it, the sections whose text
 //! holds it (else each of its words), with the lines.
@@ -62,19 +63,20 @@ fn named(title: &str, name: &str, exact: bool) -> bool {
 /// its subsections gives its own text and their paths, each read as a
 /// section (the CLI's tests keep each within). Several sections: all of
 /// them, where they fit an MCP answer, else their paths.
-fn spec_find(name: &str) -> Result<Option<String>, InkError> {
-    find_in(crate::reference(), name)
+fn spec_find(name: &str, exact: bool) -> Result<Option<String>, InkError> {
+    find_in(crate::reference(), name, exact)
 }
 
-/// `spec_find` in the reference `text`.
-fn find_in(text: &str, name: &str) -> Result<Option<String>, InkError> {
+/// `spec_find` in the reference `text`: the headings whose path or title
+/// is `name` (`exact`), else whose title holds it.
+fn find_in(text: &str, name: &str, exact: bool) -> Result<Option<String>, InkError> {
     let lines: Vec<&str> = text.lines().collect();
     let heads = heads(&lines);
     let title = |h: &(usize, usize, String)| h.2.rsplit('/').next().unwrap().to_string();
-    let mut hits: Vec<&(usize, usize, String)> = heads.iter().filter(|h| named(&h.2, name, true) || named(&title(h), name, true)).collect();
-    if hits.is_empty() {
-        hits = heads.iter().filter(|h| named(&title(h), name, false)).collect();
-    }
+    let mut hits: Vec<&(usize, usize, String)> = match exact {
+        true => heads.iter().filter(|h| named(&h.2, name, true) || named(&title(h), name, true)).collect(),
+        false => heads.iter().filter(|h| named(&title(h), name, false)).collect(),
+    };
     // A heading and its own subsections: the heading (it holds them).
     let tops: Vec<String> = hits.iter().map(|t| format!("{}/", t.2)).collect();
     hits.retain(|h| !tops.iter().any(|t| h.2.starts_with(t.as_str())));
@@ -124,22 +126,194 @@ fn defs(b: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The std a name finds (None: none): the section whose banner it is,
-/// else the definitions it names, each with its comments; else the section
-/// whose banner holds it, else the definitions whose names hold it.
-fn std_find(name: &str) -> Option<String> {
+/// The std a name finds (None: none): the section whose banner it is
+/// (`exact`, else holds it); else the definitions it names (else whose
+/// names hold it), each with its comments.
+fn std_find(name: &str, exact: bool) -> Option<String> {
     let text = std_text();
     let blocks: Vec<&str> = text.split("\n\n").collect();
-    for exact in [true, false] {
-        if let Some(i) = blocks.iter().position(|b| banner(b).is_some_and(|t| named(&t, name, exact))) {
-            return Some(sections(&blocks, i));
-        }
-        let hits: Vec<&str> = blocks.iter().copied().filter(|b| defs(b).iter().any(|(n, _)| named(n, name, exact))).collect();
-        if !hits.is_empty() {
-            return Some(hits.join("\n\n").trim_start().to_string() + "\n");
-        }
+    if let Some(i) = blocks.iter().position(|b| banner(b).is_some_and(|t| named(&t, name, exact))) {
+        return Some(sections(&blocks, i));
     }
-    None
+    let hits: Vec<&str> = blocks.iter().copied().filter(|b| defs(b).iter().any(|(n, _)| named(n, name, exact))).collect();
+    (!hits.is_empty()).then(|| hits.join("\n\n").trim_start().to_string() + "\n")
+}
+
+/// The reference's entries for forms, each with the path of the heading
+/// it is under: a row of a table (in a plain ``` block, a line opening
+/// with a form and the indented lines after it), or a list item or
+/// paragraph opening with one in backticks (- `(polygon pts)` ...), to
+/// its end. Each with whether it is a row, and the names of the forms it
+/// opens with.
+fn entries(text: &str) -> Vec<(bool, String, Vec<String>, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let heads = heads(&lines);
+    let path = |i: usize| heads.iter().rev().find(|h| h.0 < i).map_or(String::new(), |h| h.2.clone());
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    // In a code block, and whether it is plain (a table, not lisp).
+    let (mut block, mut table, mut i) = (false, false, 0);
+    while i < lines.len() {
+        let l = lines[i];
+        if l.starts_with("```") {
+            (block, table) = (!block, !block && l.trim() == "```");
+            i += 1;
+            continue;
+        }
+        if block && !table {
+            i += 1;
+            continue;
+        }
+        let item = l.trim_start().strip_prefix("- ");
+        let after_blank = i == 0 || lines[i - 1].trim().is_empty() || level(lines[i - 1]).is_some();
+        let first = match table {
+            true => Some(l),
+            false => item.or(after_blank.then_some(l)).and_then(|t| t.strip_prefix('`')),
+        };
+        let Some(first) = first.filter(|f| f.starts_with('(')) else {
+            i += 1;
+            continue;
+        };
+        // Its lines: a row's indented ones; an item's indented past its
+        // dash, through blank lines between them (its later paragraphs); a
+        // paragraph's to a blank line or a list.
+        let more = |m: &str| match (table, item) {
+            (true, _) => m.starts_with(' '),
+            (false, Some(_)) => indent(m) > indent(l),
+            (false, None) => !m.trim_start().starts_with("- "),
+        };
+        let text = |m: &str| level(m).is_none() && !m.starts_with("```") && more(m);
+        let mut end = i + 1;
+        loop {
+            match lines.get(end) {
+                Some(m) if !m.trim().is_empty() && text(m) => end += 1,
+                Some(m) if m.trim().is_empty() && item.is_some() && !table => {
+                    // Blank lines go on the item where it goes on after them.
+                    let next = (end..lines.len()).find(|&j| !lines[j].trim().is_empty());
+                    match next.filter(|&j| text(lines[j])) {
+                        Some(j) => end = j,
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        // A row may open with several forms ((sin a) (cos a)); prose
+        // with one, the rest its text.
+        let names = opened(first).into_iter().take(if table { usize::MAX } else { 1 }).collect();
+        out.push((table, path(i), names, lines[i..end].join("\n")));
+        i = end;
+    }
+    out
+}
+
+/// The names of the forms a line opens with: `(a ...) (b ...)` gives a
+/// and b; what follows them is the entry's text.
+fn opened(line: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = line.trim_start();
+    while let Some(r) = rest.strip_prefix('(') {
+        names.push(r.split([' ', ')']).next().unwrap_or_default().to_string());
+        let (mut depth, mut at) = (1, r.len());
+        for (k, c) in r.char_indices() {
+            depth += match c {
+                '(' => 1,
+                ')' => -1,
+                _ => 0,
+            };
+            if depth == 0 {
+                at = k + 1;
+                break;
+            }
+        }
+        rest = r[at..].trim_start().trim_start_matches('`').trim_start();
+    }
+    names
+}
+
+/// A form's signature as the reference's first table row opening with it
+/// gives it: `(polygon pts [drafts z0 z1])`.
+fn signature(text: &str, name: &str) -> Option<String> {
+    entries(text).into_iter().filter(|e| e.0).find_map(|(_, _, names, row)| {
+        let k = names.iter().position(|n| n == name)?;
+        // The k-th form the row opens with, to its closing parenthesis.
+        let mut depth = 0;
+        let (mut forms, mut from) = (0, 0);
+        for (i, c) in row.char_indices() {
+            match c {
+                '(' if depth == 0 => {
+                    from = i;
+                    depth = 1;
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if forms == k {
+                            return Some(row[from..=i].to_string());
+                        }
+                        forms += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    })
+}
+
+/// What the form `name` is (None: no entry or definition is of it): the
+/// reference's entries for it (`entries`), each under its heading's path,
+/// then std's definitions of it.
+fn defined(name: &str) -> Option<String> {
+    let found: Vec<(bool, String, Vec<String>, String)> = entries(crate::reference()).into_iter().filter(|e| e.2.iter().any(|n| named(n, name, true))).collect();
+    if found.is_empty() {
+        return None;
+    }
+    let mut out = format!("The reference's entries for ({name} ...), each under the section it is in (read one whole with --section PATH):\n");
+    let mut under = "";
+    for (_, path, _, text) in &found {
+        if path != under {
+            out += &format!("\nspec \"{path}\":\n");
+            under = path;
+        }
+        out += &format!("{text}\n");
+    }
+    if let Some(s) = std_find(name, true).filter(|_| std_text().split("\n\n").any(|b| defs(b).iter().any(|(n, _)| named(n, name, true)))) {
+        out += &format!("\nstd:\n{s}");
+    }
+    // Where the reference writes it: an entry may be one use of the form
+    // ((attr carried ...)) and the section writing it most its general
+    // account (Bodies, attr's), given whole where no section writing it as
+    // often has an entry.
+    let written = written_in(crate::reference(), name);
+    let most = written.first().map_or(0, |w| w.1);
+    if let Some((top, _, own)) = written.first().filter(|_| !written.iter().any(|w| w.1 == most && found.iter().any(|e| e.1 == w.0))) {
+        out += &format!("\nspec \"{top}\" (written most here, its own text):\n{own}");
+    }
+    if written.len() > 1 {
+        let each: Vec<String> = written.iter().take(6).map(|(p, k, _)| format!("\"{p}\" ({k})")).collect();
+        out += &format!("\nThe sections writing ({name} ...), most first: {}\n", each.join(", "));
+    }
+    Some(out)
+}
+
+/// The reference's sections whose own text (not their subsections') writes
+/// the form `name`, `(name ` or `(name)`, with how many times and that
+/// text, most first.
+fn written_in(text: &str, name: &str) -> Vec<(String, usize, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let (open, bare) = (format!("({name} "), format!("({name})"));
+    let mut found: Vec<(String, usize, String)> = heads(&lines)
+        .into_iter()
+        .map(|h| {
+            let own: String = lines[h.0 + 1..own_end(&lines, h.0)].iter().map(|l| format!("{l}\n")).collect();
+            (h.2, own.matches(&open).count() + own.matches(&bare).count(), own)
+        })
+        .filter(|w| w.1 > 0)
+        .collect();
+    found.sort_by_key(|w| std::cmp::Reverse(w.1));
+    found
 }
 
 /// std's section starting at block i, to the next banner.
@@ -204,13 +378,18 @@ pub(crate) fn spec(a: &Args) -> Result<String, InkError> {
         let lines: Vec<&str> = crate::reference().lines().collect();
         return Ok(heads(&lines).iter().map(|h| format!("{} {}\n", "#".repeat(h.1), h.2)).collect());
     };
-    if let Some(s) = spec_find(name)? {
-        return Ok(s);
+    for exact in [true, false] {
+        if let Some(s) = spec_find(name, exact)? {
+            return Ok(s);
+        }
+        if let Some(s) = defined(name).filter(|_| exact) {
+            return Ok(s);
+        }
+        if let Some(s) = std_find(name, exact) {
+            return Ok(format!("From std (`ink std --section`):\n{s}"));
+        }
     }
-    std_find(name)
-        .map(|s| format!("From std (`ink std --section`):\n{s}"))
-        .or_else(|| uses(name))
-        .ok_or_else(|| InkError { hint: Some("ink spec --contents lists the headings".into()), ..InkError::msg(format!("no section of the reference is called '{name}'")) })
+    uses(name).ok_or_else(|| InkError { hint: Some("ink spec --contents lists the headings".into()), ..InkError::msg(format!("no section of the reference is called '{name}'")) })
 }
 
 /// The standard library whole (`--all`), the part a name finds
@@ -232,41 +411,80 @@ pub(crate) fn std_lib(a: &Args) -> Result<String, InkError> {
                 out.push_str(&format!("{sig}\n"));
             }
         }
+        out.push_str(&built_in());
         return Ok(out);
     };
-    if let Some(s) = std_find(name) {
-        return Ok(s);
+    for exact in [true, false] {
+        if let Some(s) = std_find(name, exact) {
+            return Ok(s);
+        }
+        if let Some(s) = defined(name).filter(|_| exact) {
+            return Ok(s);
+        }
+        if let Some(s) = spec_find(name, exact)? {
+            return Ok(format!("From the reference (`ink spec --section`):\n{s}"));
+        }
     }
-    match spec_find(name)? {
-        Some(s) => Ok(format!("From the reference (`ink spec --section`):\n{s}")),
-        None => uses(name).ok_or_else(|| InkError {
-            hint: Some("ink std --contents lists its sections and definitions".into()),
-            ..InkError::msg(format!("std has no section or definition called '{name}'"))
-        }),
+    uses(name).ok_or_else(|| InkError {
+        hint: Some("ink std --contents lists its sections and definitions".into()),
+        ..InkError::msg(format!("std has no section or definition called '{name}'"))
+    })
+}
+
+/// std's contents' last section: the forms built into the language, which
+/// std's definitions are written in, each by its signature where a table
+/// of the reference gives one. `ink std --section NAME` (or spec's) reads
+/// one's entries.
+fn built_in() -> String {
+    let reference = crate::reference();
+    let mut out = "## built in (not std's: the language's own; --section NAME reads one's entries)\n".to_string();
+    let mut bare = Vec::new();
+    for w in ink::lang::builtin_words() {
+        match signature(reference, w) {
+            Some(s) => out += &format!("{s}\n"),
+            None => bare.push(w),
+        }
     }
+    if !bare.is_empty() {
+        out += &format!("also {}\n", bare.join(" "));
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A form's one use found as an entry, (attr carried ...), comes with
+    /// the section writing it most, Bodies: what any attribute is, in spec
+    /// and std alike; one whose entry is in a section writing it as often
+    /// (fn's, Top-level forms) needs no other.
+    #[test]
+    fn a_forms_lookup_includes_the_section_writing_it_most() {
+        let args = |a: &[&str]| crate::Args::parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        for attr in [spec(&args(&["spec", "--section", "attr"])).unwrap(), std_lib(&args(&["std", "--section", "attr"])).unwrap()] {
+            assert!(attr.contains("(attr carried") && attr.contains("spec \"Top-level forms/Bodies\"") && attr.contains("An attribute has any name"), "{attr}");
+        }
+        assert!(!spec(&args(&["spec", "--section", "fn"])).unwrap().contains("written most here"));
+    }
+
     /// A name finds a heading by its title or path, else by what its
     /// title holds; std's sections and definitions the same way; where
     /// neither has it, where it is used.
     #[test]
     fn names_find_sections() {
-        let spec = |n: &str| spec_find(n).unwrap().unwrap_or_default();
+        let spec = |n: &str| spec_find(n, true).unwrap().or_else(|| spec_find(n, false).unwrap()).unwrap_or_default();
         assert!(spec("assemblies").starts_with("### Assemblies"));
         assert!(spec("Standard library/Paths and power transmission").starts_with("### Paths and power transmission"));
         assert!(spec("Solving constraints/Over ranged params").starts_with("### Over ranged params"));
         assert!(spec("top-level").starts_with("## Top-level forms"));
         let sampled = spec("Sampled fields");
         assert!(sampled.starts_with("### Sampled fields") && sampled.matches("### Sampled fields").count() == 1);
-        let std = |n: &str| std_find(n).unwrap_or_default();
+        let std = |n: &str| std_find(n, true).or_else(|| std_find(n, false)).unwrap_or_default();
         assert!(std("primitives").contains("(fn box "));
         assert!(std("petg").contains("(def petg ") && std("aluminum").contains("(def aluminum-6061 "));
         assert!(std("involute").contains("(fn involute-gear-2d "));
-        assert!(std_find("place").is_none());
+        assert!(std_find("place", true).is_none() && std_find("place", false).is_none());
         let used = |n: &str| uses(n).unwrap_or_default();
         assert!(used("interfere").contains("ink interfere"));
         assert!(uses("voronoi").is_none());
@@ -280,9 +498,40 @@ mod tests {
     fn a_section_too_long_gives_its_subsections_paths() {
         let filler = |n: usize| "words ".repeat(n / 6) + "\n";
         let doc = format!("## Long\n{}### One\n{}### Two\n{}## Short\n{}### Three\n{}", filler(100), filler(MAX_TEXT / 2), filler(MAX_TEXT / 2), filler(100), filler(100));
-        let long = find_in(&doc, "Long").unwrap().unwrap();
+        let long = find_in(&doc, "Long", true).unwrap().unwrap();
         assert!(!long.contains("### One") && long.contains(r#"Read each as a section, by its path: "Long/One", "Long/Two"."#), "{}", &long[long.len() - 200..]);
-        assert!(find_in(&doc, "Long/One").unwrap().unwrap().starts_with("### One"));
-        assert!(find_in(&doc, "Short").unwrap().unwrap().contains("### Three"));
+        assert!(find_in(&doc, "Long/One", true).unwrap().unwrap().starts_with("### One"));
+        assert!(find_in(&doc, "Short", true).unwrap().unwrap().contains("### Three"));
+    }
+
+    /// A form's name finds the reference's entries for it, a table's row
+    /// and a list item's, before any name merely holding it: polygon is
+    /// the built-in profile with its point format, not std's
+    /// htd-groove-polygon. std's contents list the built-in forms, each
+    /// by its row's signature.
+    #[test]
+    fn a_forms_name_finds_its_entries() {
+        let doc = "## Fns\n\n```\n(sin a) (cos a)       trig\n(warp e fx fy fz)     e with x:=fx,\n                      y:=fy\n```\n\n```lisp\n(sin 1)\n```\n\n- `(probe x y z)`: a point,\n  as a field.\n- `(other)`: no.\n";
+        let rows = entries(doc);
+        let names: Vec<(bool, Vec<String>)> = rows.iter().map(|e| (e.0, e.2.clone())).collect();
+        let want = |t: bool, n: &[&str]| (t, n.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(names, vec![want(true, &["sin", "cos"]), want(true, &["warp"]), want(false, &["probe"]), want(false, &["other"])]);
+        assert!(rows[1].3.ends_with("y:=fy") && rows[2].3.ends_with("as a field.") && rows.iter().all(|e| e.1 == "Fns"), "{rows:?}");
+        // A list item runs on through blank lines to its indented paragraphs.
+        let item = entries("## A\n\n- `(f a)`: one.\n  - a sub-item.\n\n  Its second paragraph.\n- `(g)`: two.\n\nProse after.\n");
+        assert!(item[0].3.ends_with("Its second paragraph.") && item[1].3 == "- `(g)`: two.", "{item:?}");
+        assert_eq!(signature(doc, "cos").as_deref(), Some("(cos a)"));
+        assert_eq!(signature(doc, "probe"), None, "a list item gives no signature");
+        let found = |a: &[&str]| spec(&crate::Args::parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())).unwrap();
+        let polygon = found(&["spec", "--section", "polygon"]);
+        assert!(polygon.contains("(vec u v b r)") && polygon.contains("(polygon pts [drafts z0 z1])") && !polygon.contains("htd"), "{polygon}");
+        assert!(polygon.contains("drops in a row add up"), "the item's second paragraph: {polygon}");
+        for (form, row) in [("lambda", "(lambda (a b) body)"), ("fn", "(fn name (a b ...) body)"), ("select", "(select c a b)")] {
+            assert!(found(&["spec", "--section", form]).contains(row), "{form}");
+        }
+        let std = std_lib(&crate::Args::parse(&["std".to_string()])).unwrap();
+        let built = &std[std.find("## built in").expect("a section of built-in forms")..];
+        assert!(built.contains("\n(polygon pts [drafts z0 z1])\n") && built.contains("\n(map f list ...)\n"), "{built}");
+        assert!(std_lib(&crate::Args::parse(&["std", "--section", "polygon"].map(String::from))).unwrap().contains("(vec u v b r)"));
     }
 }

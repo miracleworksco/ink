@@ -55,10 +55,11 @@ fn assert_exits_3_when_a_claim_does_not_hold_and_0_when_all_do() {
 #[test]
 fn an_unknown_exact_claim_gives_an_undecided_cell_and_a_res_hint() {
     // An unknown says where, as a failure does; one asked exactly (a range
-    // at its bound on the face x = 0.5) is told what a res can decide, not
-    // to state an accuracy it refuses.
+    // at its bound on the face x = 0.5, the box reading x as (x + 3 y) -
+    // 3 y, so its face and the bound share nothing to split at) is told
+    // what a res can decide, not to state an accuracy it refuses.
     let s = Scratch::new("at-bound");
-    let m = s.model("at-bound.ink", "(import \"std\")\n(assert at-bound (range x -1 0.5 (box 1 1 1)))\n");
+    let m = s.model("at-bound.ink", "(import \"std\")\n(assert at-bound (range x -1 0.5 (warp (box 1 1 1) (- (+ x (* 3 y)) (* 3 y)) y z)))\n");
     let d = ink(["assert", &m]);
     let a = &d["asserts"][0];
     let c = &a["undecided_cell"];
@@ -227,19 +228,89 @@ fn a_straight_polygon_is_its_drawn_corners() {
     assert_eq!((v["in"].as_str(), v["out"].as_str()), ("holds", "holds"), "{v:?}");
 }
 
+/// A flanged sleeve's section, its corners rounded by quarter-turn arcs
+/// 0.024 across: a low term of an exact circle's sums can fall outside
+/// ink's range (-5.4e-101 here), and then every claim on the model reads
+/// unknown. A circle is written as bounds on its centre less its arc's end
+/// and on its radius, numbers of the arc's own size.
 #[test]
-#[ignore = "a drafted polygon's allowance is not yet in its answers' accuracy"]
-fn a_polygon_s_allowance_is_in_its_answers() {
-    // Drafted, a corner 5e-7 below the line through its neighbours, within
-    // polygon's allowance (1e-7 of its 1414 mm diagonal), is merged into
-    // that line; the point 2.5e-7 inside the specified profile read outside
-    // at accuracy 0. Within the allowance it is unknown (neither holds nor
-    // fails), until an accuracy carries it or the construction is exact.
-    let defs = "(def f (polygon (vec (vec 0 0) (vec 500 -0.0000005) (vec 1000 0) (vec 1000 1000) (vec 0 1000)) 0 0 1))";
+fn an_exact_arc_writes_no_number_outside_ink_s_range() {
+    let defs = "(def f (revolve-z (polygon (vec (vec 1.5875 0.0793751) (vec 1.666875 1e-07) (vec 3.9449375 1e-07 0.41421356) (vec 3.96875 0.0238126) (vec 3.96875 1.5636876 0.41421356) (vec 3.9449375 1.5875001) (vec 3.1988125 1.5875001 -0.41421356) (vec 3.175 1.6113126) (vec 3.175 6.1118751) (vec 2.936875 6.3500001) (vec 1.666875 6.3500001) (vec 1.5875 6.2706251)))))";
+    let v = drafted_verdicts("arc-range", defs, &[("in", "(subset (probe 2.5 0 3) f)")]).unwrap();
+    assert_eq!(v["in"], "holds", "{v:?}");
+}
+
+#[test]
+fn a_drafted_corner_off_its_neighbours_line_is_kept() {
+    // Drafted, a corner 5e-7 below the line through its neighbours (within
+    // 1e-7 of the 1414 mm diagonal) is a corner: the point 2.5e-7 inside
+    // the drawn profile is inside (merged into that line, it read outside
+    // at accuracy 0).
+    // So too with its far corners rounded.
     let p = "(probe 500 -2.4999999999999999e-07 0.5)";
     let (i, o) = (format!("(subset {p} f)"), format!("(disjoint {p} f)"));
-    let v = drafted_verdicts("allowance-corner", defs, &[("in", &i), ("out", &o)]).unwrap();
-    assert!(v["in"] != "fails" && v["out"] != "holds", "{defs}: {v:?}");
+    for (tag, defs) in [
+        ("allowance-corner", "(def f (polygon (vec (vec 0 0) (vec 500 -0.0000005) (vec 1000 0) (vec 1000 1000) (vec 0 1000)) 0 0 1))"),
+        ("allowance-rounded", "(def f (polygon (vec (vec 0 0) (vec 500 -0.0000005) (vec 1000 0) (vec 1000 1000 0 20) (vec 0 1000 0 20)) 0 0 1))"),
+    ] {
+        let v = drafted_verdicts(tag, defs, &[("in", &i), ("out", &o)]).unwrap();
+        assert!(v["in"] == "holds" && v["out"] == "fails", "{defs}: {v:?}");
+    }
+}
+
+/// The verdicts of a model's claims, its text as given.
+fn model_verdicts(tag: &str, text: &str) -> std::collections::BTreeMap<String, String> {
+    let s = Scratch::new(tag);
+    let m = s.model("m.ink", text);
+    let d = Ink::new(["assert", &m]).env("INK_NO_CACHE", "1").any();
+    assert_eq!(d["ok"].as_bool(), Some(true), "{text}: {d}");
+    statuses(&d)
+}
+
+#[test]
+fn a_drafted_change_s_height_is_one_number_whatever_the_span() {
+    // One profile drafted over 0..h and over 0.015..h: its construction
+    // changes near z = 0.0130 and 0.0171, the second span holding only the
+    // second. Each height is the number its own change defines: named by
+    // its place among the span's changes, the second span's read the
+    // first's bounds, and a point 3e-5 inside it at z = 0.015 read 8.8e-4
+    // outside at accuracy 0.
+    let pts = "(vec (vec 0.029209085768858924 0.012671456905397274 0 0) (vec -8.581149304262623e-05 0.02682450207275581 0 0) (vec -0.006701061811055517 0.01742338768871102 0 0) (vec -0.012781097462207888 0.01327952064104351 0 0) (vec -0.020837383092469172 -0.003692253093367565 0 0) (vec -0.009568482445898521 -0.031182100045671863 0 0) (vec 0.03463492335699023 -0.015127474559352197 0 0) (vec 0.01884209069273787 -0.0020143964319454728 0 0)) (vec -20 0 -20 5 -20 -20 0 0)";
+    let text = format!(
+        "(def a (polygon {pts} 0 0.019479422232880274))\n(def b (polygon {pts} 0.015 0.019479422232880274))\n(assert a-inside (subset (probe -0.01775 0.00325 0.015) a))\n(assert b-inside (subset (probe -0.01775 0.00325 0.015) b))\n"
+    );
+    let v = model_verdicts("change-identity", &text);
+    assert!(v["a-inside"] == "holds" && v["b-inside"] == "holds", "{v:?}");
+}
+
+#[test]
+fn a_drafted_trim_s_height_holds_its_root_whatever_the_span() {
+    // A chamfer drafted 45 degrees runs out at z = 0.70710678118654760...
+    // just past the first span's top. Its bracket stored there was cut at
+    // that top, excluding the root; the longer span read it, trimmed the
+    // chamfer early, and (-1e-18, -1e-18) outside the chamfer at
+    // z = 0.7071067811865476 read inside at accuracy 0.
+    let pts = "(vec (vec -10 -10) (vec 0 -10) (vec 0 -1) (vec -1 0) (vec -3 0) (vec -3 -2) (vec -7 -2) (vec -7 0) (vec -10 0)) (vec 0 0 45 0 0 0 0 0 0)";
+    let text = format!("(def a (polygon {pts} 0 0.7071067811865474))\n(def b (polygon {pts} 0 1))\n(assert interior (subset (probe -1e-18 -1e-18 0.7071067811865476) b))\n");
+    let v = model_verdicts("trim-identity", &text);
+    assert!(v["interior"] != "holds", "{v:?}");
+}
+
+#[test]
+fn a_drafted_round_is_scaled_with_its_profile() {
+    // A square 1e70 across, rounded 0.1 at the origin, drafted 1 degree:
+    // built at a scale putting it near 1, its round read 1.4e69 (the
+    // radius left unscaled), and (1, 1), past the round, outside at
+    // accuracy 0. And 1e-70 across rounded 1e-71: (1e-73, 1e-73), in the
+    // corner the round cuts away, read inside.
+    let big =
+        model_verdicts("round-scale-big", "(def f (polygon (vec (vec 0 0 0 0.1) (vec 1e70 0) (vec 1e70 1e70) (vec 0 1e70)) 1 0 1))\n(assert interior (subset (probe 1 1 0) f))\n");
+    assert_eq!(big["interior"], "holds", "{big:?}");
+    let small = model_verdicts(
+        "round-scale-small",
+        "(def f (polygon (vec (vec 0 0 0 1e-71) (vec 1e-70 0) (vec 1e-70 1e-70) (vec 0 1e-70)) (vec 0 45 0 0) 0 1e-70))\n(assert exterior (disjoint (probe 1e-73 1e-73 0) f))\n",
+    );
+    assert_eq!(small["exterior"], "holds", "{small:?}");
 }
 
 /// A promise is taken only for its constants as computed for the query:
@@ -284,4 +355,136 @@ fn a_value_left_unknown_says_where_its_proof_and_its_hunt_stopped() {
     // Ranges as narrow as the 32 halvings reach prove it.
     let d = s.ink(["assert", &model("narrow.ink", "0", "0 2.3283064365386963e-10")]).ok();
     assert_eq!(verdict(&d["asserts"][0]), "holds", "{}", pretty(&d));
+}
+
+/// `ink check` says what each claim will cost before it is asked, from
+/// what it knows cheaply: a thickness on coarse cells and a value are under
+/// a second on any machine, and a thickness on cells of a micron over a
+/// 100 mm box over ten minutes on any; a proof's cost, which no cheap look
+/// predicts, is counted by its budget and given no class.
+#[test]
+fn check_estimates_what_each_claim_will_cost() {
+    let s = Scratch::new("cost");
+    let m = s.model(
+        "cost.ink",
+        "(import \"std\")\n(body a (shape (box 100 100 10)))\n(body far (shape (move (sphere 5) 500 0 0)))\n\
+         (param w 3)\n\
+         (assert apart (disjoint (shape-of a) (shape-of far)))\n\
+         (assert walls (min-thickness (shape-of a) > 1) (res 5))\n\
+         (assert sized (value w > 1))\n\
+         (assert fine-walls (min-thickness (shape-of a) > 1) (res 0.001))\n",
+    );
+    let d = s.ink(["check", &m]).ok();
+    let cost = |n: &str| d["asserts"].as_array().unwrap().iter().find(|a| a["name"] == n).map(|a| a["cost_estimate"].clone()).unwrap_or_default();
+    assert!(
+        ["walls", "sized"].iter().all(|n| cost(n)["class"] == "under a second")
+            && cost("fine-walls")["class"] == "over ten minutes"
+            && cost("fine-walls")["basis"].as_str().is_some_and(|b| b.contains("surface samples"))
+            && cost("apart")["class"].is_null()
+            && cost("apart")["basis"].as_str().is_some_and(|b| b.contains("a proof")),
+        "{}",
+        pretty(&d["asserts"])
+    );
+}
+
+/// A cost estimate reads only what `ink check` surveys already, the
+/// bodies' surfaces: thicknesses of 30 shapes no body is (distinct spheres)
+/// are not counted, and say so, rather than sampled by check.
+#[test]
+fn a_cost_estimate_samples_nothing_check_does_not() {
+    let s = Scratch::new("cost-unsurveyed");
+    let claims: String = (0..30).map(|i| format!("(assert w{i} (min-thickness (sphere {}) > 0.1))\n", 1.0 + 0.1 * i as f64)).collect();
+    let d = s.ink(["check", &s.model("spheres.ink", &format!("(import \"std\")\n{claims}"))]).ok();
+    let rows = d["asserts"].as_array().unwrap();
+    assert!(
+        rows.len() == 30 && rows.iter().all(|a| a["cost_estimate"]["class"].is_null() && a["cost_estimate"]["basis"].as_str().is_some_and(|b| b.contains("no body"))),
+        "{}",
+        pretty(&d["asserts"])
+    );
+}
+
+/// A claim's estimate is of what `ink assert` will do with it: a value
+/// over a ranged param, or over the motion, is a search (not classed), not
+/// one evaluation; and a stoppable assert's estimates (its progress),
+/// after check, are check's.
+#[test]
+fn a_cost_estimate_is_of_what_assert_does_and_assert_says_the_same() {
+    let s = Scratch::new("cost-ranged");
+    let m = s.model(
+        "ranged.ink",
+        "(import \"std\")\n(def w (ranged 1 4 3))\n(t-span 0 1)\n(body a (shape (box 10 10 10)))\n\
+         (assert c (value w > 0))\n(assert moved (value (+ t 1) > 0))\n(assert plain (value 3 > 2))\n\
+         (assert walls (min-thickness (shape-of a) > 1) (res 5))\n(assert apart (disjoint (shape-of a) (move (shape-of a) 50 0 0)))\n",
+    );
+    let cache = s.path("cache");
+    let d = s.ink(["check", &m]).env("XDG_CACHE_HOME", &cache).env_remove("INK_NO_CACHE").ok();
+    let cost = |n: &str| d["asserts"].as_array().unwrap().iter().find(|a| a["name"] == n).map(|a| a["cost_estimate"].clone()).unwrap_or_default();
+    let searched = |n: &str| cost(n)["class"].is_null() && cost(n)["basis"].as_str().is_some_and(|b| b.starts_with("a search over"));
+    let progress = s.path("progress.jsonl");
+    s.ink(["assert", &m]).env("INK_PROGRESS", &progress).env("XDG_CACHE_HOME", &cache).env_remove("INK_NO_CACHE").any();
+    let said: Value =
+        std::fs::read_to_string(&progress).unwrap().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|l| l["estimates"].is_object()).unwrap_or_default();
+    let same = ["c", "moved", "plain", "walls", "apart"].iter().all(|n| said["estimates"][n] == cost(n));
+    assert!(searched("c") && searched("moved") && cost("plain")["class"] == "under a second" && same, "check: {}\nassert: {}", pretty(&d["asserts"]), pretty(&said));
+}
+
+/// Cases are counted without overflow, at most as many as a run asks: 64
+/// text params with a case each are 2^64 combinations, which the run
+/// refuses. Set by --param, a param's cases are not asked.
+#[test]
+fn many_cases_are_counted_without_overflow() {
+    let s = Scratch::new("cost-cases");
+    let params: String = (0..64).map(|i| format!("(param n{i} \"a\" (cases \"b\"))\n")).collect();
+    let m = s.model("cases.ink", &format!("(import \"std\")\n{params}(assert one (value 1 > 0))\n"));
+    let d = s.ink(["check", &m]).ok();
+    let refused = d["asserts"][0]["cost_estimate"]["basis"].as_str().is_some_and(|b| b.contains("asked at most 257 times"));
+    let e = s.ink(["assert", &m]).err();
+    let mut pinned = vec!["check".to_string(), m.clone()];
+    for i in 0..64 {
+        pinned.extend(["--param".to_string(), format!("n{i}=a")]);
+    }
+    let p = s.ink(&pinned).ok();
+    assert!(
+        refused
+            && e["error"]["message"].as_str().is_some_and(|m| m.contains("combinations"))
+            && p["asserts"][0]["cost_estimate"]["basis"].as_str().is_some_and(|b| b.starts_with("one evaluation")),
+        "{}\n{}\n{}",
+        pretty(&d["asserts"]),
+        pretty(&e),
+        pretty(&p["asserts"])
+    );
+}
+
+/// A stoppable assert (INK_PROGRESS) is never slowed by its estimates: on
+/// a cold cache it computes no more than one without (counted as the
+/// answers each stores: the same), and its thickness, whose body no check
+/// has surveyed yet, is not classed; once `ink check` has surveyed it, the
+/// estimate is check's.
+#[test]
+fn a_stoppable_assert_surveys_nothing_for_its_estimates() {
+    let s = Scratch::new("cost-cold");
+    let m = s.model("walls.ink", "(import \"std\")\n(body a (shape (box 40 20 10)))\n(assert walls (min-thickness (shape-of a) > 1) (res 2))\n");
+    let stored = |cache: &str| std::fs::read_dir(std::path::Path::new(cache).join("ink/answers")).map_or(0, |d| d.count());
+    let (plain, cold) = (s.path("plain"), s.path("cold"));
+    s.ink(["assert", &m]).env("XDG_CACHE_HOME", &plain).env_remove("INK_NO_CACHE").ok();
+    let estimate = |cache: &str, log: &str| {
+        s.ink(["assert", &m]).env("XDG_CACHE_HOME", cache).env("INK_PROGRESS", s.path(log)).env_remove("INK_NO_CACHE").ok();
+        let lines = std::fs::read_to_string(s.path(log)).unwrap();
+        lines.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|l| l["estimates"].is_object()).map(|l| l["estimates"]["walls"].clone()).unwrap_or_default()
+    };
+    let before = estimate(&cold, "cold.jsonl");
+    let same_work = stored(&plain) == stored(&cold);
+    let checked = s.ink(["check", &m]).env("XDG_CACHE_HOME", &cold).env_remove("INK_NO_CACHE").ok();
+    let after = estimate(&cold, "warm.jsonl");
+    assert!(
+        same_work
+            && before["class"].is_null()
+            && before["basis"].as_str().is_some_and(|b| b.contains("no survey yet; ink check computes it"))
+            && after == checked["asserts"][0]["cost_estimate"]
+            && after["class"].is_string(),
+        "answers stored: {} without progress, {} with; cold: {before}; after check: {after}; check: {}",
+        stored(&plain),
+        stored(&cold),
+        checked["asserts"][0]["cost_estimate"]
+    );
 }

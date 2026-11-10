@@ -121,7 +121,7 @@ fn faces_meeting_flush_inside_the_material_are_meshed_only_with_a_report() {
     // thickness): a wall drawn there is reported.
     let mut g = Graph::new();
     let f = split_cube(&mut g);
-    let (m, u) = mesh::mesh_checked(&tape(&g, f), &at0(), [-10.0; 3], [10.0; 3], 1.0, mesh::Limit::GRID).unwrap();
+    let (m, u) = mesh::mesh_checked(&tape(&g, f), &at0(), [-10.0; 3], [10.0; 3], 1.0, mesh::Limit::GRID, 0.0).unwrap();
     let inner = m.verts.iter().filter(|p| p[0].abs() < 0.01 && p[1].abs() < 9.0 && p[2].abs() < 9.0).count();
     assert!(inner == 0 || u.cells > 0, "{inner} vertices on the 0 inside the material, unreported");
 }
@@ -269,7 +269,7 @@ fn a_volume_derivative_reads_the_inside_where_outside_reads_0() {
 }
 
 #[test]
-fn a_0_where_air_wedges_meet_is_air_and_where_blocks_meet_is_undecided() {
+fn a_0_where_air_wedges_meet_is_air_and_where_blocks_meet_is_material() {
     // min(0, |x + y| / 2 - |x - y|): air read as 0 in two wedges meeting
     // on the z axis; -min(|x|, |y|): four blocks meeting there flush.
     let mut g = Graph::new();
@@ -284,15 +284,17 @@ fn a_0_where_air_wedges_meet_is_air_and_where_blocks_meet_is_undecided() {
     let (ax, ay) = (g.un(UnOp::Abs, x), g.un(UnOp::Abs, y));
     let m = g.min(ax, ay);
     let blocks = g.neg(m);
-    for (f, decided) in [(wedges, true), (blocks, false)] {
-        assert_eq!(ink::sign::undecided(&tape(&g, f), &at0(), &[[0.0; 3]], &[0.0], None).is_empty(), decided);
+    for (f, drawn) in [(wedges, 0.0), (blocks, ink::sign::SOLID)] {
+        let mut v = [0.0];
+        assert!(ink::sign::drawn(&tape(&g, f), &at0(), &[[0.0; 3]], &mut v, None).is_empty());
+        assert_eq!(v[0], drawn);
     }
 }
 
 #[test]
 fn four_blocks_meeting_flush_mesh_and_slice_as_one_or_say_so() {
     let (_, t) = body("(body p (shape (max (box 20 20 20) (neg (min (abs x) (abs y))))))");
-    let (m, u) = mesh::mesh_checked(&t, &at0(), [-10.0; 3], [10.0; 3], 1.0, mesh::Limit::GRID).unwrap();
+    let (m, u) = mesh::mesh_checked(&t, &at0(), [-10.0; 3], [10.0; 3], 1.0, mesh::Limit::GRID, 0.0).unwrap();
     let inner = m.verts.iter().filter(|p| p[0].abs() < 1.0 && p[1].abs() < 1.0 && p[2].abs() < 9.0).count();
     assert!(inner == 0 || u.cells > 0, "{inner} vertices where the blocks meet, unreported");
     let (loops, open) = query::slice_checked(&t, &at0(), 2, 0.3, [-10.0; 3], [10.0; 3], 1.0);
@@ -320,8 +322,8 @@ fn air_read_as_0_no_bound_shows_is_never_filled_unreported() {
     // apart: neither is shown a join, so each is air or reported.
     for (src, half) in [("(min 0 (- 0.2 (abs x)))", 4.0), ("(min 0 (+ (- 2 (abs x)) (* 16 (- (- (+ x y) x) y))))", 6.0)] {
         let (_, t) = body(&format!("(body p (shape (max (box {w} {w} {w}) {src})))", w = 2.0 * half));
-        let open = ink::sign::undecided(&t, &at0(), &[[0.0; 3]], &[0.0], None);
-        let (m, u) = mesh::mesh_checked(&t, &at0(), [-half; 3], [half; 3], 1.0, mesh::Limit::GRID).unwrap();
+        let open = ink::sign::drawn(&t, &at0(), &[[0.0; 3]], &mut [0.0], None);
+        let (m, u) = mesh::mesh_checked(&t, &at0(), [-half; 3], [half; 3], 1.0, mesh::Limit::GRID, 0.0).unwrap();
         assert!(mesh::analyze(&m).shells.len() == 2 || u.cells > 0, "{src}: one solid, nothing unresolved ({open:?})");
         let (loops, undecided) = query::slice_checked(&t, &at0(), 2, 0.3, [-half; 3], [half; 3], 1.0);
         assert!(loops.len() == 2 || !undecided.is_empty(), "{src}: one loop, nothing unresolved");
@@ -332,25 +334,25 @@ fn air_read_as_0_no_bound_shows_is_never_filled_unreported() {
 fn an_undecided_saddle_face_centre_reaches_the_mesh_report() {
     let (_, t) = body("(body p (shape (max (box 7 7 7) (- (* 0.01 (abs (- (+ x y) 1))) (abs (- x y))))))");
     let p = [0.5, 0.5, 0.0];
-    let v = [ink::eval::eval_point(&t, &at0(), p)];
-    assert_eq!(ink::sign::undecided(&t, &at0(), &[p], &v, None).len(), 1, "a sample nothing near decides");
-    let (_, u) = mesh::mesh_checked(&t, &at0(), [-4.0; 3], [4.0; 3], 1.0, mesh::Limit::GRID).unwrap();
+    let mut v = [ink::eval::eval_point(&t, &at0(), p)];
+    assert_eq!(ink::sign::drawn(&t, &at0(), &[p], &mut v, None).len(), 1, "a sample nothing near decides");
+    let (_, u) = mesh::mesh_checked(&t, &at0(), [-4.0; 3], [4.0; 3], 1.0, mesh::Limit::GRID, 0.0).unwrap();
     assert!(u.cells > 0, "{u:?}");
 }
 
 #[test]
 fn a_0_with_nothing_beside_it_shown_is_reported_whatever_its_width() {
-    // A join (-|x|), and air read as 0 half a nanometre wide or 0.05 mm
-    // wide 100 km out: nothing near shows air beside the sample, so each is
-    // reported (never read as material: there is no such rule).
-    for (src, p) in [("(neg (abs x))", [0.0; 3]), ("(min 0 (- 0.25e-9 (abs x)))", [0.0; 3]), ("(min 0 (- 0.025 (abs x)))", [0.0, 1e8, 0.0])] {
+    // Air read as 0 half a nanometre wide, or 0.05 mm wide 100 km out:
+    // nothing near shows air beside the sample, and its 0 has volume, so
+    // each is reported (never read as material).
+    for (src, p) in [("(min 0 (- 0.25e-9 (abs x)))", [0.0; 3]), ("(min 0 (- 0.025 (abs x)))", [0.0, 1e8, 0.0])] {
         let (_, t) = body(&format!("(body p (shape {src}))"));
-        let v = [ink::eval::eval_point(&t, &at0(), p)];
-        assert_eq!(ink::sign::undecided(&t, &at0(), &[p], &v, None), vec![p], "{src}");
+        let mut v = [ink::eval::eval_point(&t, &at0(), p)];
+        assert_eq!(ink::sign::drawn(&t, &at0(), &[p], &mut v, None), vec![p], "{src}");
     }
     let (_, t) = body("(body p (shape (max (move (box 8 8 8) 0 100000000 0) (min 0 (- 0.025 (abs x))))))");
     let (lo, hi) = ([-4.0, 1e8 - 4.0, -4.0], [4.0, 1e8 + 4.0, 4.0]);
-    let (m, u) = mesh::mesh_checked(&t, &at0(), lo, hi, 1.0, mesh::Limit::GRID).unwrap();
+    let (m, u) = mesh::mesh_checked(&t, &at0(), lo, hi, 1.0, mesh::Limit::GRID, 0.0).unwrap();
     assert!(mesh::analyze(&m).shells.len() == 2 || u.cells > 0, "{u:?}");
     let (loops, open) = query::slice_checked(&t, &at0(), 2, 0.3, lo, hi, 1.0);
     assert!(loops.len() == 2 || !open.is_empty());
@@ -358,11 +360,14 @@ fn a_0_with_nothing_beside_it_shown_is_reported_whatever_its_width() {
 
 #[test]
 fn a_0_a_crossing_s_halving_reads_reaches_the_mesh_report() {
-    // No sample of the grid is on the angled join x + y = 3.25; the first
-    // halving of the edge (3, 0, 0)..(4, 0, 0) reads (3.25, 0, 0).
-    let (_, t) = body("(body p (shape (max (box 7.8125 7.8125 7.8125) (neg (* 0.125 (abs (- (+ x y) 3.25)))))))");
-    let (_, u) = mesh::mesh_checked(&t, &at0(), [-4.0; 3], [4.0; 3], 1.0, mesh::Limit::GRID).unwrap();
-    assert!(u.cells > 0, "{u:?}");
+    // No sample of the grid is on x + y = 3.25; the first halving of the
+    // edge (3, 0, 0)..(4, 0, 0) reads (3.25, 0, 0): on air read as 0 a
+    // picometre wide, reported; on an angled join, material, not.
+    for (src, reported) in [("(min 0 (- 1e-12 (abs (- (+ x y) 3.25))))", true), ("(neg (* 0.125 (abs (- (+ x y) 3.25))))", false)] {
+        let (_, t) = body(&format!("(body p (shape (max (box 7.8125 7.8125 7.8125) {src})))"));
+        let (_, u) = mesh::mesh_checked(&t, &at0(), [-4.0; 3], [4.0; 3], 1.0, mesh::Limit::GRID, 0.0).unwrap();
+        assert_eq!(u.cells > 0, reported, "{src}: {u:?}");
+    }
 }
 
 #[test]
@@ -401,7 +406,7 @@ fn a_sweep_meshes_in_seconds() {
     let (lo, hi, _) = v.bounds(f).unwrap();
     let t = v.clipped(f);
     let start = std::time::Instant::now();
-    let (m, _) = mesh::mesh_checked(&t, &v.ctx, lo, hi, 0.6, mesh::Limit::GRID).unwrap();
+    let (m, _) = mesh::mesh_checked(&t, &v.ctx, lo, hi, 0.6, mesh::Limit::GRID, 0.0).unwrap();
     let s = start.elapsed().as_secs_f64();
     assert!(s < 30.0 && mesh::analyze(&m).shells.len() == 1, "{s} s");
 }
@@ -409,7 +414,7 @@ fn a_sweep_meshes_in_seconds() {
 #[test]
 fn a_join_on_a_brick_s_face_is_read_past_it_by_the_whole_field() {
     // -|x|'s brick over x >= 0 holds -x, which reads air past x = 0 where
-    // the whole field reads material: the join at 0 stays undecided.
+    // the whole field reads material: the join at 0 is material, no surface.
     let mut g = Graph::new();
     let x = g.var(Var::X);
     let nx = g.neg(x);
@@ -417,12 +422,14 @@ fn a_join_on_a_brick_s_face_is_read_past_it_by_the_whole_field() {
     let whole = g.neg(ax);
     let within = [ink::interval::I::new(0.0, 8.0), ink::interval::I::new(-4.0, 4.0), ink::interval::I::new(-4.0, 4.0)];
     let (brick, whole) = (tape(&g, nx), tape(&g, whole));
-    assert_eq!(ink::sign::undecided(&brick, &at0(), &[[0.0; 3]], &[0.0], Some((within, &whole))), vec![[0.0; 3]]);
+    let mut v = [0.0];
+    assert!(ink::sign::drawn(&brick, &at0(), &[[0.0; 3]], &mut v, Some((within, &whole))).is_empty());
+    assert_eq!(v[0], ink::sign::SOLID);
     // Flush joins on a brick boundary (the grid starts at -8: x = 0 is
     // one), meshed: no wall, or one reported.
     for src in ["(neg (abs x))", "(min x (neg x))", "(neg (square x))", "(max (select x x (* -2 x)) (select (neg x) (* -2 x) x))"] {
         let (_, t) = body(&format!("(body p (shape (max (box 14 14 14) {src})))"));
-        let (m, u) = mesh::mesh_checked(&t, &at0(), [-7.0; 3], [7.0; 3], 1.0, mesh::Limit::GRID).unwrap();
+        let (m, u) = mesh::mesh_checked(&t, &at0(), [-7.0; 3], [7.0; 3], 1.0, mesh::Limit::GRID, 0.0).unwrap();
         let inner = m.verts.iter().filter(|p| p[0].abs() < 0.2 && p[1].abs() < 6.0 && p[2].abs() < 6.0).count();
         assert!(inner == 0 || u.cells > 0, "{src}: {inner} vertices on the join, unreported");
     }
@@ -442,4 +449,117 @@ fn a_subset_s_range_is_checked_where_a_lies() {
     let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
     let c = &r.asserts[0].check;
     assert!(c.status == Unknown && c.accuracy.is_none(), "{c:?}");
+}
+
+#[test]
+fn pieces_meeting_flush_mesh_as_one_solid_with_nothing_unresolved() {
+    // Joins inside the material (halves, a box on a box, a head on a
+    // shank, an inlay, four blocks) and a pocket whose mouth is flush with
+    // its face: no wall drawn, and no cell left undecided where they meet.
+    for src in [
+        "(min (move (box 10 20 20) -5 0 0) (move (box 10 20 20) 5 0 0))",
+        "(min (move (box 20 20 10) 0 0 5) (move (box 10 10 10) 0 0 15))",
+        "(min (extrude-z (circle-2d 3) 0 20) (extrude-z (circle-2d 6) 20 24))",
+        "(min (subtract (box 20 20 20) (box 10 10 10)) (box 10 10 10))",
+        "(max (box 20 20 20) (neg (min (abs x) (abs y))))",
+        "(subtract (move (box 40 40 10) 20 20 5) (move (box 20 20 5) 20 20 7.5))",
+    ] {
+        let (doc, t) = body(&format!("(body p (shape {src}))"));
+        let ctx = doc.ctx(&[], 0.0).unwrap();
+        let (lo, hi, _) = query::bounds(&t, &ctx, [-500.0; 3], [500.0; 3]).unwrap();
+        let (m, u) = mesh::mesh_checked(&t, &ctx, lo, hi, 0.37, mesh::Limit::GRID, 0.0).unwrap();
+        assert!(u.cells == 0 && mesh::analyze(&m).shells.len() == 1, "{src}: {u:?}");
+    }
+}
+
+#[test]
+fn pieces_meeting_flush_are_decided_as_coarsely_as_apart_ones() {
+    // A peg in a flush pocket's mouth is apart exactly, as one clear of a
+    // solid plate; a cube across a flush join is inside to the accuracy at
+    // the cells a cube in one piece is.
+    use ink::claims::{ClaimOptions, Evidence, Status, run_asserts};
+    let src = "(import \"std\")
+        (def pocket (subtract (move (box 40 40 10) 20 20 5) (move (box 20 20 5) 20 20 7.5)))
+        (def peg (move (box 4 4 4) 20 20 10))
+        (def two (min (move (box 10 10 10) 5 0 0) (move (box 10 10 10) -5 0 0)))
+        (assert mouth (disjoint peg pocket))
+        (assert mouth-turned (disjoint (rotate-x peg 30) (rotate-x pocket 30)))
+        (assert across (subset (box 4 4 4) two))
+        (assert within (subset (box 4 4 4) (box 20 10 10)))";
+    let doc = ink::load_str(src, "flush", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
+    let ctx = doc.ctx(&[], 0.0).unwrap();
+    let mut v = ink::view::ModelView::new(doc, ctx);
+    let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
+    let proof = |name: &str| {
+        let c = &r.asserts.iter().find(|a| a.name == name).unwrap().check;
+        let Evidence::Empty(p) = &c.evidence else { panic!("{name}: {c:?}") };
+        assert_eq!(c.status, Status::Holds, "{name}: {c:?}");
+        (p.exact, p.res)
+    };
+    assert!(proof("mouth").0 && proof("mouth-turned").0, "apart outright");
+    assert!(!proof("across").0 && proof("across").1 == proof("within").1, "{:?} {:?}", proof("across"), proof("within"));
+}
+
+#[test]
+fn a_min_of_values_tied_at_0_shows_no_join() {
+    // max(0, floor(z + 0.5)) is 0 throughout |z| < 0.5, a region of air
+    // read as 0, and so are two tags of 0: min(x, it) is air on x > 0, so
+    // half the box is not in it. Both of a min's branches reading 0 there,
+    // neither may be passed over as never picked.
+    use ink::claims::Status::*;
+    use ink::claims::{ClaimOptions, run_asserts};
+    for shape in ["(min x (max 0 (floor (+ z 0.5))))", "(min x (max (tag a 0) (tag b 0)))"] {
+        let src = format!("(import \"std\") (assert half-air (subset (box 2 2 0.2) {shape}))");
+        let doc = ink::load_str(&src, "tied", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
+        let ctx = doc.ctx(&[], 0.0).unwrap();
+        let mut v = ink::view::ModelView::new(doc, ctx);
+        let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
+        assert_eq!(r.asserts[0].check.status, Fails, "{shape}: {:?}", r.asserts[0].check);
+    }
+}
+
+#[test]
+fn a_groove_read_as_0_keeps_no_sign_through_a_negation() {
+    // -max(0, |x - 0.5| - 0.2) is 0 in a slot 0.4 wide, below 0 either side:
+    // max(0, g) is never inside, but its negation is inside only off the
+    // slot, so it does not keep one sign. Cut into a cube's top, the groove
+    // falls between samples a mm apart: reported, not passed as drawn.
+    let mut g = Graph::new();
+    let x = g.var(Var::X);
+    let (h, w, zero) = (g.constant(0.5), g.constant(0.2), g.constant(0.0));
+    let d = g.sub(x, h);
+    let a = g.un(UnOp::Abs, d);
+    let slot = g.sub(a, w);
+    let m = g.max(zero, slot);
+    let f = g.neg(m);
+    let t = tape(&g, f);
+    let b = [ink::interval::I::new(-1.0, 1.0); 3];
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    ink::eval::eval_interval(&t, &at0(), b, Some(&mut ch));
+    assert!(!t.monotone(&ch, &ink::eval::eval_interval_grad_every(&t, &at0(), b), [1.0, 0.0, 0.0]));
+    let (_, t) = body("(body p (shape (max (box 6.8 6.8 6.8) (neg (max 0 (max (- (abs (- x 0.5)) 0.2) (- 3.1 z)))))))");
+    let (_, u) = mesh::mesh_checked(&t, &at0(), [-4.0; 3], [4.0; 3], 1.0, mesh::Limit { bricks: usize::MAX, search: 1e7 }, 0.0).unwrap();
+    assert!(u.cells > 0, "{u:?}");
+}
+
+#[test]
+fn a_negation_changes_sign_the_other_way_only_where_its_0_has_no_volume() {
+    // a = min(x, max(0, |x - 0.5| - 0.2)): inside for x < 0, then 0 or above
+    // (once from inside to not along x), but 0 in a slot at x 0.3..0.7
+    // between parts above 0; -a is inside on x 0..0.3 and 0.7..1 with air
+    // between: two changes along x, not one the other way.
+    let mut g = Graph::new();
+    let x = g.var(Var::X);
+    let (h, w, zero) = (g.constant(0.5), g.constant(0.2), g.constant(0.0));
+    let d = g.sub(x, h);
+    let ad = g.un(UnOp::Abs, d);
+    let slot = g.sub(ad, w);
+    let m = g.max(zero, slot);
+    let a = g.min(x, m);
+    let f = g.neg(a);
+    let t = tape(&g, f);
+    let b = [ink::interval::I::new(-0.25, 1.0), ink::interval::I::new(-1.0, 1.0), ink::interval::I::new(-1.0, 1.0)];
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    ink::eval::eval_interval(&t, &at0(), b, Some(&mut ch));
+    assert!(!t.monotone(&ch, &ink::eval::eval_interval_grad_every(&t, &at0(), b), [1.0, 0.0, 0.0]));
 }

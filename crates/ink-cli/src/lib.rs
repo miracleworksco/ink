@@ -3,7 +3,7 @@
 //! ([`main`] with its registry): this crate's binary is the kernel's.
 
 use ink::eval::{eval_dual, eval_points_par};
-use ink::lang::command::{Args, Command, Records, Run, bounds, extend, inexact_fields, json_arg, json_v3, measured, n, parse_points, sources_json, to_compact, to_pretty, v3};
+use ink::lang::command::{Args, Command, Opt, Records, Run, bounds, extend, inexact_fields, json_arg, json_v3, measured, n, parse_points, sources_json, to_compact, to_pretty, v3};
 use ink::lang::{Attrs, Item, Reach, Registry, Value, Xf};
 use ink::mesh::{self, Mesh};
 use ink::query::{self, max_extent};
@@ -33,41 +33,58 @@ pub mod meshes {
 }
 
 /// Each core command: its name, what it answers (`ink help` and the MCP
-/// tool's description both print it), and the options it reads besides
-/// those every command on a file reads (MODEL_OPTIONS, PROCESS_OPTIONS).
+/// tool's description both print it), the options it reads besides
+/// those every command on a file reads (MODEL_OPTIONS, PROCESS_OPTIONS),
+/// and the file it writes (so the MCP tool it is served under).
 /// `ink help` and the tool's description are printed from this table and
 /// OPTION_HELP, so they cannot disagree.
-pub const COMMANDS: &[(&str, &str, &[&str])] = &[
-    ("check", "Load the model: its own params, defs, fns, bodies, assemblies with frames, claims and warnings, and each import in brief.", &["load", "imports"]),
+pub const COMMANDS: &[(&str, &str, &[Opt])] = &[
+    (
+        "check",
+        "Load the model: its own params, defs, fns, bodies, assemblies with frames, claims and warnings, and each import in brief.",
+        &[Opt::reads("load"), Opt::reads("imports"), Opt::reads("name")],
+    ),
     (
         "eval",
         "The field's value, inside or not, gradient, and rates of change with t and each param, at points. Attributes where keys names them (attrs.spec).",
-        &["target", "points", "keys"],
+        &[Opt::reads("target"), Opt::reads("points"), Opt::reads("keys")],
     ),
-    ("bounds", "Each target's proven bounding box.", &["target"]),
+    ("bounds", "Each target's proven bounding box.", &[Opt::reads("target")]),
     (
         "mass",
         "Mass, volume and centre of mass, estimated to 2%. Density is the target's, its material's or its published mass's; with none, mass and total mass are null. Inertia and principal axes where keys names them.",
-        &["target", "density", "res", "keys"],
+        &[Opt::reads("target"), Opt::reads("density"), Opt::reads("res"), Opt::reads("keys")],
     ),
-    ("slice", "Cross-section loops in a plane: kind, area, perimeter, bounds. Their points where keys names them.", &["target", "axis", "at", "res", "accuracy", "keys", "out"]),
+    (
+        "slice",
+        "Cross-section loops in a plane: kind, area, perimeter, bounds. Their points where keys names them.",
+        &[Opt::reads("target"), Opt::reads("axis"), Opt::reads("at"), Opt::reads("res"), Opt::reads("accuracy"), Opt::reads("keys"), Opt::writes("out")],
+    ),
     (
         "mesh",
         "Write STL or 3MF (to print) or GLB (to view). Reports triangles, cells where a feature under res went missing, and (STL, 3MF) sampled deviation from the surface.",
-        &["target", "out", "res", "max-res", "accuracy"],
+        &[Opt::reads("target"), Opt::writes_or_own("out"), Opt::reads("res"), Opt::reads("max-res"), Opt::reads("accuracy")],
     ),
-    ("components", "Count cavities by proof, as (cavities f < n) does, and list a mesh's shells.", &["target", "res"]),
-    ("interfere", "Overlaps between an assembly's instances outside contact zones, at rest or over the motion.", &["target", "res", "accuracy", "t-span"]),
+    ("components", "Count cavities by proof, as (cavities f < n) does, and list a mesh's shells.", &[Opt::reads("target"), Opt::reads("res")]),
+    (
+        "interfere",
+        "Overlaps between an assembly's instances outside contact zones, at rest or over the motion.",
+        &[Opt::reads("target"), Opt::reads("res"), Opt::reads("accuracy"), Opt::reads("t-span")],
+    ),
     (
         "assert",
         "Check the file's claims and joint limits: each holds, fails (with a witness point where one shows it) or is unknown (with an undecided_cell, and a hint where it can). accuracy says how far off each answer may be; null means unknown or estimated. Exits 3 if any fails or is unknown.",
-        &["name", "own", "res", "t-span"],
+        &[Opt::reads("name"), Opt::reads("own"), Opt::reads("res"), Opt::reads("t-span"), Opt::reads("keys")],
     ),
-    ("ray", "Where rays first hit each target: point, normal, name.", &["target", "rays", "from", "dir", "keys"]),
-    ("distance", "Minimum distance between two targets: a proven lower bound and a witness pair of points.", &["a", "b", "res"]),
-    ("render", "Labelled PNG from iso, top, front and right, or one view, with the res each target was meshed at.", &["target", "out", "view", "cut", "size", "res"]),
-    ("spec", "The language reference: its headings, a section, or all of it.", &["contents", "section", "all"]),
-    ("std", "The standard library: sections and signatures, a section or named definitions, or all of it.", &["contents", "section", "all"]),
+    ("ray", "Where rays first hit each target: point, normal, name.", &[Opt::reads("target"), Opt::reads("rays"), Opt::reads("from"), Opt::reads("dir"), Opt::reads("keys")]),
+    ("distance", "Minimum distance between two targets: a proven lower bound and a witness pair of points.", &[Opt::reads("a"), Opt::reads("b"), Opt::reads("res")]),
+    (
+        "render",
+        "Labelled PNG from iso, top, front and right, or one view, with the res each target was meshed at.",
+        &[Opt::reads("target"), Opt::writes_or_own("out"), Opt::reads("view"), Opt::reads("cut"), Opt::reads("size"), Opt::reads("res")],
+    ),
+    ("spec", "The language reference: its headings, a section, or all of it.", &[Opt::reads("contents"), Opt::reads("section"), Opt::reads("all")]),
+    ("std", "The standard library: sections and signatures, a section or named definitions, or all of it.", &[Opt::reads("contents"), Opt::reads("section"), Opt::reads("all")]),
     ("mcp", "Serve these commands over MCP (stdio): claude mcp add ink -- ink mcp", &[]),
     ("help", "This text.", &[]),
 ];
@@ -75,7 +92,11 @@ pub const COMMANDS: &[(&str, &str, &[&str])] = &[
 /// Each option: its name, an example of its value as the MCP tool takes it
 /// (JSON), and what it does.
 pub const OPTION_HELP: &[(&str, &str, &str)] = &[
-    ("param", r#"["w=40", "h=5"]"#, "Set a param (repeatable). assert and interfere also take a range, w=38:42."),
+    (
+        "param",
+        r#"["w=40", "h=5"]"#,
+        "Set a param (repeatable). assert and interfere also take a range, w=38:42. A text param takes text, name=Grace; one with a comma is a JSON string, name=\"Lovelace, Ada\".",
+    ),
     ("t", "1.5", "The moment, s (default 0)."),
     ("nominal", "true", "assert, interfere: ignore declared tolerances."),
     ("compact", "true", "No whitespace (the MCP tool's default)."),
@@ -96,7 +117,7 @@ pub const OPTION_HELP: &[(&str, &str, &str)] = &[
     ("out", r#""part.stl""#, "The file written: mesh .stl/.3mf/.glb, slice .dxf (cut at the model's accuracy), render .png."),
     ("max-res", "1", "mesh: caps the cell size ink picks for a target (not a given --res)."),
     ("t-span", r#""0:2""#, "A:B: check claims that read t at every moment in [A, B] (default: the file's t-span)."),
-    ("name", r#""fit""#, "Only this claim."),
+    ("name", r#""fit""#, "assert: only this claim. check: only this def's value, whole (to see a value, def it)."),
     ("own", "true", "Only this file's own claims, not its imports'."),
     ("rays", "[[[0, 0, 50], [0, 0, -1]]]", "Rays [[[ox,oy,oz],[dx,dy,dz]],...], or @file.json, or - (stdin)."),
     ("from", "[0, 0, 50]", "One ray's origin, with dir."),
@@ -107,7 +128,7 @@ pub const OPTION_HELP: &[(&str, &str, &str)] = &[
     ("cut", r#""z=25""#, "AXIS[=AT]: cut away the half toward the camera."),
     ("size", "1024", "The image's side, px, 64 to 4096."),
     ("contents", "true", "The headings (default)."),
-    ("section", r#""Motion""#, "A section by title or path (spec Tour: a short tour), else those containing these words."),
+    ("section", r#""Motion""#, "A section by title or path (spec Tour: a short tour), a form by name (polygon), else those containing these words."),
     ("all", "true", "All of it."),
 ];
 
@@ -115,10 +136,13 @@ pub const OPTION_HELP: &[(&str, &str, &str)] = &[
 /// it takes.
 const EXAMPLES: &[(&str, &str, &str)] = &[
     ("interfere", "target", r#""root""#),
+    ("check", "name", r#""reach""#),
+    ("assert", "keys", r#""status,accuracy""#),
     ("ray", "keys", r#""nearest.point""#),
     ("mass", "keys", r#""mass,inertia""#),
     ("slice", "keys", r#""kind,points""#),
     ("slice", "out", r#""part.dxf""#),
+    ("render", "out", r#""part.png""#),
     ("std", "section", r#""belts and chains""#),
 ];
 
@@ -128,14 +152,37 @@ pub(crate) fn option(cmd: &str, k: &str) -> (&'static str, &'static str) {
     (EXAMPLES.iter().find(|e| (e.0, e.1) == (cmd, k)).map_or(ex, |e| e.2), help)
 }
 
+/// `ink help COMMAND`: what it does, and what each option it reads does
+/// (those every command on a file reads too).
+fn usage_of(cmd: &str) -> Result<String, InkError> {
+    if let Some(c) = registry().commands().find(|c| c.name == cmd) {
+        return Ok(format!("ink {cmd}: {}\n", c.help));
+    }
+    let Some((_, help, own)) = COMMANDS.iter().find(|c| c.0 == cmd && !c.1.is_empty()) else {
+        let names = COMMANDS.iter().filter(|c| !c.1.is_empty()).map(|c| c.0).chain(registry().commands().map(|c| c.name));
+        return Err(InkError { hint: ink::lang::closest(cmd, names), ..InkError::msg(format!("no command '{cmd}'")) });
+    };
+    let no_file = NO_FILE.contains(&cmd);
+    let mut s = format!("usage: ink {cmd}{} [options]\n{help}\n", if no_file { "" } else { " <file.ink>" });
+    let shared = MODEL_OPTIONS.iter().filter(|_| !no_file).chain(PROCESS_OPTIONS.iter().filter(|_| !TEXT.contains(&cmd)));
+    let opts: Vec<&str> = own.iter().map(|o| o.name).chain(shared.copied()).collect();
+    if !opts.is_empty() {
+        s += "\noptions:\n";
+    }
+    for k in opts {
+        s += &format!("  --{k:<10} {}\n", option(cmd, k).1);
+    }
+    Ok(s)
+}
+
 /// `ink help`: the commands (the core's, then the packages'), each with its
 /// options, then what each option does.
 fn usage() -> String {
     let mut s = String::from(
-        "ink - an implicit geometry kernel for AI agents\n\nusage: ink <command> <file.ink> [options]\nAnswers are JSON; help, spec and std print text.\n\ncommands:\n",
+        "ink - an implicit geometry kernel for AI agents\n\nusage: ink <command> <file.ink> [options]; ink help <command>: one command and its options.\nAnswers are JSON; help, spec and std print text.\n\ncommands:\n",
     );
-    let line = |name: &str, help: &str, opts: &[&str]| {
-        let opts: String = opts.iter().map(|k| format!(" --{k}")).collect();
+    let line = |name: &str, help: &str, opts: &[Opt]| {
+        let opts: String = opts.iter().map(|o| format!(" --{}", o.name)).collect();
         format!("  {name:<11} {help}\n{}", if opts.is_empty() { String::new() } else { format!("              {}\n", opts.trim_start()) })
     };
     for (name, help, opts) in COMMANDS.iter().filter(|c| !c.1.is_empty()) {
@@ -162,6 +209,10 @@ const TEXT: &[&str] = &["help", "std", "spec", "mcp"];
 /// model's loading).
 const PROCESS_OPTIONS: &[&str] = &["compact"];
 pub const MODEL_OPTIONS: &[&str] = &["param", "t", "nominal"];
+/// The options read as many times as given (each --param sets one, each
+/// --keys adds keys); any other reads one value, so giving it twice is
+/// refused rather than answered for the last alone.
+const REPEATED: &[&str] = &["param", "keys"];
 
 /// A package's command that reads words, not a file (Run::Words).
 pub fn words(reg: &Registry, cmd: &str) -> Option<&'static ink::lang::command::Command> {
@@ -176,12 +227,12 @@ pub fn no_file(reg: &Registry, cmd: &str) -> bool {
 
 /// The core's commands and those of the registry's packages, each with the
 /// options it reads (besides those every command on a file reads).
-pub fn commands(reg: &Registry) -> Vec<(&'static str, &'static [&'static str])> {
+pub fn commands(reg: &Registry) -> Vec<(&'static str, &'static [Opt])> {
     COMMANDS.iter().map(|c| (c.0, c.2)).chain(reg.commands().map(|c| (c.name, c.options))).collect()
 }
 
-/// Err: an option the command does not read (COMMANDS), or an argument
-/// after the file.
+/// Err: an option the command does not read (COMMANDS) or given more
+/// times than it reads (REPEATED), or an argument after the file.
 fn check(reg: &Registry, a: &Args) -> Result<(), InkError> {
     let all = commands(reg);
     // An unknown command, before its file is read (a package's this build
@@ -198,6 +249,8 @@ fn check(reg: &Registry, a: &Args) -> Result<(), InkError> {
     // A package's command may read words instead of a file.
     let x = match no_file {
         _ if words(reg, &a.cmd).is_some() => None,
+        // ink help COMMAND: that command's help.
+        true if a.cmd == "help" => a.extra.first(),
         true => a.file.as_ref(),
         false => a.extra.first(),
     };
@@ -213,17 +266,26 @@ fn check(reg: &Registry, a: &Args) -> Result<(), InkError> {
         });
     }
     let shared = PROCESS_OPTIONS.iter().filter(|_| !TEXT.contains(&a.cmd.as_str())).chain(MODEL_OPTIONS.iter().filter(|_| !no_file));
-    let known: Vec<String> = shared.chain(own.iter()).map(|k| format!("--{k}")).collect();
+    let known: Vec<String> = shared.copied().chain(own.iter().map(|o| o.name)).map(|k| format!("--{k}")).collect();
     let mut keys: Vec<&String> = a.opts.keys().collect();
     keys.sort();
     for k in keys {
         if !known.iter().any(|o| o[2..] == **k) {
-            let elsewhere: Vec<&str> = all.iter().filter(|(_, o)| o.contains(&k.as_str())).map(|(c, _)| *c).collect();
+            let elsewhere: Vec<&str> = all.iter().filter(|(_, o)| o.iter().any(|o| o.name == k)).map(|(c, _)| *c).collect();
             let hint = match elsewhere.is_empty() {
                 false => format!("--{k} is an option of {}, not of '{}'", elsewhere.join(", "), a.cmd),
+                true if known.is_empty() => format!("'{}' takes no options", a.cmd),
                 true => ink::lang::closest(&format!("--{k}"), known.iter().map(String::as_str)).unwrap_or_else(|| format!("'{}' takes {}", a.cmd, known.join(" "))),
             };
             return Err(InkError { hint: Some(hint), ..InkError::msg(format!("unknown option --{k} for '{}'", a.cmd)) });
+        }
+        let given = &a.opts[k];
+        if given.len() > 1 && !REPEATED.contains(&k.as_str()) {
+            let values: Vec<String> = given.iter().map(|v| format!("'{v}'")).collect();
+            return Err(InkError {
+                hint: Some(format!("give it once: a call per value (only --{} repeat)", REPEATED.join(" and --"))),
+                ..InkError::msg(format!("--{k} takes one value, given {}: {}", given.len(), values.join(", ")))
+            });
         }
     }
     Ok(())
@@ -267,8 +329,17 @@ pub fn run(raw: Vec<String>) -> i32 {
     }
     match a.cmd.as_str() {
         "help" | "--help" | "-h" => {
-            print!("{}", usage());
-            return 0;
+            return match a.file.as_deref().map(usage_of) {
+                None => {
+                    print!("{}", usage());
+                    0
+                }
+                Some(Ok(text)) => {
+                    print!("{text}");
+                    0
+                }
+                Some(Err(e)) => fail(e, &a),
+            };
         }
         "std" => {
             return match std_lib(&a) {
@@ -388,7 +459,12 @@ fn fail(e: InkError, a: &Args) -> i32 {
 
 /// An error as printed.
 fn failed(e: InkError, a: &Args) -> String {
-    let v = json!({"ok": false, "error": e.to_json()});
+    let mut v = json!({"ok": false, "error": e.to_json()});
+    // Stopped by the call's time limit (a load it cut short), as `publish`
+    // marks an answer.
+    if ink::stop::reached() {
+        v["stopped"] = json!(true);
+    }
     match a.get("compact") {
         Some(_) => format!("{}\n", to_compact(&v)),
         None => format!("{}\n", to_pretty(&v)),
@@ -512,7 +588,7 @@ mod tests {
         Ok(json!({"word": a.get("word"), "has_b": s.doc.body("b").is_some(), "t": s.ctx.t}))
     }
 
-    static ECHO: [Command; 1] = [Command { name: "echo", options: &["word"], help: "say --word", tool: r#"says the word. {"word": "hi"}"#, run: Run::Model(echo) }];
+    static ECHO: [Command; 1] = [Command { name: "echo", options: &[Opt::reads("word")], help: "say --word", tool: r#"says the word. {"word": "hi"}"#, run: Run::Model(echo) }];
 
     impl Package for Echo {
         fn name(&self) -> &'static str {
@@ -548,7 +624,7 @@ mod tests {
         let a = argv(&["--word", "hi", "--t", "0.5"]);
         check(&REGISTRY, &a).unwrap();
         assert_eq!(dispatch(&REGISTRY, &a).unwrap(), json!({"word": "hi", "has_b": true, "t": 0.5}));
-        assert!(commands(&REGISTRY).contains(&("echo", &["word"][..])));
+        assert!(commands(&REGISTRY).contains(&("echo", &[Opt::reads("word")][..])));
         let typo = check(&REGISTRY, &argv(&["--wrod", "hi"])).unwrap_err();
         assert_eq!(typo.message, "unknown option --wrod for 'echo'");
         // What the package adds to `ink check`'s answer (Package::check).

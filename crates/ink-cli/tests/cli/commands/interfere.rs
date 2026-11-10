@@ -220,6 +220,126 @@ fn interfere_asks_to_a_claims_default_accuracy_or_the_one_given() {
 }
 
 #[test]
+fn pairs_that_fail_come_first() {
+    // Two pins clear of their rings, then two blocks overlapping: the
+    // failing pair leads, so an answer shortened to its first rows keeps it.
+    let s = Scratch::new("pairs-order");
+    let m = s.model(
+        "rows.ink",
+        "(import \"std\")\n(body ring (shape (subtract (cylinder-z 10 4) (cylinder-z 5 6))))\n(body pin (shape (cylinder-z 4 4)))\n(body block (shape (box 4 4 4)))\n\
+        (assembly root (instance r1 ring) (instance p1 pin) (instance r2 ring (at (move 40 0 0))) (instance p2 pin (at (move 40 0 0)))\n\
+          (instance x block (at (move 80 0 0))) (instance y block (at (move 82 0 0))))\n",
+    );
+    let d = ink(["interfere", &m]);
+    let v: Vec<String> = pairs(&d).iter().map(verdict).collect();
+    assert!(d["overlapping_pairs"] == 1 && v.len() == 3 && v[0] == "fails" && v[1..].iter().all(|x| x == "holds"), "{v:?}: {}", pretty(&d));
+}
+
+#[test]
+fn a_pair_is_checked_to_the_finer_of_its_parts_tolerances_unless_an_accuracy_is_given() {
+    // Printed blocks a and b (0.2) meet in a slab 0.3 thick, 0.15 deep; a
+    // machined pin (0.01) meets b 0.03 deep; plain, declaring none, meets a
+    // 0.15 deep. At the default 0.05 the printed pair failed and the pin
+    // held; each is checked to the finer of its parts' tolerances, the
+    // printed pair holding to 0.2 and the pin failing at 0.01. A pair with
+    // a part declaring none is checked as before.
+    let s = Scratch::new("tolerances");
+    let parts = "(import \"std\")\n(body a (shape (box 10 10 10)) (attr tolerance 0.2mm))\n(body b (shape (box 10 10 10)) (attr tolerance 0.2mm))\n\
+        (body pin (shape (box 2 2 10)) (attr tolerance 0.01mm))\n(body plain (shape (box 10 10 10)))\n\
+        (assembly root (instance a a) (instance b b (at (move 9.7 0 0))) (instance pin pin (at (move 9.7 5.94 0))) (instance plain plain (at (move 0 -9.7 0))))\n\
+        (assert printed (disjoint (shape-of root/a) (shape-of root/b)))\n(assert machined (disjoint (shape-of root/pin) (shape-of root/b)))\n\
+        (assert mixed (disjoint (shape-of root/a) (shape-of root/plain)))\n(assert stated (disjoint (shape-of root/a) (shape-of root/b)) (accuracy 0.05))\n";
+    let m = s.model("parts.ink", parts);
+    let d = ink(["assert", &m]);
+    let row = |n: &str| d["asserts"].as_array().unwrap().iter().find(|r| r["name"] == n).unwrap().clone();
+    let (printed, machined, mixed, stated) = (row("printed"), row("machined"), row("mixed"), row("stated"));
+    assert!(verdict(&printed) == "holds" && printed["accuracy"] == 0.2 && printed["accuracy_given_by"] == "tolerance", "{}", pretty(&printed));
+    assert!(printed["tolerances"] == json!({"a": 0.2, "b": 0.2}), "{}", pretty(&printed));
+    assert!(verdict(&machined) == "fails" && machined["accuracy"] == 0.01 && machined["tolerances"] == json!({"pin": 0.01, "b": 0.2}), "{}", pretty(&machined));
+    // The claim's own accuracy comes first.
+    assert!(verdict(&stated) == "fails" && stated["accuracy"] == 0.05 && stated["accuracy_given_by"] == "assert", "{}", pretty(&stated));
+    // Without the attributes, every claim answers as `mixed` does: the
+    // model's accuracy, saying nothing of where it came from.
+    let bare = ink(["assert", &s.model("bare.ink", &parts.replace(" (attr tolerance 0.2mm)", "").replace(" (attr tolerance 0.01mm)", ""))]);
+    let bare_row = |n: &str| bare["asserts"].as_array().unwrap().iter().find(|r| r["name"] == n).unwrap().clone();
+    assert!(verdict(&bare_row("printed")) == "fails" && verdict(&bare_row("machined")) == "holds", "{}", pretty(&bare));
+    for r in [&mixed, &bare_row("mixed"), &bare_row("printed")] {
+        assert!(r["accuracy"] == 0.05 && r.get("accuracy_given_by").is_none() && r.get("tolerances").is_none(), "{}", pretty(r));
+    }
+    // interfere: each pair to its own, as a claim; --accuracy overrides
+    // them all, and says so.
+    let d = ink(["interfere", &m]);
+    let pair = |d: &Value, a: &str, b: &str| pairs(d).iter().find(|p| p["pair"] == json!([a, b])).unwrap().clone();
+    let (ab, bp, ap) = (pair(&d, "root/a", "root/b"), pair(&d, "root/b", "root/pin"), pair(&d, "root/a", "root/plain"));
+    assert!(verdict(&ab) == "holds" && ab["accuracy"] == 0.2 && ab["tolerances"] == json!({"a": 0.2, "b": 0.2}), "{}", pretty(&ab));
+    assert!(verdict(&bp) == "fails" && bp["accuracy"] == 0.01 && bp["accuracy_given_by"] == "tolerance", "{}", pretty(&bp));
+    assert!(verdict(&ap) == "fails" && ap["accuracy"] == 0.05 && ap.get("accuracy_given_by").is_none(), "{}", pretty(&ap));
+    let d = ink(["interfere", &m, "--accuracy", "0.05"]);
+    let (ab, bp) = (pair(&d, "root/a", "root/b"), pair(&d, "root/b", "root/pin"));
+    assert!(
+        verdict(&ab) == "fails"
+            && verdict(&bp) == "holds"
+            && pairs(&d).iter().all(|p| p["accuracy"] == 0.05 && p["accuracy_given_by"] == "--accuracy" && p.get("tolerances").is_none()),
+        "{}",
+        pretty(&d)
+    );
+    // A tolerance is a constant length above 0.
+    for bad in ["(attr tolerance 0)", "(attr tolerance 2g)", "(attr tolerance x)"] {
+        let e = ink_err(["check", &s.model("bad.ink", &format!("(import \"std\")\n(body p (shape (box 1 1 1)) {bad})\n"))]);
+        assert!(e["error"]["message"].as_str().is_some_and(|m| m.contains("tolerance")), "{bad}: {e}");
+    }
+}
+
+#[test]
+fn a_shape_is_checked_to_every_part_it_is_made_of_grouped_moved_or_a_piece() {
+    // A part made to 0.01 meets a wall 0.03 deep: the claim fails at 0.01
+    // however the part is named, as a leaf, in a group with another part,
+    // moved by hand, or by a piece of it. A group and a moved part were
+    // checked at the default 0.05, and held.
+    let s = Scratch::new("tolerance-operands");
+    let m = s.model(
+        "operands.ink",
+        "(import \"std\")\n(body fine (shape (min (tag tip (box 10 10 10)) (move (box 1 1 1) 0 30 0))) (attr tolerance 0.01mm))\n\
+        (body other (shape (box 2 2 2)) (attr tolerance 0.01mm))\n(body obstacle (shape (box 4 4 4)))\n\
+        (assembly sub (instance a fine) (instance b other (at (move 0 20 0))))\n\
+        (assembly root (instance group sub (at (move 1 0 0))) (instance wall obstacle (at (move 7.94 0 0))))\n\
+        (assert leaf (disjoint (shape-of root/group/a) (shape-of root/wall)))\n(assert group (disjoint (shape-of root/group) (shape-of root/wall)))\n\
+        (assert moved (disjoint (move (shape-of fine) 1 0 0) (move (shape-of obstacle) 7.94 0 0)))\n\
+        (assert piece (disjoint (shape-of root/group/a tip) (shape-of root/wall)))\n",
+    );
+    let d = ink(["assert", &m]);
+    for r in d["asserts"].as_array().unwrap() {
+        assert!(verdict(r) == "fails" && r["accuracy"] == 0.01 && r["accuracy_given_by"] == "tolerance" && r["tolerances"]["fine"] == 0.01, "{}", pretty(r));
+    }
+    assert!(d["asserts"].as_array().unwrap().len() == 4, "{}", pretty(&d));
+}
+
+#[test]
+fn a_part_inside_another_parts_shape_or_a_tag_still_counts() {
+    // A part made to 0.01 meets a wall 0.03 deep, inside a body made to
+    // 0.2 (its shape is the part's) or a tag written with that body's name:
+    // each fails at 0.01, as the part alone does. The outer tag hid the
+    // part, and the claim held at 0.05.
+    let s = Scratch::new("tolerance-nested");
+    let m = s.model(
+        "nested.ink",
+        "(import \"std\")\n(body fine (shape (box 2 2 2)) (attr tolerance 0.01))\n\
+        (body coarse (shape (move (box 1 1 1) 0 20 0)) (attr tolerance 0.2))\n(body wall (shape (move (box 2 2 2) 1.94 0 0)))\n\
+        (body wrapper (shape (shape-of fine)) (attr tolerance 0.2))\n\
+        (assert direct (disjoint (shape-of fine) (shape-of wall)))\n(assert wrapped (disjoint (shape-of wrapper) (shape-of wall)))\n\
+        (assert spoof (disjoint (tag coarse (shape-of fine)) (shape-of wall)))\n\
+        (assembly root (instance wrapped wrapper) (instance wall wall))\n",
+    );
+    let d = ink(["assert", &m]);
+    for r in d["asserts"].as_array().unwrap() {
+        assert!(verdict(r) == "fails" && r["accuracy"] == 0.01 && r["tolerances"]["fine"] == 0.01, "{}", pretty(r));
+    }
+    let d = ink(["interfere", &m, "--target", "root"]);
+    let p = &pairs(&d)[0];
+    assert!(verdict(p) == "fails" && p["accuracy"] == 0.01 && p["tolerances"] == json!({"wrapper": 0.2, "fine": 0.01}), "{}", pretty(&d));
+}
+
+#[test]
 fn an_undecided_pair_is_counted_and_its_hint_names_what_interfere_takes() {
     // A shaft 0.4 over its bore with a collar on the bushing's face: the
     // pair is unknown at 0.1. The summary said overlapping_pairs 0 and
@@ -240,10 +360,11 @@ fn an_undecided_pair_is_counted_and_its_hint_names_what_interfere_takes() {
 fn a_pair_held_only_to_the_accuracy_says_how_deep_it_was_found_and_seated_faces_read_0() {
     // A shaft 0.1 over its bore's radius overlaps it in a shell 0.1 thick,
     // 0.05 deep, which --accuracy 0.1 lets pass: the pair says so, with a
-    // point on the bore. Seated (shaft and bore alike) it reads 0 and is
-    // not counted; 0.5 clear, it held outright. A disjoint claim alike.
+    // point on the bore. Seated (shaft and bore alike: the bounds split at
+    // the face they share) it holds outright, as 0.5 clear does. A disjoint
+    // claim alike.
     let s = Scratch::new("near-pairs");
-    for (shaft_d, held, near) in [(10.2, "to the accuracy", 1), (10.0, "to the accuracy", 0), (9.0, "outright", 0)] {
+    for (shaft_d, held, near) in [(10.2, "to the accuracy", 1), (10.0, "outright", 0), (9.0, "outright", 0)] {
         let m = s.model(
             &format!("fit-{shaft_d}.ink"),
             &format!(
@@ -339,15 +460,20 @@ fn how_a_claim_held_over_ranged_params_is_said_with_where_in_the_band() {
     let d = ink(["interfere", &m, "--target", "fit", "--accuracy", "0.1"]);
     held_near(&d, (0.0, 0.0));
     let r = pairs(&d)[0]["near"]["params"]["r"].as_f64().unwrap_or(0.0);
-    assert!((5.04..=5.06).contains(&r), "{}", pretty(&d));
+    assert!((d["param_spans"]["r"][0].as_f64().unwrap()..=d["param_spans"]["r"][1].as_f64().unwrap()).contains(&r), "{}", pretty(&d));
 }
 
 #[test]
 fn how_a_turning_pair_held_over_the_motion_is_said_with_its_moment() {
-    // The shaft turns in its bore: searched with t ranged beside the other
-    // pairs, its near point is at a moment of the span.
+    // The shaft turns in the bush, each with a tab clear of the other: in
+    // no frame does nothing move, so it is searched with t ranged beside
+    // the other pairs, its near point at a moment of the span. (Round, the
+    // shaft moves nothing where the bush rests: asked once, its near point
+    // holds at every moment.)
     let s = Scratch::new("held-turning");
-    let m = s.model("turning.ink", &format!("(t-span 0 1)\n(param r 5.05)\n{FIT}(assembly root (instance b bush) (instance s shaft (at) (turn z (* 90 t))))\n"));
+    let tabbed = "(body tabbed (shape (min (cylinder-z r 12) (move (box 1 1 1) 0 8 20))))\n\
+                  (body tab-bush (shape (min (subtract (cylinder-z 10 12) (cylinder-z 5 20)) (move (box 1 1 1) 0 12 0))))\n";
+    let m = s.model("turning.ink", &format!("(t-span 0 1)\n(param r 5.05)\n{FIT}{tabbed}(assembly root (instance b tab-bush) (instance s tabbed (at) (turn z (* 90 t))))\n"));
     let d = ink(["interfere", &m, "--accuracy", "0.1"]);
     held_near(&d, (0.0, 0.0));
     let t = pairs(&d)[0]["near"]["params"]["t"].as_f64().unwrap_or(-1.0);

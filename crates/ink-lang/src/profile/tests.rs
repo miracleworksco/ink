@@ -616,9 +616,11 @@ fn a_drafted_circle_leans_out_either_way_round() {
 #[test]
 fn drafts_that_change_a_profile_are_refused() {
     let err = |src: &str| Doc::load_str_in(&CORE, &format!("(def f {src})"), "test", std::path::Path::new("."), &[]).err().unwrap().message;
-    // A thin slot's walls meet when they lean in far enough.
-    let e = err("(polygon (vec (vec 0 0) (vec 10 0) (vec 10 1) (vec 0 1)) (vec -10 0 -10 0) 0 10)");
-    assert!(e.contains("edge from (10, 0) (point 2) to (10, 1) (point 3)"), "{e}");
+    // A thin slot's walls meet when they lean in far enough, at z = 0.5 /
+    // tan 10 = 2.836: it closes there, empty beyond (a convex profile is
+    // the meet of its walls' half-planes).
+    let f = field("(polygon (vec (vec 0 0) (vec 10 0) (vec 10 1) (vec 0 1)) (vec -10 0 -10 0) 0 10)");
+    assert!(f([5.0, 0.5, 2.8]) < 0.0 && f([5.0, 0.5, 2.87]) > 0.0 && f([5.0, 0.5, 9.0]) > 0.0);
     // Tangent walls that lean differently part.
     let e = err("(polygon (vec (vec -5 -2) (vec 5 -2 1) (vec 5 2) (vec -5 2 1)) (vec 0 -2 0 -2) 0 5)");
     assert!(e.contains("no longer meet"), "{e}");
@@ -1464,6 +1466,8 @@ fn dd_grad(t: &crate::tape::Tape, p: [f64; 3]) -> (Dd, [Dd; 3]) {
         let lin = |f: &dyn Fn(Dd, Dd) -> Dd, (x, dx): (Dd, [Dd; 3]), (y, dy): (Dd, [Dd; 3])| (f(x, y), [0, 1, 2].map(|k| f(dx[k], dy[k])));
         let r = match ins.op {
             Op::Const(c) => (Dd::k(c), [z; 3]),
+            // A number known within bounds: its point value, as a point reads.
+            Op::Within(_) => (v[ins.c as usize].0, [z; 3]),
             Op::Var(Var::X | Var::Y | Var::Z) => {
                 let j = match ins.op {
                     Op::Var(Var::X) => 0,
@@ -1584,6 +1588,244 @@ fn a_drafted_profiles_planes_and_cones_slope_at_most_1() {
 }
 
 #[test]
+fn a_flat_arc_is_its_circle() {
+    // A square 3.1e-60 across, its bottom an arc of
+    // bulge 2.8e-9 (sag 4.4e-69). A point 3.2e-70 inside, below the chord
+    // and above the arc, read outside (polygon's float disc); an arc is its
+    // circle exactly, so it reads inside.
+    let s = 3.111507638930571e-60;
+    let src = format!("(def f (polygon (vec (vec 0 0 2.8e-09) (vec {s:?} 0) (vec {s:?} {s:?}) (vec 0 {s:?}))))");
+    let doc = Doc::load_str_in(&CORE, &src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let p = |v: f64| ink_core::interval::I::point(v);
+    let v = crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), [p(3.111508012991262e-61), p(-1.2446030555722282e-69), p(0.0)], None);
+    assert!(v.hi < 0.0, "{v:?}");
+}
+
+#[test]
+fn an_arc_flatter_than_a_float_step_is_its_circle() {
+    // A 10 mm square turned 0.1 rad, 1e12 from the origin,
+    // its bottom an arc of bulge 2e-8 (sag 1e-7, far below a float's step
+    // in its coordinates' scale). A point 3e-6 outside its bottom read
+    // 7.4e-6 inside (polygon's allowance); its kite's corner is found
+    // along the chord's normal, so it reads outside.
+    let src = "(def f (polygon (vec (vec 1000000000000 0 2e-08) (vec 1000000000009.9501 0.99833416646828155 0) (vec 1000000000008.9518 10.94837581924854 0) (vec 999999999999.00171 9.9500416527802589 0))))";
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let p = |v: f64| ink_core::interval::I::point(v);
+    let v = crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), [p(1000000000002.4875), p(0.24958353166699715), p(0.0)], None);
+    assert!(v.lo > 0.0, "{v:?}");
+}
+
+#[test]
+fn an_arc_far_from_the_origin_is_its_circle() {
+    // A 1 mm square 2e6 mm out, its bottom an arc of bulge 0.3. Its circle
+    // is read about the arc's end, its centre and radius each known within
+    // bounds on their exact values: a point 1.7e-10 inside the arc reads
+    // inside (polygon's construction read the square empty: 1.07e-3).
+    let src = "(def f (polygon (vec (vec 1048576.3 2097152.7 0.3) (vec 1048576.301 2097152.7) (vec 1048576.301 2097152.701) (vec 1048576.3 2097152.701))))";
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let p = |v: f64| ink_core::interval::I::point(v);
+    let v = crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), [p(1048576.3008818447), p(2097152.699934159), p(0.0)], None);
+    assert!(v.hi < 0.0 && v.lo > -1.7e-10, "{v:?}");
+}
+
+#[test]
+fn a_round_is_its_circle() {
+    // A triangle 1e5 across, each corner rounded 0.02 (the one at
+    // (1e5, 0) turns 168 degrees). A point 9.5e-12 outside that round read
+    // inside (its tangent points solved in floats, polygon's allowance);
+    // the corners' polygon is exact and the round's centre known within
+    // bounds, so it reads outside.
+    let src = "(def f (polygon (vec (vec 0 0 0 0.02) (vec 100000 0 0 0.02) (vec 20000 18000 0 0.02))))";
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let p = |v: f64| ink_core::interval::I::point(v);
+    let v = crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), [p(99999.83985368833), p(0.017585241216589442), p(0.0)], None);
+    assert!(v.lo > 9.5e-12 && v.hi < 9.53e-12, "{v:?}");
+}
+
+#[test]
+fn a_round_beside_an_arc_is_its_circle() {
+    // A 10 mm square 2048 mm out, its bottom an arc of bulge 1e-9, each
+    // corner rounded 0.2: the bottom corners' rounds meet the arc. A point
+    // 1e-8 outside the bottom right round read inside (its tangent points
+    // solved in floats); its centre is bounded where its offset line and
+    // circle meet, so it reads outside.
+    let src = "(def f (polygon (vec (vec 2048 0 1e-09 0.2) (vec 2058 0 0 0.2) (vec 2058 10 0 0.2) (vec 2048 10 0 0.2))))";
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let p = |v: f64| ink_core::interval::I::point(v);
+    let v = crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), [p(2057.997537678002), p(0.16871310507353643), p(0.0)], None);
+    assert!(v.lo > 9.9e-9 && v.hi < 1.01e-8, "{v:?}");
+}
+
+#[test]
+fn a_filled_round_keeps_its_profile_in_its_box() {
+    // An L whose inner corner is rounded (a fill, which adds material):
+    // the field is positive over a large box beside it, so the body is
+    // proven bounded.
+    let src = "(def f (polygon (vec (vec 0 0) (vec 2 0) (vec 2 1) (vec 1 1 0 0.3) (vec 1 2) (vec 0 2))))";
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let ctx = crate::eval::Ctx::new(0.0, vec![]);
+    let i = ink_core::interval::I::new;
+    for b in [[i(3.0, 1e6), i(-1e6, 1e6)], [i(-1e6, 1e6), i(3.0, 1e6)], [i(-1e6, -1.0), i(-1e6, 1e6)]] {
+        let v = crate::eval::eval_interval(&tape, &ctx, [b[0], b[1], i(0.0, 0.0)], None);
+        assert!(v.lo > 0.0, "{b:?}: {v:?}");
+    }
+    let v = crate::eval::eval_point(&tape, &ctx, [1.05, 1.05, 0.0]);
+    assert!(v < 0.0, "the fill: {v}");
+}
+
+#[test]
+fn a_fill_is_held_to_its_corner() {
+    // A leadscrew thread's section, its two inner corners rounded 0.12
+    // (fills). Each fill's triangle must be proven apart from the other
+    // edges by its corners' hull in order: read as the corners in the
+    // order found, one fill's triangle took in the other flank, and
+    // (0.98, -0.12), inside the other fill's circle (outside the profile),
+    // read inside.
+    let src = "(def f (polygon (vec (vec 0.8666265877365439 -0.02900635094611581) (vec 1.0 -0.06474364905389207 0 0.12) (vec 1.0 -0.1875) (vec 2.0 -0.1875) (vec 2.0 0.1875) (vec 1.0 0.1875) (vec 1.0 0.06474364905389207 0 0.12) (vec 0.8666265877365439 0.02900635094611581))))";
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let ctx = crate::eval::Ctx::new(0.0, vec![]);
+    for (p, outside) in [([0.98, -0.12], true), ([0.98, 0.12], true), ([0.99, -0.08], false), ([0.96, 0.0], false)] {
+        let v = crate::eval::eval_point(&tape, &ctx, [p[0], p[1], 0.0]);
+        assert_eq!(v > 0.0, outside, "{p:?}: {v}");
+    }
+}
+
+fn interval_at(src: &str, p: [f64; 2]) -> ink_core::interval::I {
+    let doc = Doc::load_str_in(&CORE, src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let i = ink_core::interval::I::point;
+    crate::eval::eval_interval(&tape, &crate::eval::Ctx::new(0.0, vec![]), [i(p[0]), i(p[1]), i(0.0)], None)
+}
+
+#[test]
+fn a_round_s_triangle_is_bounded() {
+    // A round 0.006 beside an arc of bulge 0.37, at a sharp corner: the
+    // line cutting its wedge beyond the corner crosses one of the wedge's
+    // rays behind its centre, so the wedge runs on past it, across the
+    // whole profile. Its triangle's bound (the hull of where the normals
+    // meet that line) held none of that, and (1, 0.68), deep inside, read
+    // outside.
+    let src = "(def f (polygon (vec (vec 0.023 -0.054 0.37) (vec 0 0 0 0.006) (vec 0.55 -1.56) (vec 2 -2) (vec 2 2) (vec 0.1 2) (vec 0.1 -0.1))))";
+    let v = interval_at(src, [1.0, 0.68]);
+    assert!(v.hi < -0.8, "{v:?}");
+}
+
+#[test]
+fn a_fill_s_box_holds_every_arc() {
+    // An L 1e8 out, its bottom an arc of bulge 2e-9 (2e-9 below its chord,
+    // under an ulp of y there), its inner corner a fill: the profile's box
+    // must hold the arc, and the chord's middle, 2e-9 inside, reads inside.
+    let src = "(def f (polygon (vec (vec 0 100000000 2e-9) (vec 2 100000000) (vec 2 100000001) (vec 1 100000001 0 0.3) (vec 1 100000002) (vec 0 100000002))))";
+    let v = interval_at(src, [1.0, 1e8]);
+    assert!(v.hi < 0.0, "{v:?}");
+}
+
+#[test]
+fn a_round_s_hold_is_rounded_out_at_its_exact_corners() {
+    // A round 0.25 at (0, 1e8) between square edges: its centre less the
+    // corner, (0.25, 0.25), is exact, and its triangle reaches
+    // y = 1e8 + 0.25. Its bound took both ends of each exact coordinate
+    // down, so it stopped an ulp short, and a tab whose lower edge lies
+    // there passed as apart: (-0.5, 1e8 + 0.25), inside the tab, read 0.
+    let src = "(def f (polygon (vec (vec 0 100000002.0) (vec 0 100000000.0 0 0.25) (vec 2 100000000.0) (vec 2 100000003.0) (vec -1 100000003.0) (vec -1 100000000.24999999) (vec -0.4 100000000.24999999) (vec -0.4 100000000.25000001) (vec -0.9 100000000.25000001) (vec -0.9 100000002.0))))";
+    let v = interval_at(src, [-0.5, 100000000.25]);
+    assert!(v.hi < 0.0, "{v:?}");
+}
+
+#[test]
+fn two_arcs_whose_circles_round_alike_are_two_circles() {
+    // Two unit squares whose bottom arcs' bulges differ by 2^-55: their
+    // circles' bounds round to the same floats, but they are two exact
+    // circles, so their difference at (0.5, 0), -2^-56 there, is not 0.
+    let src = "(def f (- (polygon (vec (vec 0 0 0.24876511400000006) (vec 1 0) (vec 1 1) (vec 0 1))) (polygon (vec (vec 0 0 0.24876511400000004) (vec 1 0) (vec 1 1) (vec 0 1)))))";
+    let v = interval_at(src, [0.5, 0.0]);
+    let truth = -(0.24876511400000006f64 - 0.24876511400000004) / 2.0;
+    assert!(v.lo <= truth && truth <= v.hi, "{v:?} {truth}");
+}
+
+/// Two numbers +1/2 and -1/2 exactly, from two unit squares whose arcs'
+/// bulges differ by 2^-55 (their circles' bounds the same floats): each
+/// square reads -b/2 at (0.5, 0), scaled up by 2^56 about the mean.
+const TWO_ARC_NUMBERS: &str = "(def a (+ 0.5 (* 72057594037927936 (+ (warp (polygon (vec (vec 0 0 0.24876511400000004) (vec 1 0) (vec 1 1) (vec 0 1))) 0.5 0 0) 0.12438255700000002)))) (def b (+ 0.5 (* 72057594037927936 (+ (warp (polygon (vec (vec 0 0 0.24876511400000006) (vec 1 0) (vec 1 1) (vec 0 1))) 0.5 0 0) 0.12438255700000002)))) (def c (select a -1 1)) (def d (select b -1 1))";
+
+#[test]
+fn one_arc_number_twice_and_two_arc_numbers_key_apart() {
+    // c c is a square (at least 0), c d is not (it is -1): a key that read
+    // their bounds alone gave both one key, so a grid baked of one was
+    // read with the other's error bound.
+    let key = |f: &str| {
+        let doc = Doc::load_str_in(&CORE, &format!("{TWO_ARC_NUMBERS} (def f {f})"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+        let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+        let mut fp = crate::graph::Fingerprint::default();
+        doc.g.fingerprint(&[fid], &[], false, &mut fp);
+        fp.value()
+    };
+    assert_ne!(key("(* c c)"), key("(* c d)"));
+}
+
+#[test]
+fn a_select_between_two_arc_numbers_may_switch() {
+    // select(x - y, x + a, x + b), a = 1/2 and b = -1/2: along y = z = 0
+    // it changes sign at -1/2, at its jump at 0, and at 1/2. Its branches
+    // read as one expression (a and b alike by their bounds), so it was
+    // taken as continuous there, one sheet.
+    let doc =
+        Doc::load_str_in(&CORE, &format!("{TWO_ARC_NUMBERS} (def f (select (- x y) (+ x a) (+ x b)))"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let t = crate::tape::Tape::new(&doc.g, fid);
+    let region = [ink_core::interval::I::new(-2.0, 2.0), ink_core::interval::I::point(0.0), ink_core::interval::I::point(0.0)];
+    let mut choices = vec![crate::tape::BOTH; t.len()];
+    crate::eval::eval_interval(&t, &crate::eval::Ctx::new(0.0, vec![]), region, Some(&mut choices));
+    assert!(t.switches(&choices));
+}
+
+#[test]
+fn a_select_of_an_arc_number_and_its_double_is_continuous() {
+    // select(h - j, h, j) with j = 2 h is min(h, j), continuous whatever
+    // the arc's number a in h = x + a: a number known within bounds is
+    // one constant, so the select is one field, no seam.
+    let src = format!(
+        "{TWO_ARC_NUMBERS} (def h (+ x (warp (polygon (vec (vec 0 0 0.24876511400000004) (vec 1 0) (vec 1 1) (vec 0 1))) 0.5 0 0))) (def j (* 2 h)) (def f (select (- h j) h j))"
+    );
+    let doc = Doc::load_str_in(&CORE, &src, "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let t = crate::tape::Tape::new(&doc.g, fid);
+    let region = [ink_core::interval::I::new(-1.0, 1.0), ink_core::interval::I::point(0.0), ink_core::interval::I::point(0.0)];
+    let mut choices = vec![crate::tape::BOTH; t.len()];
+    crate::eval::eval_interval(&t, &crate::eval::Ctx::new(0.0, vec![]), region, Some(&mut choices));
+    assert!(!t.switches(&choices));
+}
+
+#[test]
+fn an_arc_past_a_hull_line_over_a_pocket_keeps_its_segment() {
+    // A hole of SHERPA-MINI's core: its 143 degree arc's segment pokes past
+    // a hull line with a pocket under it. That line giving way to the
+    // segment let the pocket (which reads past its own lid) take part of
+    // the segment: (-0.34, 5.39), 1.1 inside, read 0.34 outside.
+    let pts = "(vec (vec -6.5 -0.0 -0.71552) (vec 5.1456 3.9715 0.37636) (vec 6.4396 3.7179 -0.08405) (vec 7.7838 4.2218 0.0) (vec 7.8162 4.23 0.0) (vec 23.2851 9.0561 -0.50583) (vec 24.5829 8.1015 -0.03748) (vec 24.5717 7.9522 0.0) (vec 22.5925 -5.1567 -0.37098) (vec 21.4962 -6.1 0.0) (vec 9.3 -6.1 -0.41421) (vec 7.8 -4.6 0.0) (vec 7.8 -4.4665 0.34513) (vec 7.5717 -4.1752 -0.07135) (vec 6.4396 -3.7179 0.37636) (vec 5.1456 -3.9715 -0.71552))";
+    let doc = Doc::load_str_in(&CORE, &format!("(def f (polygon {pts}))"), "test", std::path::Path::new("."), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let Value::Field(fid, _) = doc.def("f").unwrap().clone() else { panic!() };
+    let tape = crate::tape::Tape::new(&doc.g, fid);
+    let v = crate::eval::eval_point(&tape, &crate::eval::Ctx::new(0.0, vec![]), [-0.3396011352538846, 5.392036247253436, 0.0]);
+    assert!((v + 1.0973).abs() < 1e-3, "{v}");
+}
+
+#[test]
 fn a_mesh_of_a_drafted_chamfer_lies_on_its_walls() {
     // A uniform mesh of MPM's plate where its chamfer meets the undrafted
     // fillet of its tab: each vertex, placed by the field's values at its
@@ -1670,7 +1912,7 @@ fn a_drafted_shallow_arc_keeps_its_radius_growing() {
 }
 
 #[test]
-fn a_drafted_profile_far_from_the_origin_is_read_or_refused() {
+fn a_drafted_profile_far_from_the_origin_is_read() {
     // 1e12 from the origin. A rounded square drafted 45
     // degrees over 0.5: with its motion read as rounding beside 1e12 its
     // rounds would stand still while its walls moved, and the point 0.125
@@ -1681,28 +1923,27 @@ fn a_drafted_profile_far_from_the_origin_is_read_or_refused() {
     let f = field("(polygon (vec (vec 1000000000000 0 0 1) (vec 1000000000010 0 0 1) (vec 1000000000010 10 0 1) (vec 1000000000000 10 0 1)) 45 0 0.5)");
     assert!(f([x0 + 10.125, 0.75, 0.25]) < 0.0, "0.125 inside the moving round");
     assert!(f([x0 + 10.375, 0.75, 0.25]) > 0.0, "0.125 outside the moving round");
-    // A strip whose bottom and top edges vanish at z = 0.25: frozen, it
-    // would be read as a stationary rectangle and accepted. It is refused
-    // there, as
-    // it is moved to the origin (the same geometry: 0.5 is exact).
-    for x in ["1000000000000", "0"] {
-        let w = format!("{x}.5");
-        let src = format!("(polygon (vec (vec {x} 0) (vec {w} 0) (vec {w} 10) (vec {x} 10)) (vec 0 -45 0 -45) 0 0.5)");
-        let e = refused(&src).unwrap_or_else(|| panic!("accepted: {src}"));
-        assert!(e.contains("walls cross, at z = 0.2"), "{e}");
+    // A strip whose sides lean in to meet at z = 0.25: frozen, it would be
+    // read as a stationary rectangle. It closes there, empty beyond, as it
+    // does moved to the origin (the same geometry: 0.5 is exact).
+    for x in [1e12, 0.0] {
+        let src = format!("(polygon (vec (vec {x} 0) (vec {} 0) (vec {} 10) (vec {x} 10)) (vec 0 -45 0 -45) 0 0.5)", x + 0.5, x + 0.5);
+        let f = field(&src);
+        assert!(f([x + 0.25, 5.0, 0.24]) < 0.0 && f([x + 0.25, 5.0, 0.26]) > 0.0 && f([x + 0.4, 5.0, 0.2]) > 0.0, "{src}");
     }
     // The square turned (its sides along 3-4-5 triangles), so its walls'
-    // data round. 1e10 from the origin a coordinate's rounding (1.9e-6) is
-    // its allowance (2e-6): its paths cannot be shown on its walls to
-    // within it, and it is refused, not built unproven.
-    // 1e9 from the origin they can.
-    let turned = |x0: f64| {
+    // data round: 1e10 from the origin a coordinate's rounding (1.9e-6) is
+    // the allowance's 2e-6, and its paths could not be shown on its walls
+    // within it. Built exactly (each wall the plane through its drawn edge,
+    // each corner and round moving with its walls' bounds), it is read
+    // right: 0.01 either side of its first wall, offset 0.25 at z = 0.25.
+    for x0 in [1e9, 1e10, 1e12] {
         let p = |dx: f64, dy: f64| format!("(vec {} {dy} 0 1)", x0 + dx);
-        format!("(polygon (vec {} {} {} {}) 45 0 0.5)", p(0.0, 0.0), p(8.0, 6.0), p(2.0, 14.0), p(-6.0, 8.0))
-    };
-    let e = refused(&turned(1e10)).expect("refused 1e10 from the origin");
-    assert!(e.contains("cannot certify"), "{e}");
-    assert_eq!(refused(&turned(1e9)), None);
+        let f = field(&format!("(polygon (vec {} {} {} {}) 45 0 0.5)", p(0.0, 0.0), p(8.0, 6.0), p(2.0, 14.0), p(-6.0, 8.0)));
+        let at = |d: f64| f([x0 + 4.0 + 0.6 * d, 3.0 - 0.8 * d, 0.25]);
+        assert!(at(0.24) < 0.0 && at(0.26) > 0.0, "{x0}: {} {}", at(0.24), at(0.26));
+        assert!(f([x0 + 1.0, 7.0, 0.25]) < -3.0, "{x0}");
+    }
 }
 
 #[test]
@@ -1774,4 +2015,177 @@ fn a_polygon_that_crosses_itself_is_refused_where_it_does() {
             panic!("accepted a crossing polygon: {pts:?}: {:?}", ev(&t, 0.0, 0.0));
         }
     }
+}
+
+#[test]
+fn a_drafted_profile_keeps_its_depth_where_its_construction_changes() {
+    // A tooth in a pocket under a square's top edge, its flanks drafted 45
+    // degrees: its tip rises through the edge's line at z = 0.0452, where
+    // the hull changes (the tip joins it). Read as pieces cut by slabs, a
+    // point 5 deep read -6e-5 there; one construction below the change and
+    // the other above (the change's height known within bounds), it reads
+    // its depth to the walls.
+    let tooth = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [7.0, 10.0], [7.0, 9.0], [5.0, 9.95], [3.0, 9.0], [3.0, 10.0], [0.0, 10.0]].map(|p| [p[0], p[1], 0.0, 0.0]);
+    let drafts = [0.0, 0.0, 0.0, 0.0, 45.0, 45.0, 0.0, 0.0, 0.0];
+    let ds: Vec<String> = drafts.iter().map(|d| d.to_string()).collect();
+    let f = field(&format!("(polygon {} (vec {}) 0 0.2)", ink_points(&tooth), ds.join(" ")));
+    for z in [0.04, 0.0451, 0.045163875, 0.0451639, 0.04517, 0.05] {
+        assert!(f([5.0, 5.0, z]) < -0.4, "z = {z}: {}", f([5.0, 5.0, z]));
+    }
+    // Each piece's slope is at most 1 (pairs 1e-4 apart, not across the
+    // change's height, where the pieces' values differ).
+    let mut rng = Rng(7);
+    for _ in 0..20000 {
+        let p = [rng.range(-1.0, 11.0), rng.range(-1.0, 11.0), rng.range(0.0, 0.2)];
+        let q = [p[0] + rng.range(-1e-4, 1e-4), p[1] + rng.range(-1e-4, 1e-4), p[2] + rng.range(-1e-4, 1e-4)];
+        if (p[2] - 0.045164) * (q[2] - 0.045164) <= 0.0 {
+            continue;
+        }
+        let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+        assert!((f(p) - f(q)).abs() <= d * (1.0 + 1e-9), "{p:?} {q:?}: {} {}", f(p), f(q));
+    }
+    drafted_signs(&tooth, &drafts, 0.0, 0.2, 40, "tooth").unwrap();
+    drafted_signs(&tooth, &drafts, 0.0451, 0.0453, 20, "tooth at its change").unwrap();
+}
+
+#[test]
+fn drafted_rounds_between_straight_walls_move_with_their_corners() {
+    // A round between two straight walls keeps its radius as they lean, so
+    // it moves with its corner: built exactly, its sign the section's at
+    // every height. Rounded convex and reflex corners: a square, an L, a
+    // notch, drafted out, in, and each wall its own way.
+    let sq = [[0.0, 0.0, 0.0, 1.0], [10.0, 0.0, 0.0, 2.0], [10.0, 10.0, 0.0, 0.5], [0.0, 10.0, 0.0, 1.5]];
+    let l = [[0.0, 0.0, 0.0, 0.5], [12.0, 0.0, 0.0, 1.0], [12.0, 4.0, 0.0, 0.5], [4.0, 4.0, 0.0, 1.0], [4.0, 10.0, 0.0, 0.5], [0.0, 10.0, 0.0, 0.5]];
+    let notch = [
+        [0.0, 0.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0, 0.3],
+        [4.0, 3.0, 0.0, 0.4],
+        [6.0, 3.0, 0.0, 0.4],
+        [6.0, 0.0, 0.0, 0.3],
+        [10.0, 0.0, 0.0, 0.0],
+        [10.0, 10.0, 0.0, 1.0],
+        [0.0, 10.0, 0.0, 1.0],
+    ];
+    let cases: Vec<(&str, Vec<[f64; 4]>, Vec<f64>)> = vec![
+        ("square out", sq.to_vec(), vec![10.0; 4]),
+        ("square in", sq.to_vec(), vec![-10.0; 4]),
+        ("L", l.to_vec(), vec![5.0, -3.0, 8.0, 0.0, 2.0, 12.0]),
+        ("notch", notch.to_vec(), vec![0.0, 10.0, -20.0, 10.0, 0.0, 0.0, 3.0, 3.0]),
+    ];
+    for (name, p, d) in &cases {
+        assert!(super::drafted::exactly(p, d, -1.0, 2.0), "{name}");
+        drafted_signs(p, d, -1.0, 2.0, 24, name).unwrap();
+    }
+}
+
+#[test]
+fn a_drafted_edge_that_vanishes_is_trimmed() {
+    // A square's corner chamfered, the chamfer drafted 45 degrees: it runs
+    // out at the corner at z = 1 / sqrt 2. Past there its wall leaves and
+    // its neighbours meet (a CAD trim), so the sharp corner is inside; it
+    // was refused. Below z = 0 it leans in.
+    let ch = [[0.0, 0.0], [10.0, 0.0], [10.0, 9.0], [9.0, 10.0], [0.0, 10.0]].map(|p| [p[0], p[1], 0.0, 0.0]);
+    let d = [0.0, 0.0, 45.0, 0.0, 0.0];
+    assert!(super::drafted::exactly(&ch, &d, -1.0, 1.0));
+    let f = field(&format!("(polygon {} (vec 0 0 45 0 0) -1 1)", ink_points(&ch)));
+    let at = |z: f64, s: f64| f([9.5 + s, 9.5 + s, z]);
+    // The chamfer x + y = 19 + z sqrt 2 until it reaches the corner.
+    for z in [-0.5, 0.0, 0.3, 0.7] {
+        let s = 0.5 * z * std::f64::consts::SQRT_2;
+        assert!(at(z, s - 0.01) < 0.0 && at(z, s + 0.01) > 0.0, "z = {z}");
+    }
+    for z in [0.71, 0.9, 1.0, 1.5] {
+        assert!(f([9.99, 9.99, z]) < 0.0 && f([10.01, 9.99, z]) > 0.0, "z = {z}");
+    }
+    drafted_signs(&ch, &d, -1.0, 0.7, 16, "chamfer").unwrap();
+}
+
+#[test]
+fn a_drafted_corner_turning_straight_and_an_edge_vanishing_are_read() {
+    // Eight walls 1e6 from the origin, drafted -5 to 45 degrees: corner 3
+    // turns from convex to reflex at z = 0.032 and edge 2 vanishes by
+    // z = 0.064. Read by the allowance, a point 4.8e-5 inside the section
+    // at z = 0.064 (by its walls solved in 50-digit decimals) read 0.041
+    // outside.
+    let p = [
+        [1000000.888829729, -999999.2914697953],
+        [1000000.7675199523, -999998.0240828756],
+        [1000000.5257067526, -999998.4308712197],
+        [1000000.1292991528, -999999.0041193124],
+        [999999.8914277705, -999998.4010801787],
+        [999998.111227277, -999999.8957132017],
+        [999998.1988513363, -1000001.5895861739],
+        [1000001.3794245238, -1000000.6128118325],
+    ]
+    .map(|q| [q[0], q[1], 0.0, 0.0]);
+    let d = [-5.0, 0.0, 45.0, -20.0, 5.0, 0.0, 5.0, 0.0];
+    assert!(super::drafted::exactly(&p, &d, 0.0, 0.14168026157146713));
+    let ds: Vec<String> = d.iter().map(|v| v.to_string()).collect();
+    let f = field(&format!("(polygon {} (vec {}) 0 0.14168026157146713)", ink_points(&p), ds.join(" ")));
+    assert!(f([1000000.7578525974, -999997.982737937, 0.0639919310276438]) < 0.0);
+    assert!(f([1000000.6606148512, -999998.0498147813, 0.10581535163270141]) < 0.0);
+}
+
+#[test]
+fn a_drafted_arc_between_straight_walls_is_built_exactly() {
+    // A rectangle whose bottom edge is an arc, bulging out or in, drafted
+    // alike or each wall its own way: built exactly (its corners beside the
+    // arc on curves, its segment its cone within a kite), its sign the
+    // section's at every height.
+    for (b, dr) in [(0.2, vec![10.0; 4]), (-0.2, vec![10.0; 4]), (0.2, vec![5.0, 0.0, 20.0, 0.0]), (0.414, vec![3.0; 4])] {
+        let p = [[0.0, 0.0, b, 0.0], [10.0, 0.0, 0.0, 0.0], [10.0, 6.0, 0.0, 0.0], [0.0, 6.0, 0.0, 0.0]];
+        assert!(super::drafted::exactly(&p, &dr, -1.0, 2.0), "{b} {dr:?}");
+        drafted_signs(&p, &dr, -1.0, 2.0, 24, &format!("arc {b} {dr:?}")).unwrap();
+    }
+}
+
+#[test]
+fn drafted_arcs_meeting_each_other_are_built_exactly() {
+    // Two arcs meeting at a corner (bulging alike or not), and a triangle of
+    // arcs, drafted alike or each wall its own way: built exactly (each
+    // corner of two arcs where their cones meet), its sign the section's at
+    // every height.
+    let two = |b1: f64, b2: f64| vec![[0.0, 0.0, b1, 0.0], [5.0, -0.5, b2, 0.0], [10.0, 0.0, 0.0, 0.0], [10.0, 6.0, 0.0, 0.0], [0.0, 6.0, 0.0, 0.0]];
+    let cases = [
+        (two(0.2, 0.15), vec![10.0; 5]),
+        (two(0.2, -0.15), vec![10.0; 5]),
+        (two(-0.2, -0.3), vec![4.0, 12.0, 0.0, 8.0, 2.0]),
+        // Two upright arcs between leaning walls: their corner stays put.
+        (two(0.2, 0.15), vec![0.0, 0.0, 10.0, 10.0, 10.0]),
+        (vec![[0.0, 0.0, 0.2, 0.0], [10.0, 0.0, 0.2, 0.0], [5.0, 8.0, 0.2, 0.0]], vec![6.0; 3]),
+        (vec![[0.0, 0.0, 0.2, 0.0], [10.0, 0.0, -0.1, 0.0], [5.0, 8.0, 0.3, 0.0]], vec![6.0, 2.0, 9.0]),
+    ];
+    for (p, dr) in cases {
+        assert!(super::drafted::exactly(&p, &dr, -1.0, 2.0), "{p:?} {dr:?}");
+        drafted_signs(&p, &dr, -1.0, 2.0, 24, &format!("arcs {p:?} {dr:?}")).unwrap();
+    }
+}
+
+#[test]
+fn a_drafted_arc_moving_past_its_own_sag_is_built_exactly() {
+    // A slot's end (after a sprocket's hub, step2ink's numbers): one shallow
+    // arc wall drafted 45 degrees over +-0.254, so it moves seven times its
+    // sag. Its kite moves with it (scaled about the arc's centre).
+    let p = [[9.236959, -0.79375, 0.0, 0.0], [7.897713, -0.79375, 0.050126, 0.0], [7.897713, 0.79375, 0.0, 0.0], [9.236959, 0.79375, -0.042887, 0.0]];
+    for dr in [[0.0, 0.0, 0.0, 45.0], [0.0, 30.0, 0.0, 45.0], [10.0, 10.0, 10.0, 10.0]] {
+        assert!(super::drafted::exactly(&p, &dr, -0.254, 0.254), "{dr:?}");
+        drafted_signs(&p, &dr, -0.254, 0.254, 24, &format!("slot end {dr:?}")).unwrap();
+    }
+}
+
+#[test]
+fn a_drafted_arc_s_kite_holds_its_segment_at_every_height() {
+    // Five arcs drafted each its own way (random, found by checking against
+    // sections): kites of neighbouring arcs overlapped, and a point across
+    // a chord brought in toward it at z = 0 was not across it at the span's
+    // end (kite points move), so a point 0.9 inside read outside there.
+    let p = [
+        [3.817476960510768, 1.4132037021445196, 0.3988299480498855, 0.0],
+        [0.2132427884221318, 4.46646300085881, 0.3183941415556502, 0.0],
+        [-2.4973677977119135, 1.6286268469258767, 0.4700696716958046, 0.0],
+        [-2.3981339470084455, -1.8865535235948039, -0.03400373223432407, 0.0],
+        [1.8946033478533517, -3.3376178328806096, -0.13959255589737474, 0.0],
+    ];
+    let dr = [8.665801747981483, -8.165957131037231, 10.677595788435706, 10.519288390416126, -6.688330681847795];
+    drafted_signs(&p, &dr, -1.142905790518473, 0.685698611180729, 24, "five arcs").unwrap();
 }

@@ -12,7 +12,8 @@
 ;     path tools' angles (radians).
 ;   - "Exact": the field is the true Euclidean distance. Others bound it or
 ;     are right only on the surface. Clearance and meshing work on them;
-;     offsets need a distance field. Thickness is sampled (measured).
+;     (offset-shape f d) grows by distance, exactly where ink reads f as one,
+;     else with a warning. Thickness is sampled (measured).
 ;   - Exact primitives promise a slope of at most 1 (1-Lipschitz) with
 ;     (lipschitz 1 f), which clearance proofs trust in place of interval
 ;     arithmetic's looser slope bound. Warps keep the promise
@@ -221,15 +222,15 @@
 (fn subtract (a b more ...) (apply max (concat (vec a (neg b)) (map neg more))))
 
 ; Smooth union of a and b, blended over k mm (Quilez's polynomial smooth
-; minimum). It lies between min(a, b) - k/4 and min(a, b). Where a and b
-; are within k of each other the blend is its own construction, named
-; "blend". Elsewhere it is min(a, b), whose faces are a's and b's.
+; minimum): min(a, b) - k/4 w^2, w = max(0, 1 - |a - b| / k). It lies
+; between min(a, b) - k/4 and min(a, b). Where a and b are within k of each
+; other the blend is its own construction, named "blend"; elsewhere it is
+; min(a, b), whose faces are a's and b's. One expression, with no switch
+; that bounds cannot show continuous.
 (fn smooth-union (a b k)
-  (let ((h (clamp (+ 0.5 (/ (* 0.5 (- b a)) k)) 0 1))
-        (m (min a b)))
-    (select (- (abs (- a b)) k)
-      (tag "blend" (min m (max (- m (* 0.25 k)) (- (mix b a h) (* k h (- 1 h))))) opaque)
-      m)))
+  (let ((m (min a b))
+        (w (max 0 (- 1 (/ (abs (- a b)) k)))))
+    (min m (tag "blend" (- m (* 0.25 k (square w))) opaque))))
 (fn smooth-intersect (a b k) (neg (smooth-union (neg a) (neg b) k)))
 (fn smooth-subtract (a b k) (neg (smooth-union (neg a) b k)))
 
@@ -302,8 +303,12 @@
 ; (min-thickness f > t): it measures by rays and leaves sharp edges alone.
 (fn opening (f r) (- (redistance (+ (redistance f) r)) r))
 
-; Hollow a shape: a wall of the given thickness centred on its surface.
-(fn shell (f thickness) (- (abs f) (* 0.5 thickness)))
+; Hollow a shape: a wall of the given thickness centred on its surface,
+; everything within half of it of the surface: the shape grown by half
+; less the shape shrunk by half (offset-shape, which says where it can't build
+; that exactly).
+(fn shell (f thickness)
+  (let ((h (* 0.5 thickness))) (max (offset-shape f h) (neg (offset-shape f (neg h))))))
 
 ; ---------------------------------------------------------------- appearance
 
@@ -410,6 +415,25 @@
 ; along z, its y along x).
 (fn extrude-x (g x0 x1) (warp (extrude-z g x0 x1) y z x))
 (fn extrude-y (g y0 y1) (warp (extrude-z g y0 y1) z x y))
+; The same, its top edge bevelled c at 45 degrees, or rounded to radius r:
+; raised letters, a plate's edge. Exact where g is a distance inside (a
+; polygon's, lettering's); a part of g thinner than 2c (2r) loses its top.
+(fn extrude-z-chamfer (g z0 z1 c)
+  (max (extrude-z g z0 z1) (* (sqrt 0.5) (+ g (- z (- z1 c))))))
+(fn extrude-z-round (g z0 z1 r)
+  (let ((a (+ g r)) (b (- z (- z1 r))))
+    (max (- z0 z) (- (+ (len2 (max a 0) (max b 0)) (min (max a b) 0)) r))))
+
+; A flat design wrapped round a cylinder of radius r about z: its x runs
+; round the cylinder (the length along its surface at r, counter-clockwise
+; from +x, so it reads left to right seen from outside), its y along z,
+; and its z out of the surface. Text standing proud of a mug, a ring or a
+; tube: (wrap-cylinder-z (extrude-z (lettering-2d L) 0 0.8) r); sunk into
+; it: (extrude-z ... -0.8 0.1), subtracted. The design must lie within
+; half a turn of x = 0 (|x| < pi r). Lengths across the surface stay true
+; at r and stretch r'/r at radius r'; not a distance where r' is not r.
+(fn wrap-cylinder-z (f r)
+  (warp f (* r (atan2 y x)) z (- (len2 x y) r)))
 
 ; (revolve-z g), built in, turns a 2D profile g(x, y) about the z axis:
 ; profile x is the radius, y the height. A profile may start at x = 0: its
@@ -623,7 +647,7 @@
               (u (/ (dot pa ba) (dot ba ba)))
               (u (select (if (== i 0) closes -1) (max u 0) u))
               (u (select (if (== i last) closes -1) (min u 1) u))
-              (wall-d (shell (- (norm (- pa (* ba u))) mid) wall))
+              (wall-d (- (abs (- (norm (- pa (* ba u))) mid)) (* 0.5 wall)))
               (cuts (concat (if (== i 0) (vec (neg (dot pa tn))) (vec)) (if (== i last) (vec (dot (- here b) tn)) (vec)))))
           (if (== (len cuts) 0) wall-d (select closes wall-d (emax wall-d (reduce max cuts))))))))))
 
@@ -1334,185 +1358,163 @@
 (fn build-along (f s length u)
   (let ((d (* u length)) (v (nth s 1))) (move f (* d (nth v 0)) (* d (nth v 1)) (* d (nth v 2)))))
 
-;; ---------------------------------------------------------------- text
+;; ---------------------------------------------------------------- lettering
 ;
-; Single-stroke (engraving) text: a 2D field in (x, y), the exact distance
-; to the round-capped strokes, so it extrudes, engraves, embosses and
-; offsets like any exact 2D profile. Inside, where strokes cross, it is a
-; lower bound on the distance to the edge. It promises slope 1
-; (`ink spec --section "The one promise"`).
+; Solid letters from outline fonts: names, signs and labels to print, cut,
+; emboss or engrave. A font is (font NAME [(AXIS v) ...]), built in: one std
+; vendors, or a .ttf or .otf file (a path relative to the file naming it),
+; at a point of its variation axes (wght: 400 regular, 700 bold):
+;   "sans"     Lexend: a plain sans; wght 100..900
+;   "rounded"  Fredoka: rounded ends, kind to printing; wght 300..700, wdth 75..125
+;   "serif"    Bitter: a slab serif; wght 100..900
+;   "script"   Pacifico: a joined script, a word one piece
+; Licences: std/fonts. (get F "cap-height") and its other metrics
+; ("ascender", "descender", "line-gap", "x-height") are in ems;
+; "axis-ranges" says what each axis takes. A character the font lacks is an
+; error naming it.
 ;
-;   (text-2d "ABC 123" h)    cap height h, stroke h/10, centred on the origin
-;   (text-2d-styled text h stroke spacing ax ay)
-;       stroke: stroke width. spacing: extra gap between letters (0 keeps
-;       the font's). ax, ay: the anchor, as fractions of the line's advance
-;       width and cap height. (0 0) puts the baseline's left end at the
-;       origin, (0.5 0.5) the centre.
-;   (text-width text h stroke spacing)   the line's advance width
-; Sizes and anchors may read x, y or z, without the promise.
+; Lettering is laid out, then made a shape:
+;   (lettering text F h)        cap height h (mm), centred on the origin
+;   (lettering-styled text F h tracking leading align)
+;       tracking: added between letters (mm; a joined script stays joined
+;       only at 0 or less). leading: baseline to baseline, a multiple of the
+;       font's line height. align: 0 left, 0.5 centred, 1 right, each line;
+;       where x = 0 falls on a line. A "\n" starts a line. y = 0 is
+;       halfway up from the last line's baseline to the first's caps.
+;   (lettering-2d L)            its letters, a 2D profile (as polygon's:
+;                               1-Lipschitz, never above the distance)
+;   (lettering-box L)           the letters' box, (vec x0 y0 x1 y1)
+;   (lettering-stencil-2d L w)  its letters with a bridge w wide across each
+;                               counter (the hole of an O, an A), so a
+;                               stencil cut from them holds its islands
+;   (lettering-along-2d L P s)  along a path in the xy plane (std's paths),
+;                               the layout's x = 0 at s mm along it and its
+;                               y = 0 (halfway up the caps, one line) on
+;                               it: each letter turned to the path, its
+;                               up the path's y (z cross its direction)
+;   (lettering-around-2d L r a out)
+;                               round a circle of radius r about the
+;                               origin, its x = 0 at a degrees
+;                               (counter-clockwise from +x), its y = 0 on
+;                               the circle: out 1 runs clockwise, the
+;                               letters' tops outward (a coin's top), out
+;                               0 counter-clockwise, tops inward (its foot)
+;   (lettering-max chars n F h tracking)
+;       (vec width y0 y1): a sound bound on the box of any line of up to n
+;       characters from the text `chars`: its width, and how low and high
+;       its letters reach from the baseline. What a claim about every text
+;       a customer may type reads (examples/name-ornament.ink). It holds
+;       whatever glyphs the font substitutes: every glyph's box and
+;       advance count, and every adjustment the font's positioning can
+;       make. An error, saying why, where the shaping is not counted
+;       simply (a combining mark, a script with its own shaping rules,
+;       mark, cursive or contextual positioning, a table or format it
+;       does not read): ask such texts as cases.
 ;
-; Each advance grows by the stroke, keeping the font's gaps. Ink stays
-; within the advance width, and at most stroke/2 below the baseline or
-; above the caps, except descenders (g p y, 0.33 h), brackets and some
-; punctuation; `bounds` gives a proven box. One line, of printable ASCII
-; (space to ~) and the degree sign. Any other character is an error when
-; the model loads (index out of range in hershey-glyph).
+; The text is shaped as the font sets it (HarfBuzz's rules): its
+; ligatures (office's ffi), the forms a script font joins by, accents
+; composed or marks placed on their letters, kerning. Each glyph is its
+; outline (lines and arcs within 4e-4 em of the font's curves, the regions
+; a font's overlapping contours fill joined). Tracking is added between
+; characters, not inside a ligature. Lines run left to right: no
+; right-to-left or vertical text.
 ;
-; Font: Hershey simplex roman (futural.jhf, from
-; https://github.com/kamalmostafa/hershey-fonts), glyphs verbatim in the
-; Hurt format: letter pairs, R the origin, x = code - 82, y = code - 82
-; downwards. The first pair is the left and right extent; " R" lifts the
-; pen. Its terms ask that these acknowledgements go with the data:
-;   - The Hershey Fonts were originally created by Dr. A. V. Hershey while
-;     working at the U. S. National Bureau of Standards.
-;   - The format of the Font data in this distribution was originally
-;     created by James Hurt, Cognition, Inc., 900 Technology Park Drive,
-;     Billerica, MA 01821 (mit-eddie!ci-dandelion!hurt).
-; and that it is not converted into the U.S. NTIS's format. The degree
-; sign is ours, not the font's: an octagon at the top of the caps.
+; Styles compose as fields. With g = (lettering-2d L):
+;   raised        (min plate (extrude-z g t (+ t 1)))
+;   engraved      (subtract plate (extrude-z g (- t 0.6) (+ t 1)))
+;   bevelled or rounded tops   extrude-z-chamfer, extrude-z-round
+;   outlined      (shell g 0.8): a line 0.8 wide on the letters' edge;
+;                 (max g (neg (+ g 0.8))): hollow letters, walls 0.8
+;   bolder, a backing plate the letters share
+;                 (- g d): grown by d (d large joins letters into one plate)
+;   on a cylinder wrap-cylinder-z
+; Claims of g, a 2D profile, are asked in the plane (`ink spec --section
+; "Where analysis looks"`): (subset g face) that the text fits, (clearance
+; g other 0.8) its gaps, (min-thickness g > 0.8) every stroke at least 0.8
+; thick (`ink spec --section "Manufacturing checks"`).
 
-(def hershey-simplex
-  (vec
-    "JZ"                                                            ; space
-    "MWRFRT RRYQZR[SZRY"                                            ; !
-    "JZNFNM RVFVM"                                                  ; "
-    "H]SBLb RYBRb RLOZO RKUYU"                                      ; #
-    "H\\PBP_ RTBT_ RYIWGTFPFMGKIKKLMMNOOUQWRXSYUYXWZT[P[MZKX"       ; $
-    "F^[FI[ RNFPHPJOLMMKMIKIIJGLFNFPGSHVHYG[F RWTUUTWTYV[X[ZZ[X[VYTWT" ; %
-    "E_\\O\\N[MZMYNXPVUTXRZP[L[JZIYHWHUISJRQNRMSKSIRGPFNGMIMKNNPQUXWZY[[[\\Z\\Y" ; &
-    "MWRHQGRFSGSIRKQL"                                              ; '
-    "KYVBTDRGPKOPOTPYR]T`Vb"                                        ; (
-    "KYNBPDRGTKUPUTTYR]P`Nb"                                        ; )
-    "JZRLRX RMOWU RWOMU"                                            ; *
-    "E_RIR[ RIR[R"                                                  ; +
-    "NVSWRXQWRVSWSYQ["                                              ; ,
-    "E_IR[R"                                                        ; -
-    "NVRVQWRXSWRV"                                                  ; .
-    "G][BIb"                                                        ; /
-    "H\\QFNGLJKOKRLWNZQ[S[VZXWYRYOXJVGSFQF"                         ; 0
-    "H\\NJPISFS["                                                   ; 1
-    "H\\LKLJMHNGPFTFVGWHXJXLWNUQK[Y["                               ; 2
-    "H\\MFXFRNUNWOXPYSYUXXVZS[P[MZLYKW"                             ; 3
-    "H\\UFKTZT RUFU["                                               ; 4
-    "H\\WFMFLOMNPMSMVNXPYSYUXXVZS[P[MZLYKW"                         ; 5
-    "H\\XIWGTFRFOGMJLOLTMXOZR[S[VZXXYUYTXQVOSNRNOOMQLT"             ; 6
-    "H\\YFO[ RKFYF"                                                 ; 7
-    "H\\PFMGLILKMMONSOVPXRYTYWXYWZT[P[MZLYKWKTLRNPQOUNWMXKXIWGTFPF" ; 8
-    "H\\XMWPURRSQSNRLPKMKLLINGQFRFUGWIXMXRWWUZR[P[MZLX"             ; 9
-    "NVROQPRQSPRO RRVQWRXSWRV"                                      ; :
-    "NVROQPRQSPRO RSWRXQWRVSWSYQ["                                  ; ;
-    "F^ZIJRZ["                                                      ; <
-    "E_IO[O RIU[U"                                                  ; =
-    "F^JIZRJ["                                                      ; >
-    "I[LKLJMHNGPFTFVGWHXJXLWNVORQRT RRYQZR[SZRY"                    ; ?
-    "E`WNVLTKQKOLNMMPMSNUPVSVUUVS RQKOMNPNSOUPV RWKVSVUXVZV\\T]Q]O\\L[JYHWGTFQFNGLHJJILHOHRIUJWLYNZQ[T[WZYYZX RXKWSWUXV" ; @
-    "I[RFJ[ RRFZ[ RMTWT"                                            ; A
-    "G\\KFK[ RKFTFWGXHYJYLXNWOTP RKPTPWQXRYTYWXYWZT[K["             ; B
-    "H]ZKYIWGUFQFOGMILKKNKSLVMXOZQ[U[WZYXZV"                        ; C
-    "G\\KFK[ RKFRFUGWIXKYNYSXVWXUZR[K["                             ; D
-    "H[LFL[ RLFYF RLPTP RL[Y["                                      ; E
-    "HZLFL[ RLFYF RLPTP"                                            ; F
-    "H]ZKYIWGUFQFOGMILKKNKSLVMXOZQ[U[WZYXZVZS RUSZS"                ; G
-    "G]KFK[ RYFY[ RKPYP"                                            ; H
-    "NVRFR["                                                        ; I
-    "JZVFVVUYTZR[P[NZMYLVLT"                                        ; J
-    "G\\KFK[ RYFKT RPOY["                                           ; K
-    "HYLFL[ RL[X["                                                  ; L
-    "F^JFJ[ RJFR[ RZFR[ RZFZ["                                      ; M
-    "G]KFK[ RKFY[ RYFY["                                            ; N
-    "G]PFNGLIKKJNJSKVLXNZP[T[VZXXYVZSZNYKXIVGTFPF"                  ; O
-    "G\\KFK[ RKFTFWGXHYJYMXOWPTQKQ"                                 ; P
-    "G]PFNGLIKKJNJSKVLXNZP[T[VZXXYVZSZNYKXIVGTFPF RSWY]"            ; Q
-    "G\\KFK[ RKFTFWGXHYJYLXNWOTPKP RRPY["                           ; R
-    "H\\YIWGTFPFMGKIKKLMMNOOUQWRXSYUYXWZT[P[MZKX"                   ; S
-    "JZRFR[ RKFYF"                                                  ; T
-    "G]KFKULXNZQ[S[VZXXYUYF"                                        ; U
-    "I[JFR[ RZFR["                                                  ; V
-    "F^HFM[ RRFM[ RRFW[ R\\FW["                                     ; W
-    "H\\KFY[ RYFK["                                                 ; X
-    "I[JFRPR[ RZFRP"                                                ; Y
-    "H\\YFK[ RKFYF RK[Y["                                           ; Z
-    "KYOBOb RPBPb ROBVB RObVb"                                      ; [
-    "KYKFY^"                                                        ; \
-    "KYTBTb RUBUb RNBUB RNbUb"                                      ; ]
-    "JZRDJR RRDZR"                                                  ; ^
-    "I[Ib[b"                                                        ; _
-    "NVSKQMQORPSORNQO"                                              ; `
-    "I\\XMX[ RXPVNTMQMONMPLSLUMXOZQ[T[VZXX"                         ; a
-    "H[LFL[ RLPNNPMSMUNWPXSXUWXUZS[P[NZLX"                          ; b
-    "I[XPVNTMQMONMPLSLUMXOZQ[T[VZXX"                                ; c
-    "I\\XFX[ RXPVNTMQMONMPLSLUMXOZQ[T[VZXX"                         ; d
-    "I[LSXSXQWOVNTMQMONMPLSLUMXOZQ[T[VZXX"                          ; e
-    "MYWFUFSGRJR[ ROMVM"                                            ; f
-    "I\\XMX]W`VaTbQbOa RXPVNTMQMONMPLSLUMXOZQ[T[VZXX"               ; g
-    "I\\MFM[ RMQPNRMUMWNXQX["                                       ; h
-    "NVQFRGSFREQF RRMR["                                            ; i
-    "MWRFSGTFSERF RSMS^RaPbNb"                                      ; j
-    "IZMFM[ RWMMW RQSX["                                            ; k
-    "NVRFR["                                                        ; l
-    "CaGMG[ RGQJNLMOMQNRQR[ RRQUNWMZM\\N]Q]["                       ; m
-    "I\\MMM[ RMQPNRMUMWNXQX["                                       ; n
-    "I\\QMONMPLSLUMXOZQ[T[VZXXYUYSXPVNTMQM"                         ; o
-    "H[LMLb RLPNNPMSMUNWPXSXUWXUZS[P[NZLX"                          ; p
-    "I\\XMXb RXPVNTMQMONMPLSLUMXOZQ[T[VZXX"                         ; q
-    "KXOMO[ ROSPPRNTMWM"                                            ; r
-    "J[XPWNTMQMNNMPNRPSUTWUXWXXWZT[Q[NZMX"                          ; s
-    "MYRFRWSZU[W[ ROMVM"                                            ; t
-    "I\\MMMWNZP[S[UZXW RXMX["                                       ; u
-    "JZLMR[ RXMR["                                                  ; v
-    "G]JMN[ RRMN[ RRMV[ RZMV["                                      ; w
-    "J[MMX[ RXMM["                                                  ; x
-    "JZLMR[ RXMR[P_NaLbKb"                                          ; y
-    "J[XMM[ RMMXM RM[X["                                            ; z
-    "KYTBRCQDPFPHQJRKSMSOQQ RRCQEQGRISJTLTNSPORSTTVTXSZR[Q]Q_Ra RQSSUSWRYQZP\\P^Q`RaTb" ; {
-    "NVRBRb"                                                        ; |
-    "KYPBRCSDTFTHSJRKQMQOSQ RRCSESGRIQJPLPNQPURQTPVPXQZR[S]S_Ra RSSQUQWRYSZT\\T^S`RaPb" ; }
-    "F^IUISJPLONOPPTSVTXTZS[Q RISJQLPNPPQTTVUXUZT[Q[O"))            ; ~
-(def hershey-degree "MWUITGRFPGOIPKRLTKUI")       ; the degree sign (U+00B0)
+; A line of (glyph-run F text): its glyphs, each (vec outline x y metrics),
+; x and y its place from the line's start (mm), and the line's advance width.
+(fn lettering-line (ln k tracking)
+  (vec (map (lambda (g) (let ((m (nth g 1)))
+                          (vec (nth g 0) (+ (* k (get m "x")) (* tracking (get m "cluster"))) (* k (get m "y")) m)))
+            (nth ln 0))
+       (+ (* k (nth ln 1)) (* tracking (max 0 (- (nth ln 2) 1))))))
 
-; A glyph by code point: (vec left right segments), each segment (vec a b),
-; in font units (cap height 21, baseline y = 0, y up). Control characters
-; (below 32) fail like any missing character, not wrap to the table's end.
-(fn hershey-glyph (c)
-  (let ((g (char-codes (if (== c 176) hershey-degree (nth hershey-simplex (if (< c 32) 1000 (- c 32))))))
-        (pairs (map (lambda (i) (vec (nth g (* 2 i)) (nth g (+ 1 (* 2 i))))) (range 1 (/ (len g) 2))))
-        (strokes (fold (lambda (acc p)
-                         (if (== (nth p 0) 32)
-                           (vec (concat (nth acc 0) (vec (nth acc 1))) (vec))
-                           (vec (nth acc 0) (concat (nth acc 1) (vec (vec (- (nth p 0) 82) (- 91 (nth p 1))))))))
-                       (vec (vec) (vec)) pairs))
-        (strokes (concat (nth strokes 0) (vec (nth strokes 1)))))
-    (vec (- (nth g 0) 82) (- (nth g 1) 82)
-         (flatten (map (lambda (st) (map (lambda (a b) (vec a b)) (slice st 0 -1) (slice st 1))) strokes)))))
+(fn lettering-styled (s F h tracking leading align)
+  (let ((k (/ h (get F "cap-height")))
+        (lines (map (lambda (ln) (lettering-line ln k tracking)) (glyph-run F s)))
+        (nl (len lines))
+        (step (* leading k (+ (- (get F "ascender") (get F "descender")) (get F "line-gap"))))
+        (y0 (* 0.5 (- (* (- nl 1) step) h))))
+    (vec F k (flatten (map (lambda (ln j)
+                             (map (lambda (g) (vec (nth g 0) (- (nth g 1) (* align (nth ln 1))) (+ (- y0 (* j step)) (nth g 2)) (nth g 3)))
+                                  (nth ln 0)))
+                           lines (range nl))))))
+(fn lettering (s F h) (lettering-styled s F h 0 1 0.5))
 
-(fn text-advances (gs h stroke spacing)
-  (map (lambda (g) (+ (* (/ h 21) (- (nth g 1) (nth g 0))) stroke spacing)) gs))
-(fn text-width (s h stroke spacing)
-  (- (reduce + (text-advances (map hershey-glyph (char-codes s)) h stroke spacing)) spacing))
+; A layout's letters that have ink (not spaces).
+(fn lettering-inked (L)
+  (fold (lambda (acc g) (if (get (nth g 3) "ink") (concat acc (vec g)) acc)) (vec) (nth L 2)))
 
-(fn text-2d-styled (s h stroke spacing ax ay)
-  (let ((k (/ h 21))
-        (gs (map hershey-glyph (char-codes s)))
-        (advs (text-advances gs h stroke spacing))
-        (w (- (reduce + advs) spacing))
-        (x0s (fold (lambda (acc a) (concat acc (vec (+ (nth acc -1) a)))) (vec (* (neg ax) w)) (slice advs 0 -1)))
-        (y0 (* (neg ay) h))
-        (ds (flatten (map (lambda (g x0)
-                            (let ((o (vec (+ x0 (* 0.5 stroke) (* (neg k) (nth g 0))) y0))
-                                  (segs (nth g 2)))
-                              (if (== (len segs) 0) (vec)
-                                (vec (reduce min (map (lambda (sg) (segment-distance-at here2 (+ o (* k (nth sg 0))) (+ o (* k (nth sg 1))))) segs))))))
-                          gs x0s))))
-    (lipschitz 1 (- (reduce min ds) (* 0.5 stroke)))))
+; A letter's glyph, at the layout's size, its pen at the origin.
+(fn lettering-glyph (L g) (scale (nth g 0) (nth L 1)))
 
-(fn text-2d (s h) (text-2d-styled s h (* 0.1 h) 0 0.5 0.5))
+(fn lettering-2d (L)
+  (fold min inf (map (lambda (g) (move (lettering-glyph L g) (nth g 1) (nth g 2) 0)) (lettering-inked L))))
+
+(fn lettering-box (L)
+  (let ((k (nth L 1)) (gs (lettering-inked L)))
+    (if (== (len gs) 0) (vec 0 0 0 0)
+      (let ((bs (map (lambda (g) (let ((b (get (nth g 3) "box")))
+                                   (vec (+ (nth g 1) (* k (nth b 0))) (+ (nth g 2) (* k (nth b 1)))
+                                        (+ (nth g 1) (* k (nth b 2))) (+ (nth g 2) (* k (nth b 3))))))
+                     gs))
+            (side (lambda (i f) (reduce f (map (lambda (b) (nth b i)) bs)))))
+        (vec (side 0 min) (side 1 min) (side 2 max) (side 3 max))))))
+
+(fn lettering-stencil-2d (L w)
+  (let ((k (nth L 1)))
+    (fold min inf
+      (map (lambda (g)
+             (let ((m (nth g 3)) (b (get m "box"))
+                   (bridges (map (lambda (p) (move (rect-2d w (* k (+ (- (nth b 3) (nth b 1)) 0.2)))
+                                                   (* k (nth p 0)) (* k 0.5 (+ (nth b 1) (nth b 3))) 0))
+                                 (get m "holes"))))
+               (move (fold subtract (lettering-glyph L g) bridges) (nth g 1) (nth g 2) 0)))
+           (lettering-inked L)))))
+
+(fn lettering-along-2d (L P s)
+  (fold min inf
+    (map (lambda (g)
+           (let ((half (* 0.5 (nth L 1) (get (nth g 3) "advance"))))
+             (place (move (lettering-glyph L g) (neg half) (nth g 2) 0) (path-at P (+ s (nth g 1) half)))))
+         (lettering-inked L))))
+
+(fn lettering-around-2d (L r a out)
+  (let ((th (deg->rad (+ a 180))))
+    (lettering-along-2d L (path (vec (path-arc (vec 0 0 0) (vec 0 0 (if out -1 1)) r (vec (cos th) (sin th) 0) (* 2 pi))) (vec 0 0 1))
+                        (* pi r))))
+
+; Over every glyph of the font (glyph-reach): a line of n characters holds
+; at most e n glyphs, each advancing the pen by k lo to k hi, and tracking
+; t between its n characters at most; each glyph's ink lies in the box from
+; its pen.
+(fn lettering-max (chars n F h tracking)
+  (let ((k (/ h (get F "cap-height")))
+        (r (glyph-reach F chars))
+        (e (get r "glyphs-per-char"))
+        (step (get r "step"))
+        (b (get r "box")))
+    (vec (+ (* (- (* e n) 1) k (- (nth step 1) (nth step 0))) (* (- n 1) (abs tracking)) (* k (- (nth b 2) (nth b 0))))
+         (* k (nth b 1)) (* k (nth b 3)))))
 
 ; ---------------------------------------------------------------- lattices (TPMS)
 ;
 ; Fields zero on a triply periodic surface of the given cell period,
 ; divided by their greatest gradient, sqrt(3) k (k = 2 pi / period), so
-; their slope is at most 1. A `shell` of one is at least as thick as asked
-; (thicker where the gradient is less).
+; their slope is at most 1. A band about one, (- (abs f) (* 0.5 th)), is
+; at least th thick (thicker where the gradient is less).
 
 ; It promises slope 1 + 1e-15, allowing for float rounding.
 (fn gyroid (period)
@@ -1523,8 +1525,8 @@
             (* (sin (* k z)) (cos (* k x))))
          (* k (sqrt 3))))))
 
-; A sheet lattice with walls th thick, filling region.
-(fn lattice-fill (region lattice th) (max region (shell lattice th)))
+; A sheet lattice with walls at least th thick, filling region.
+(fn lattice-fill (region lattice th) (max region (- (abs lattice) (* 0.5 th))))
 
 ; ---------------------------------------------------------------- manufacturing
 ;
@@ -1566,9 +1568,7 @@
 ; and each s where its view is blocked. Only signs are read, so it holds
 ; for any field of the shape, toleranced too. Undercuts shallower than lo
 ; plus twice the claim's accuracy (how far off it may be) pass. Sight
-; lines have no width: whether a cutter fits is not checked. Each view's
-; param multiplies the search: a claim per setup, its band cut to what
-; that setup reaches, may decide where one over all views does not.
+; lines have no width: whether a cutter fits is not checked.
 (fn hidden (f stock band views)
   (let ((b (bounds stock))
         (size (map (lambda (k) (- (nth (nth b 1) k) (nth (nth b 0) k))) (range 3)))
@@ -1631,14 +1631,15 @@
 ; (sheet-bend a b angle r) folds what lies left of its line a -> b by angle
 ; degrees to inside radius r > 0: positive toward +z (the top face, z =
 ; th), at most 180 either way. a and b are (vec u v) points on the flat
-; where the bent material ends, at the outline or a relief.
+; where the bent material ends, at the outline or a relief; a bend at an
+; angle to an edge has them past it, so its zone spans the material.
 ; Its zone, the strip that bends, is a -> b long and BA wide about the line.
 ; BA, the bend allowance, is the neutral surface's arc: angle (r + k th),
 ; angle in radians (SOLIDWORKS Help, K-Factor). A flange, all of the flat
 ; beyond its bend's zone, may be wider than the bend. A bend whose line
 ; lies beyond another's zone is on its flange and folds with it.
 ; sheet refuses a = b, crossing bends (a bend's line through another's
-; zone), two bends each beyond the other, and a bend's line beyond two
+; zone, the two zones sharing material), two bends each beyond the other, and a bend's line beyond two
 ; bends neither beyond the other; sheet-frame refuses such a point.
 ; Closed corners and tabs bent out of a plate's interior are not built;
 ; sheet-unrelieved fails where a design needs them.
@@ -1659,14 +1660,16 @@
 ;   Rules: regions a design leaves empty, `(empty RULE)`. A failing
 ;   claim's witness point shows where.
 ;   (sheet-short-flanges S 4)  flanges under 4 th from the bend's mold line
-;     (where the outside faces meet, extended) anywhere along it, either
-;     side (Protolabs; mold line: American Steel & Aluminum), past 90
-;     degrees as at 90. It is air outside the outline, or another bend's
+;     (where the outside faces meet, extended) anywhere along it that its
+;     zone has material across, either side (Protolabs; mold line: American
+;     Steel & Aluminum), past 90 degrees as at 90. It is air outside the outline, or another bend's
 ;     zone, within 4 th - (r + th) tan(min(angle, 90) / 2) of each zone,
 ;     and none from 90 degrees at r >= 3 th.
 ;   (sheet-holes-near-bends S 2.5)  holes within 2.5 th of a bend's zone,
-;     beside it (American Steel & Aluminum, Geomiq: 2.5 th + r from the
-;     adjacent flange's inside face, at 90 degrees 2.5 th past the zone).
+;     abreast of its material (American Steel & Aluminum, Geomiq: 2.5 th +
+;     r from the adjacent flange's inside face, at 90 degrees 2.5 th past
+;     the zone). In these two a witness's z says where across the zone the
+;     material is.
 ;   (sheet-unrelieved S)  material:
 ;     - within th beside each end of a bend, from th + r behind its zone to
 ;       its far edge. A relief must be at least th wide and th + r deep
@@ -1693,7 +1696,7 @@
             ; row i, column j: 1 where bend j's line lies beyond bend i's zone
             (beyond (map (lambda (gi) (map (lambda (gj) (sheet-is-beyond gi (sheet-mid gj))) gs)) gs))
             (crossing (fold + 0 (map (lambda (i) (fold + 0 (map (lambda (j)
-              (if (== i j) 0 (sheet-crosses (nth gs i) (nth gs j)))) (range n)))) (range n))))
+              (if (== i j) 0 (if (sheet-crosses (nth gs i) (nth gs j)) (sheet-zones-share outline (nth gs i) (nth gs j)) 0))) (range n)))) (range n))))
             (mutual (fold + 0 (map (lambda (i) (fold + 0 (map (lambda (j)
               (if (< i j) (* (nth (nth beyond i) j) (nth (nth beyond j) i)) 0)) (range n)))) (range n))))
             (depths (map (lambda (j) (fold + 0 (map (lambda (row) (nth row j)) beyond))) (range n))))
@@ -1702,8 +1705,8 @@
           (if (> mutual 0)
             (error "sheet: two bends each lie beyond the other: a bend folds what lies left of a -> b, so swap a and b of the one that should fold away from the other")
             (vec outline holes th k gs
-                 (map (lambda (j) (sheet-order (fold (lambda (acc i) (if (nth (nth beyond i) j) (concat acc (vec i)) acc)) (vec) (range n))
-                                               depths "sheet: a bend's line")) (range n))
+                 (let ((order (sheet-by-depth depths)))
+                   (map (lambda (j) (sheet-order (map (lambda (row) (nth row j)) beyond) depths order "sheet: a bend's line")) (range n)))
                  (if (> (len holes) 0) (apply subtract (concat (vec outline) holes)) outline)
                  depths)))))))
 (fn sheet-flat (S) (extrude-z (nth S 6) 0 (nth S 2)))
@@ -1749,7 +1752,7 @@
          (map (lambda (i) (tag flange (flange i))) (range (len gs)))
          (map (lambda (i) (tag bend (zone i))) (range (len gs))))))
 (fn sheet-frame (S u v side)
-  (let ((gs (nth S 4)) (p (vec u v)) (xf (sheet-xf gs (sheet-order (sheet-beyond-of gs p) (nth S 7) "sheet-frame: the point"))) (m (nth xf 0))
+  (let ((gs (nth S 4)) (p (vec u v)) (xf (sheet-xf gs (sheet-order (map (lambda (g) (sheet-is-beyond g p)) gs) (nth S 7) (sheet-by-depth (nth S 7)) "sheet-frame: the point"))) (m (nth xf 0))
         (o (+ (sheet-mul m (vec u v (if (> side 0) (nth S 2) 0))) (nth xf 1)))
         (ex (nth m 0)) (ez (* (nth m 2) (if (> side 0) 1 -1))))
     (if (> (fold + 0 (map (lambda (g) (sheet-in-zone g p)) gs)) 0)
@@ -1765,7 +1768,7 @@
               (w (- (* kf th) (* (+ (nth g 3) th) (tan (deg->rad (* 0.5 (min 90 (abs (nth g 2)))))))))
               (s (abs (sheet-across g here2))) (h (* 0.5 (nth g 7))))
           (if (> w 0)
-            (max (sheet-lat g here2) (- h s) (- s h w)
+            (max (sheet-abreast S g) (- h s) (- s h w)
                  (reduce min (concat (vec (neg (nth S 0)))
                    (map (lambda (j) (if (== i j) 1 (sheet-bend-strip (nth gs j) here2))) (range n)))))
             1)))
@@ -1775,7 +1778,7 @@
     (if (== (len holes) 0) 1
       (max (reduce min holes) (slab-z 0 th)
         (reduce min (concat (vec 1) (map (lambda (g)
-          (max (sheet-lat g here2) (- (abs (sheet-across g here2)) (* 0.5 (nth g 7)) (* kh th)))) (nth S 4))))))))
+          (max (sheet-abreast S g) (- (abs (sheet-across g here2)) (* 0.5 (nth g 7)) (* kh th)))) (nth S 4))))))))
 (fn sheet-unrelieved (S)
   (let ((th (nth S 2)) (gs (nth S 4)) (chains (nth S 5)) (n (len gs))
         (ends (map (lambda (g)
@@ -1845,6 +1848,14 @@
 (fn sheet-across (g p) (dot (nth g 5) (- p (nth g 0))))
 (fn sheet-along (g p) (dot (nth g 4) (- p (nth g 0))))
 (fn sheet-lat (g p) (let ((l (sheet-along g p))) (max (neg l) (- l (nth g 6)))))
+; Negative abreast of the bend where it bends: the outline across its
+; zone, a to b, level with the point. z (0..th, as in the rules) is the
+; place across, -BA/2 at 0 to BA/2 at th, so a rule's emptiness ranges over
+; the zone's whole width.
+(fn sheet-abreast (S g)
+  (let ((th (nth S 2)) (n (nth g 5))
+        (d (- (* 0.5 (nth g 7) (- (/ (* 2 z) th) 1)) (sheet-across g here2))))
+    (max (sheet-lat g here2) (warp (nth S 0) (+ x (* (nth n 0) d)) (+ y (* (nth n 1) d)) z))))
 (fn sheet-bend-strip (g p) (max (sheet-lat g p) (- (abs (sheet-across g p)) (* 0.5 (nth g 7)))))
 (fn sheet-is-beyond (g p) (> (sheet-across g p) (* 0.5 (nth g 7))))
 ; Negative on the flange a lineage ends at: beyond each of its bends' zones.
@@ -1856,6 +1867,11 @@
         (s (sheet-t-range (sheet-across gi a) (dot (nth gi 5) d) (neg h) h))
         (l (sheet-t-range (sheet-along gi a) (dot (nth gi 4) d) 0 (nth gi 6))))
     (> (- (min 1 (nth s 1) (nth l 1)) (max 0 (nth s 0) (nth l 0))) 1e-9)))
+; 1 where two bends' zones share material (a search, at load).
+(fn sheet-zones-share (outline gi gj)
+  (let ((b (bounds (max outline (sheet-bend-strip gi here2) (sheet-bend-strip gj here2) (- (abs z) 1))
+                   (vec (vec 1 1 1) (vec -1 -1 -1)))))
+    (< (nth (nth b 0) 0) (nth (nth b 1) 0))))
 ; The t range where f0 + t df lies strictly between lo and hi.
 (fn sheet-t-range (f0 df lo hi)
   (if (< (abs df) 1e-12)
@@ -1869,18 +1885,16 @@
 (fn sheet-takes (g p e)
   (let ((s (sheet-across g p)) (h (* 0.5 (nth g 7))))
     (min (max (sheet-lat g p) (- (+ (neg h) e) s)) (- h s))))
-(fn sheet-beyond-of (gs p)
-  (fold (lambda (acc i) (if (> (sheet-across (nth gs i) p) (* 0.5 (nth (nth gs i) 7))) (concat acc (vec i)) acc))
-        (vec) (range (len gs))))
-; A point's lineage: the bends as it lies beyond, by depth (how many bends
-; each one's line lies beyond).
-(fn sheet-order (as depths what)
-  (map (lambda (d)
-      (let ((hit (fold (lambda (acc i) (if (== (nth depths i) d) (concat acc (vec i)) acc))
-                       (vec) as)))
-        (if (== (len hit) 1) (nth hit 0)
-          (error (concat what " lies beyond two bends neither of which lies beyond the other: their flanges would overlap on the flat; end one flange before the other's line (a notch), or make one bend fold the other's flange")))))
-      (range (len as))))
+; The bends by depth (how many bends each one's line lies beyond).
+(fn sheet-by-depth (depths)
+  (flatten (map (lambda (d) (flatten (map (lambda (i) (if (== (nth depths i) d) (vec i) (vec))) (range (len depths)))))
+                (range (len depths)))))
+; A point's lineage: the bends it lies beyond (beyond, 1 by each bend that
+; it does), by depth, one at each depth from 0.
+(fn sheet-order (beyond depths order what)
+  (let ((as (flatten (map (lambda (i) (if (nth beyond i) (vec i) (vec))) order))))
+    (if (fold * 1 (map (lambda (k) (== (nth depths (nth as k)) k)) (range (len as)))) as
+      (error (concat what " lies beyond two bends neither of which lies beyond the other: their flanges would overlap on the flat; end one flange before the other's line (a notch), or make one bend fold the other's flange")))))
 (fn sheet-parent (chains i) (let ((c (nth chains i))) (if (== (len c) 0) -1 (nth c -1))))
 (fn sheet-children (chains node)
   (fold (lambda (acc j) (if (== (sheet-parent chains j) node) (concat acc (vec j)) acc)) (vec) (range (len chains))))
@@ -1951,6 +1965,13 @@
 ; second turned so a gap faces the first's tooth: 180 + 180/z2 deg when
 ; it sits on the first's +x (mesh-turn gives it in general).
 ;
+; A negative z is an internal gear's (a ring's) -z teeth, pointing in, a
+; tooth centred on +x: the material outside its tip circle, mo -z / 2 - mo,
+; but its tooth spaces, each an external tooth's form (the involute, with
+; the backlash widening it) reaching its root circle 1.25 mo beyond the
+; pitch circle. It fills all beyond its roots: intersect it with a circle.
+; A planet sits mo (-z - zp) / 2 from its centre (mesh-distance with -z).
+;
 ; The flank is the true involute, radial below the base circle, and the
 ; root is a plain circle. The field is the arc length to the flank at each
 ; radius: exact on the flank, distance-like (gradient near 1) near it.
@@ -1972,6 +1993,8 @@
 ; mo. The tooth thickens 2 shift mo tan(pa) at the pitch circle. Where
 ; the vendor tops the tip, clip it with a circle.
 (fn involute-gear-shifted-2d (z mo pa backlash shift)
+  (if (< z 0) (involute-ring-2d (neg z) mo pa backlash shift) (involute-external-2d z mo pa backlash shift)))
+(fn involute-external-2d (z mo pa backlash shift)
   (let ((rp (* 0.5 mo z))
         (rb (* rp (cos (deg->rad pa))))
         (ra (+ rp (* mo (+ 1 shift))))
@@ -1988,6 +2011,19 @@
                 (+ (involute-of-tan tn) (/ (* 0.5 backlash) rp))))
         (tooth (max (* r (- th psi)) (- r ra))))
     (min tooth (- r rf))))
+(fn involute-ring-2d (n mo pa backlash shift)
+  (let ((unshifted (if (== shift 0) 0 (error "an internal gear (a negative count) is cut unshifted: give shift 0")))
+        (rp (* 0.5 mo n))
+        (rb (* rp (cos (deg->rad pa))))
+        (r (len2 x y))
+        (pitch (/ (* 2 pi) n))
+        ; Angle from the nearest tooth space's centre line, in [0, pitch/2],
+        ; folded inside the ring's teeth.
+        (th (abs (- (mod (atan2 y x) pitch) (* 0.5 pitch))))
+        (tn (/ (sqrt (- (square r) (square rb))) rb))
+        (psi (- (+ (/ pi (* 2 n)) (involute-of-tan (tan (deg->rad pa))) (/ (* 0.5 backlash) rp)) (involute-of-tan tn)))
+        (space (max (* r (- th psi)) (- r (+ rp (* 1.25 mo))))))
+    (max (- (- rp mo) r) (neg space))))
 (fn involute-gear-2d (z mo pa backlash) (involute-gear-shifted-2d z mo pa backlash 0))
 ; The rack these gears run on, 2D (extrude it): along x, teeth facing +y,
 ; pitch line y = 0, a tooth centred on x = 0. It is ISO 53's basic rack:
@@ -2030,20 +2066,23 @@
 ; ratio and phase, its centre teeth where it sits.
 (fn gear-teeth (g) (nth (flatten (vec g)) 0))
 (fn gear-centre-teeth (g) (let ((v (flatten (vec g)))) (nth v (- (len v) 1))))
-; Spur gears in mesh, module mo, za and zb teeth, sit mo (za + zb) / 2
-; apart, by their centre teeth.
-(fn mesh-distance (za zb mo) (* 0.5 mo (+ (gear-centre-teeth za) (gear-centre-teeth zb))))
+; Spur gears in mesh, module mo, za and zb teeth, sit mo |za + zb| / 2
+; apart, by their centre teeth: a ring's negative count makes it the
+; difference.
+(fn mesh-distance (za zb mo) (abs (* 0.5 mo (+ (gear-centre-teeth za) (gear-centre-teeth zb)))))
 ; The second gear's turn when the first turns a, the second's centre at
-; bearing from the first's, all from one x direction. It turns the other
-; way, za / zb as fast, a gap facing the first's tooth on the line of
-; centres (each gear has a tooth on its +x).
+; bearing from the first's, all from one x direction. It turns -za / zb
+; as fast (the other way, or with a ring the same way), a gap facing the
+; first's tooth at their pitch point (each gear has a tooth on its +x).
+; That point is beyond the inner gear of a ring's pair.
 (fn mesh-turn (za zb bearing a)
-  (let ((na (gear-teeth za)) (nb (gear-teeth zb)))
-    (+ bearing 180 (/ 180 nb) (/ (* na (- bearing a)) nb))))
+  (let ((na (gear-teeth za)) (nb (gear-teeth zb))
+        (ba (+ bearing (if (< nb 0) 180 0))) (bb (+ bearing (if (< na 0) 0 180))))
+    (+ bb (/ 180 nb) (/ (* na (- ba a)) nb))))
 
 ; Gears in mesh are relations (relate A B KIND), A the input: gear-mesh
-; (spur), bevel-mesh (straight bevel at right angles) and rack-mesh (a
-; pinion on a rack). Each reads its gears' axes and places from A's and
+; (spur, a ring's pair included: its negative count), bevel-mesh
+; (straight bevel at right angles) and rack-mesh (a pinion on a rack). Each reads its gears' axes and places from A's and
 ; B's frames. An end (PATH FRAME) reads a gear whose axis is not its z at
 ; FRAME. After teeth and module each optionally takes
 ; pa [backlash [efficiency]], involute-gear-2d's order:
@@ -2058,6 +2097,17 @@
 ; checks the teeth with the rest of the pair: over the pinion's angle,
 ; where the wheel turns by mesh-turn of its drive (one input, its whole
 ; span). A wrong ratio or phase is a clash at some angle.
+;
+; A gear's numbers are its body's to declare, as std's generators build
+; it from them: (attr gear (vec Z MODULE PRESSURE-ANGLE)), Z its teeth as
+; a mesh writes them ((vec teeth centre-teeth) if shifted); a rack (attr
+; rack (vec MODULE PRESSURE-ANGLE)). An end is the gear's body, declaring
+; its own kind's numbers only; a cluster (gears on one body) declares none. A mesh
+; claims each number is its own, exactly: a-teeth, a-module,
+; a-pressure-angle, a-centre-teeth (where it or the mesh is shifted) and
+; B's, the declared value against the mesh's in the answer's terms. A
+; body declaring none is held to the mesh's numbers by nothing but
+; interfere.
 ; The claims: at the pitch point the pitch surfaces (circles, cones, the
 ; rack's pitch line) part by at most the room. They close by at most the
 ; room or a quarter module, whichever is less. A quarter module is std's
@@ -2080,9 +2130,7 @@
 ; with no backlash placed at its numbers holds despite rounding.
 ; Its numbers may read params, but its parts' shapes are read when the
 ; model loads. If the shapes read a ranged param (one given a range of
-; values), its claims over the range are refused. Unless the teeth clash,
-; it does not check that the bodies have the teeth it says: a 20:40 pair
-; related as 15:45 at their centres passes.
+; values), its claims over the range are refused.
 ;
 ; Its coupling, data for packages built on the kernel, is the tooth force
 ; along either line of action. That runs through the pitch point (mid
@@ -2123,12 +2171,15 @@
     (vec (vec p (+ (* c along) (* s n))) (vec p (- (* s n) (* c along))))))
 ; The outer box (bounds) of gear s's teeth, z and mo its teeth and module:
 ; s within the ring about its z where its mate's teeth work, from half a
-; module inside its pitch circle (by centre teeth) to its tip circle,
+; module inside its pitch circle (by centre teeth; a ring's outside) to
+; its tip circle,
 ; which leaves out a shaft or hub. Nothing there is an error: no gear of
 ; these teeth.
 (fn mesh-teeth (s z mo)
-  (let ((r (len2 x y)) (rp (* 0.5 mo (gear-centre-teeth z)))
-        (ring (max (- r (+ rp mo)) (- (- rp (* 0.5 mo)) r))))
+  (let ((r (len2 x y)) (rp (abs (* 0.5 mo (gear-centre-teeth z))))
+        ; out from an external gear's pitch circle, in from a ring's
+        (v (* (if (< (gear-teeth z) 0) -1 1) (- r rp)))
+        (ring (max (- v mo) (- (* -0.5 mo) v))))
     (bounds (max s ring)
             (error "a gear of a mesh has no material where its mate's teeth work, from half a module inside its pitch circle to its tip circle about its z: is it a gear of that count and module, its axis its z (or read at a frame on its axis, (PATH FRAME))?"))))
 ; Where two spans overlap along a gear's axis ka through oa, (vec lo hi)
@@ -2139,9 +2190,46 @@
         (e0 (+ t0 (* u (nth b 0)))) (e1 (+ t0 (* u (nth b 1)))))
     (vec (max (nth a 0) (min e0 e1)) (min (nth a 1) (max e0 e1)))))
 (fn z-span (b) (vec (nth (nth b 0) 2) (nth (nth b 1) 2)))
+; What the body at an end of a gear relation declares under key ("gear"
+; or "rack"; attrs its attributes): (vec) or (vec it), it of n numbers
+; ((vec z module pressure-angle), z teeth or (vec teeth centre-teeth);
+; (vec module pressure-angle)). Numbers declared any other way, under the
+; other key or of another shape are refused, never left unchecked.
+(fn flat-len (v) (len (flatten (vec v))))
+; 1 where every one of xs is a number; a list among them is refused.
+(fn numbers (xs) (fold (lambda (a x) (if x a a)) 1 xs))
+(fn gear-shaped (d)
+  (if (< (flat-len d) 3) 0
+    (if (> (flat-len d) 4) 0
+      (if (== (len d) 3)
+        (if (== (flat-len (nth d 0)) 1) (numbers d)
+          (if (== (len (nth d 0)) 2) (numbers (concat (nth d 0) (vec (nth d 1) (nth d 2)))) 0))
+        0))))
+(fn rack-shaped (d) (if (== (flat-len d) 2) (if (== (len d) 2) (numbers d) 0) 0))
+; Whether attrs holds key (absent, it reads as -1e300).
+(fn holds-key (attrs key)
+  (let ((v (get attrs key (vec -1e300)))) (if (== (flat-len v) 1) (if (== (nth (flatten (vec v)) 0) -1e300) 0 1) 1)))
+(fn end-declared (attrs key n)
+  (let ((old (fold (lambda (a k) (if (holds-key attrs k) (error (concat "'" k "' is not how this end declares its numbers: a gear (attr gear (vec teeth module pressure-angle)), teeth (vec teeth centre-teeth) if shifted; a rack (attr rack (vec module pressure-angle)); a cluster none")) a))
+                   0 (vec "teeth" "centre-teeth" "module" "pressure-angle" "gears" (if (== n 3) "rack" "gear"))))
+        (d (get attrs key (vec))))
+    (if (if (holds-key attrs key) 0 1) (vec)
+      (if (if (== n 3) (gear-shaped d) (rack-shaped d)) (vec d)
+        (error (if (== n 3) "a gear declares (vec teeth module pressure-angle), teeth (vec teeth centre-teeth) if shifted" "a rack declares (vec module pressure-angle)"))))))
+; A declared gear g's centre teeth, as a list, where it or the mesh's z is
+; shifted.
+(fn mesh-centre (g z)
+  (if (> (+ (flat-len (nth g 0)) (flat-len z)) 2) (vec (gear-centre-teeth (nth g 0))) (vec)))
+; A number's sign, known at load: -1 or 1.
+(fn sign-of (a) (if (< a 0) -1 1))
+; A pair's counts, refused where no gears mesh so: two rings, or a ring
+; of no more teeth than its pinion.
+(fn mesh-pair (na nb)
+  (if (< (* na nb) 0) (if (> (abs (min na nb)) (max na nb)) 0 (error "a ring meshes only a pinion of fewer teeth than its own"))
+    (if (< na 0) (error "two rings do not mesh: a ring's pair is a pinion inside it") 0)))
 (fn gear-mesh (za zb mo more ...)
-  (lambda (fa fb sa sb)
-    (let ((m (mesh-numbers mo more)) (na (gear-teeth za)) (nb (gear-teeth zb))
+  (lambda (fa fb sa sb aa ab)
+    (let ((m (mesh-numbers mo more)) (na (gear-teeth za)) (nb (+ (gear-teeth zb) (mesh-pair (gear-teeth za) (gear-teeth zb))))
           (oa (get fa "origin"))
           (axis (get fa "z"))
           (span (z-span (mesh-teeth sa za mo)))
@@ -2151,13 +2239,25 @@
           (across (- d (* (dot d axis) axis)))
           (apart (norm across))
           (a0 (mesh-distance za zb mo))
+          ; 1, or -1 for a ring's pair: its centres parting closes the mesh
+          (s (sign-of (+ na nb)))
           (e (unit across))
           (p (+ oa (* 0.5 (+ (nth ov 0) (nth ov 1)) axis) (* (/ (* na apart) (+ na nb)) e))))
       (relation gear-mesh
-        (claim centre-distance apart (+ a0 (mesh-close m)) (+ a0 (nth m 2)) (accuracy 1e-6))
+        (claim centre-distance apart (+ a0 (if (> s 0) (mesh-close m) (neg (nth m 2)))) (+ a0 (if (> s 0) (nth m 2) (neg (mesh-close m)))) (accuracy 1e-6))
         (claim parallel-axes (norm (cross axis (get fb "z"))) 0 (mesh-tilt m (mesh-face ov span)) (accuracy 1e-9))
         (claim faces-meet face 0 (* 2 (- (nth span 1) (nth span 0))) (accuracy 1e-6))
-        (optional (couple (mesh-lines oa axis p e (nth m 0)) 0 (nth m 3)))
+        (for g (end-declared aa "gear" 3)
+          (claim a-teeth (gear-teeth (nth g 0)) (gear-teeth za) (gear-teeth za))
+          (claim a-module (nth g 1) mo mo (accuracy 1e-9))
+          (claim a-pressure-angle (nth g 2) (nth m 0) (nth m 0) (accuracy 1e-9))
+          (for c (mesh-centre g za) (claim a-centre-teeth c (gear-centre-teeth za) (gear-centre-teeth za))))
+        (for g (end-declared ab "gear" 3)
+          (claim b-teeth (gear-teeth (nth g 0)) (gear-teeth zb) (gear-teeth zb))
+          (claim b-module (nth g 1) mo mo (accuracy 1e-9))
+          (claim b-pressure-angle (nth g 2) (nth m 0) (nth m 0) (accuracy 1e-9))
+          (for c (mesh-centre g zb) (claim b-centre-teeth c (gear-centre-teeth zb) (gear-centre-teeth zb))))
+        (optional (couple (mesh-lines oa axis p (* s e) (nth m 0)) 0 (nth m 3)))
         (data teeth (vec na nb) module mo ratio (/ nb na) pressure-angle (nth m 0) backlash (nth m 1))))))
 ; Straight bevel gears meshing at right angles (std's straight-bevel-gear):
 ; za and zb plain tooth counts, mo the module at the heel, face (mm) the
@@ -2171,7 +2271,7 @@
 ; apexes: their distance apart, within the room.
 ; Its shapes are not read: face stands for their faces.
 (fn bevel-mesh (za zb mo face more ...)
-  (lambda (fa fb sa sb)
+  (lambda (fa fb sa sb aa ab)
     (let ((plain (if (> (len (flatten (vec za zb))) 2) (error "bevel-mesh takes plain tooth counts, not (vec teeth centre-teeth)") 0))
           (m (mesh-numbers mo more))
           (oa (get fa "origin")) (ka (get fa "z")) (ob (get fb "origin")) (kb (get fb "z"))
@@ -2187,6 +2287,16 @@
         (claim pitch-cones parting (mesh-close m) (nth m 2) (accuracy 1e-6))
         (claim square-axes (abs (dot ka kb)) 0 (mesh-tilt m face) (accuracy 1e-9))
         (claim apexes (norm (- ob oa)) 0 (nth m 2) (accuracy 1e-6))
+        (for g (end-declared aa "gear" 3)
+          (claim a-teeth (gear-teeth (nth g 0)) (gear-teeth za) (gear-teeth za))
+          (claim a-module (nth g 1) mo mo (accuracy 1e-9))
+          (claim a-pressure-angle (nth g 2) (nth m 0) (nth m 0) (accuracy 1e-9))
+          (for c (mesh-centre g za) (claim a-centre-teeth c (gear-centre-teeth za) (gear-centre-teeth za))))
+        (for g (end-declared ab "gear" 3)
+          (claim b-teeth (gear-teeth (nth g 0)) (gear-teeth zb) (gear-teeth zb))
+          (claim b-module (nth g 1) mo mo (accuracy 1e-9))
+          (claim b-pressure-angle (nth g 2) (nth m 0) (nth m 0) (accuracy 1e-9))
+          (for c (mesh-centre g zb) (claim b-centre-teeth c (gear-centre-teeth zb) (gear-centre-teeth zb))))
         (optional (couple (mesh-lines oa ka p n (nth m 0)) 0 (nth m 3)))
         (data teeth (vec za zb) module mo face face ratio (/ zb za) pitch-angles (vec (rad->deg da) (rad->deg db))
               pressure-angle (nth m 0) backlash (nth m 1))))))
@@ -2202,7 +2312,7 @@
 ;   point lies.
 ; Its lead, the rack's travel per turn of the pinion, is pi mo z.
 (fn rack-mesh (z mo more ...)
-  (lambda (fa fb sa sb)
+  (lambda (fa fb sa sb aa ab)
     (let ((m (mesh-numbers mo more))
           (oa (get fa "origin")) (axis (get fa "z")) (ob (get fb "origin")) (xb (get fb "x")) (yb (get fb "y"))
           (span (z-span (mesh-teeth sa z mo)))
@@ -2219,6 +2329,14 @@
         (claim parallel-axes (norm (cross axis (get fb "z"))) 0 (mesh-tilt m (mesh-face ov span)) (accuracy 1e-9))
         (claim faces-meet (min face (- along (nth (nth rack 0) 0)) (- (nth (nth rack 1) 0) along)) 0 (* 2 (- (nth span 1) (nth span 0)))
                (accuracy 1e-6))
+        (for g (end-declared aa "gear" 3)
+          (claim a-teeth (gear-teeth (nth g 0)) (gear-teeth z) (gear-teeth z))
+          (claim a-module (nth g 1) mo mo (accuracy 1e-9))
+          (claim a-pressure-angle (nth g 2) (nth m 0) (nth m 0) (accuracy 1e-9))
+          (for c (mesh-centre g z) (claim a-centre-teeth c (gear-centre-teeth z) (gear-centre-teeth z))))
+        (for r (end-declared ab "rack" 2)
+          (claim b-module (nth r 0) mo mo (accuracy 1e-9))
+          (claim b-pressure-angle (nth r 1) (nth m 0) (nth m 0) (accuracy 1e-9)))
         (optional (couple (mesh-lines oa axis p e (nth m 0)) 0 (nth m 3)))
         (data teeth (gear-teeth z) module mo lead (* pi mo (gear-teeth z)) pressure-angle (nth m 0) backlash (nth m 1))))))
 

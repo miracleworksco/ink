@@ -26,7 +26,6 @@ use ink_core::V3;
 use ink_core::eval::Ctx;
 use ink_core::graph::Fingerprint;
 use ink_core::tape::{Names, Tape};
-use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -242,22 +241,30 @@ pub fn memo_region<T: serde::Serialize + serde::de::DeserializeOwned + std::fmt:
     answer(key, || compute(&ctx))
 }
 
-/// `memo_region`'s key, and the context its answer is computed in: the
-/// projected one, or (not cached: derived params) `ctx`.
-pub fn ask_region<'a>(query: &str, tapes: &[&Tape], ctx: &'a Ctx, (lo, hi): (V3, V3), inputs: impl FnOnce(&mut Fingerprint)) -> (Option<u128>, Cow<'a, Ctx>) {
-    let Some(ctx) = ctx.project(tapes) else { return (None, Cow::Borrowed(ctx)) };
+/// `memo_region`'s answer where it is cached already, and nothing
+/// computed where it is not: for what is worth reading only for free (a
+/// cost estimate reading ink check's survey).
+pub fn cached_region<T: serde::de::DeserializeOwned>(query: &str, tapes: &[&Tape], ctx: &Ctx, (lo, hi): (V3, V3), inputs: impl FnOnce(&mut Fingerprint)) -> Option<T> {
+    load(ANSWERS, ask_region(query, tapes, ctx, (lo, hi), inputs).0?)
+}
+
+/// `memo_region`'s key (None: not cached), and the context its answer is
+/// computed in, cached or not: the projected one (`Ctx::project`).
+pub fn ask_region(query: &str, tapes: &[&Tape], ctx: &Ctx, (lo, hi): (V3, V3), inputs: impl FnOnce(&mut Fingerprint)) -> (Option<u128>, Ctx) {
+    let ctx = ctx.project(tapes);
     let key = ask(query, |fp| {
         lo.iter().chain(&hi).for_each(|v| _ = fp.f64(*v));
         inputs(fp);
         question(fp, tapes, &ctx).is_some()
     });
-    (key, Cow::Owned(ctx))
+    (key, ctx)
 }
 
 /// Hash a question's tapes and the context they read (projected:
 /// `Ctx::project`) into `fp`, their tags and params numbered in the
 /// question (`Names`, which it gives for the caller's own inputs that name
-/// one). None: it cannot be hashed (derived params).
+/// one). None: it cannot be hashed (a derivation that is not data:
+/// Derive::fingerprint).
 pub fn question(fp: &mut Fingerprint, tapes: &[&Tape], ctx: &Ctx) -> Option<Names> {
     let names = Names::of(tapes, ctx);
     fp.word(tapes.len() as u64);
@@ -436,8 +443,8 @@ mod tests {
     fn a_proof_key_holds_all_it_reads() {
         // Every input of a proof changes its key (cache::ask): the tape, t,
         // the motion's span, a ranged param's span, band and value, a param
-        // it reads, the region, each option; a param it does not read does
-        // not.
+        // it reads, the region, each option; a param it does not read, ranged
+        // or not, does not.
         use crate::ranged::ProofOptions;
         use ink_core::eval::{Ctx, ParamSpans};
         use ink_core::graph::{Graph, Var};
@@ -481,6 +488,7 @@ mod tests {
             assert_ne!(key, base, "{what}");
         }
         assert_eq!(with(&|c| c.params[1] = 8.0), base, "a param the tape does not read");
+        assert_eq!(with(&|c| c.p_spans = ParamSpans::new([(0, (0.5, 1.5)), (1, (6.0, 8.0))])), base, "a ranged param the tape does not read");
         // which the proof is not given: it is computed in the context its
         // key hashes
         let (_, given) = super::ask_region("prove", &[&t0], &ctx, ([-1.0; 3], [1.0; 3]), |_| {});

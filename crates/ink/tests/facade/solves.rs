@@ -372,6 +372,48 @@ fn a_witness_takes_a_solve_on_t_through_others_at_its_moment() {
     assert!(a.check.status == Status::Fails && drive > 75.0 && (drive - (75.0 - margin)).abs() < 1e-9, "drive {drive}, margin {margin}");
 }
 
+/// A claim over a motion reads what a solve on t sets through t, its rate
+/// along t bounded over each piece: a four-bar's loop closes to 0.001 over
+/// a whole turn of its crank, its gap's bound second order in a piece of t
+/// (its rate along the roots' path is about 0). Read as boxes of their own,
+/// the two angles blur the gap by their width times the links' lengths:
+/// 595,539 pieces of t.
+#[test]
+fn a_loop_closed_by_a_solve_on_t_is_proven_along_its_roots() {
+    let src = "(t-span 0 1) (param crank 20) (param coupler 60) (param rocker 40) (param ground 50) (def a (* 2 pi t))
+        (solve loop (unknowns (u 0.8) (w 1.6))
+          (== (+ (* crank (cos a)) (* coupler (cos u))) (+ ground (* rocker (cos w))))
+          (== (+ (* crank (sin a)) (* coupler (sin u))) (* rocker (sin w))))
+        (def gap (distance (vec (+ (* crank (cos a)) (* coupler (cos u))) (+ (* crank (sin a)) (* coupler (sin u)))) (vec (+ ground (* rocker (cos w))) (* rocker (sin w)))))
+        (assert closes (value gap < 0.001))";
+    let mut v = view(src, "loop-along").unwrap();
+    v.set_motion(Some((0.0, 1.0))).unwrap();
+    let c = &run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap().asserts[0].check;
+    let ink::claims::Evidence::ValueSpan(s) = &c.evidence else { panic!("{c:?}") };
+    assert!(c.status == Status::Holds && c.accuracy == Some(0.0) && s.pieces < 20_000, "{c:?}");
+}
+
+/// So over a tolerance band: a solve's unknowns over a ranged param are
+/// read through it at their rates bounded over each piece (-J_u^-1 J_p),
+/// and the four-bar's loop closes to 0.001 over its crank's band in 7
+/// pieces (2,047 read as boxes of their own; with all four links
+/// toleranced, 262,143 pieces in 7 s, none in minutes before).
+#[test]
+fn a_loop_closed_by_a_solve_over_a_band_is_proven_along_its_roots() {
+    let src = "(param crank 20 (tol -0.2 0.2)) (param coupler 60) (param rocker 40) (param ground 50) (def a 0.7)
+        (solve loop (unknowns (u 0.8) (w 1.6))
+          (== (+ (* crank (cos a)) (* coupler (cos u))) (+ ground (* rocker (cos w))))
+          (== (+ (* crank (sin a)) (* coupler (sin u))) (* rocker (sin w))))
+        (def gap (distance (vec (+ (* crank (cos a)) (* coupler (cos u))) (+ (* crank (sin a)) (* coupler (sin u)))) (vec (+ ground (* rocker (cos w))) (* rocker (sin w)))))
+        (assert closes (value gap < 0.001))";
+    let mut v = view(src, "loop-band").unwrap();
+    let spans = v.declared_spans().unwrap();
+    v.set_param_spans(&spans).unwrap();
+    let c = &run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap().asserts[0].check;
+    let ink::claims::Evidence::ValueSpan(s) = &c.evidence else { panic!("{c:?}") };
+    assert!(c.status == Status::Holds && c.accuracy == Some(0.0) && s.pieces < 100, "{c:?}");
+}
+
 /// A rate an upstream solve leaves unbounded over a step is no rate of 0 to
 /// what reads it: u = t (its twin u = t - 0.1 within 0.05 where its
 /// Jacobian holds 0 over a step), w = u, q = w; not q = 0.6875 at t = 0.9,

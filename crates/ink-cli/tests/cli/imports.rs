@@ -262,12 +262,37 @@ fn an_open_mesh_bounds_no_solid_and_check_says_so() {
 }
 
 #[test]
-fn an_imports_box_cannot_shape_the_model_at_load_time() {
+fn an_imports_box_is_measured_and_cannot_shape_the_model_at_load_time() {
+    // The box of sampled data bounds the samples: a floor sized from it is
+    // measured, naming the box, and a condition on it is refused, naming
+    // what was sampled.
     let s = Scratch::new("import-bounds");
     box_stl(&s, "box.stl", 12);
-    let ib = s.model("imp-bounds.ink", "(import \"std\")\n(def b (bounds (import-stl \"box.stl\" (res 0.3))))\n");
-    let e = s.ink(["check", &ib]).err();
-    assert!(e["error"]["message"].as_str().unwrap().contains("reads sampled data"), "{}", pretty(&e));
+    let head = "(import \"std\")\n(def b (bounds (import-stl \"box.stl\" (res 0.3))))\n(def x1 (nth (nth b 1) 0))\n";
+    let ib = s.model("imp-bounds.ink", &format!("{head}(body floor (shape (move (box (* 2 x1) (* 2 x1) 1) 0 0 -10)))\n(assert wide (volume (shape-of floor) > 300))\n"));
+    let d = s.ink(["assert", &ib]).ok();
+    let w = &by_name(&d)["wide"];
+    let kinds: Vec<&Value> = w["samples"].as_array().unwrap().iter().map(|x| &x["kind"]).collect();
+    assert!(verdict(w) == "holds estimate" && kinds == [&json!("bounds"), &json!("mesh")], "{}", pretty(&d));
+    let ic = s.model("imp-if.ink", &format!("{head}(def n (if (> x1 0) 1 2))\n"));
+    let e = s.ink(["check", &ic]).err();
+    let m = e["error"]["message"].as_str().unwrap();
+    assert!(m.contains("reads sampled data (bounds of (import-stl \"box.stl\" (res 0.3)) at ") && m.contains("imp-if.ink:2)"), "{}", pretty(&e));
+    // Found empty, it is refused, default or not: the default would carry a
+    // measured decision as exact (a ball under the grid's spacing is lost).
+    let empty = s.model("empty.ink", "(import \"std\")\n(def lost (grid-bake (sphere 0.1) (res 1)))\n(def d (bounds lost 7))\n(assert leak (value (if (> d 5) 1 0) > 0))\n");
+    let e = s.ink(["assert", &empty]).err();
+    assert!(e["error"]["message"].as_str().unwrap().starts_with("bounds found no interior in sampled data (bake of (sphere 0.1)"), "{}", pretty(&e));
+    // A form's setting (an optimizer's limit, its budget) is decided at
+    // load, so it is refused too; a solve's guess, where its search starts,
+    // is not (the solve's answer reads it).
+    for setting in ["(vary w 1 x1)", "(vary w 1 9) (budget x1)"] {
+        let m = s.model("setting.ink", &format!("{head}(param w 1)\n(optimize least {setting} (minimize (value w)))\n"));
+        let e = s.ink(["check", &m]).err();
+        assert!(e["error"]["message"].as_str().unwrap().contains("reads sampled data (bounds of"), "{setting}: {}", pretty(&e));
+    }
+    let guess = s.model("guess.ink", &format!("{head}(solve near (unknowns (a x1)) (== (* a a) 4))\n"));
+    s.ink(["check", &guess]).ok();
 }
 
 #[test]
@@ -344,6 +369,16 @@ fn an_imports_value_is_its_params_default_for_the_whole_load() {
     let a = by_name(&ink(&["assert", "two.ink"]).ok());
     assert!(band(&a["thin"]["param_spans"]["base-t"], 3.175, 3.375), "{}", pretty(&a["thin"]));
     assert!(band(&a["thin.thin"]["param_spans"]["thin.base-t"], 1.9, 2.1), "{}", pretty(&a["thin.thin"]));
+    // A value known at load is given as a constant is: the importer's param
+    // passes on, --param on the importer reaching the import.
+    s.model(
+        "pass.ink",
+        "(param t0 3.2)
+(import \"a.ink\" as q (base-t t0))
+",
+    );
+    let a = by_name(&ink(&["assert", "pass.ink", "--param", "t0=4.5"]).ok());
+    assert!(a["q.thin"]["status"] == "fails" && a["q.thin"]["value"] == 4.5, "{}", pretty(&a["q.thin"]));
 }
 
 /// What `ink check` of `src` (as m.ink, beside a.ink: a 5 mm param p) says
@@ -730,7 +765,73 @@ fn render_warns_where_walls_thinner_than_res_fall_between_samples() {
     let s = Scratch::new("render-thin");
     let thin = s.model("thin.ink", "(import \"std\")\n(body cup (shape (subtract (cylinder-z 40 60) (move (cylinder-z 39.6 60) 0 0 1))))\n");
     let d = s.ink(["render", &thin, "--out", &s.path("thin.png"), "--size", "128", "--res", "0.5"]).ok();
-    assert!(d["legend"][0]["unresolved"]["cells"].as_u64().unwrap() > 0 && warned(&d, &["thinner than res"]), "{}", pretty(&d));
+    assert!(d["legend"][0]["unresolved"]["cells"].as_u64().unwrap() > 0 && warned(&d, &["thinner than"]), "{}", pretty(&d));
+}
+
+#[test]
+fn render_warns_of_a_ball_in_a_cell_the_surface_crosses() {
+    // A ball 0.3 across just outside a cube's face, in a cell at res 1
+    // the face crosses: not drawn, so warned of.
+    let s = Scratch::new("render-crossed-ball");
+    let m = s.model("ball.ink", "(import \"std\")\n(body b (shape (min (box 6.4 6.4 6.4) (move (sphere .15) 3.45 .2 .2))))\n");
+    let d = s.ink(["render", &m, "--out", &s.path("ball.png"), "--res", "1", "--size", "128", "--view", "front"]).ok();
+    assert!(warned(&d, &["'b'"]), "{}", pretty(&d));
+}
+
+#[test]
+fn render_reports_and_warns_of_material_found_beside_its_surface() {
+    // A ball 1.4 across between two slabs, beside their faces: the search
+    // finds it, which is reported and warned of, however thick.
+    let s = Scratch::new("render-thick-ball");
+    let m = s.model("ball.ink", "(import \"std\")\n(body b (shape (min (move (box 2.6 6.4 6.4) -1.9 0 0) (move (box 2.2 6.4 6.4) 2.1 0 0) (move (sphere .7) .2 .2 .2))))\n");
+    let d = s.ink(["render", &m, "--out", &s.path("ball.png"), "--res", "1", "--size", "128", "--view", "front"]).ok();
+    assert!(d["legend"][0]["unresolved"]["material"].as_u64().unwrap() > 0 && warned(&d, &["'b'", "leaves out"]), "{}", pretty(&d));
+}
+
+#[test]
+fn render_meshes_again_for_a_foil_seen_face_on() {
+    // A 6 x 6 x 0.015 foil beside a 6.4 mm cube, seen from the top in a
+    // small picture: far thinner than a pixel, but 6 mm across, so drawn,
+    // as many blue pixels as a 0.5 mm plate there shows (a block past both
+    // frames the two pictures alike).
+    let s = Scratch::new("render-foil-face");
+    let blue = |thick: f64| {
+        let m = s.model(
+            "foil.ink",
+            &format!("(import \"std\")\n(body b (shape (min (box 6.4 6.4 6.4) (move (box 6 6 {thick}) 7 0 0.05) (move (box 1 1 1) 11 0 0))) (attr color \"#0000FF\"))\n"),
+        );
+        let out = s.path("foil.png");
+        let d = s.ink(["render", &m, "--out", &out, "--size", "128", "--view", "top"]).ok();
+        (count(&out, 2), d)
+    };
+    let ((plate, _), (foil, d)) = (blue(0.5), blue(0.015));
+    assert!(foil as f64 > 0.95 * plate as f64, "{foil} blue pixels, with a plate {plate}: {}", pretty(&d));
+}
+
+#[test]
+fn render_meshes_a_body_by_its_box_and_a_glb_by_its_surface() {
+    // A 200 x 200 x 1 plate: by its surface (a GLB's, for a viewer's zoom)
+    // its res is 0.71, by its box (a picture's, as at 0.1.2) 1: half the
+    // cells.
+    let s = Scratch::new("render-plate");
+    let plate = s.model("plate.ink", "(import \"std\")\n(body plate (shape (box 200 200 1)))\n");
+    let r = s.ink(["render", &plate, "--out", &s.path("plate.png")]).ok();
+    let g = s.ink(["mesh", &plate, "--out", &s.path("plate.glb")]).ok();
+    let (picture, glb) = (r["legend"][0]["res"].as_f64().unwrap(), g["objects"][0]["res"].as_f64().unwrap());
+    assert!(picture >= 1.4 * glb, "render res {picture}, GLB res {glb}: {}\n{}", pretty(&r["legend"]), pretty(&g["objects"]));
+}
+
+#[test]
+fn a_picture_draws_a_thin_wall_seen_face_on() {
+    // A cup's 0.4 mm wall, seen face on: at 512 pixels across drawn whole;
+    // at 256, about a pixel thick, drawn or warned of.
+    let s = Scratch::new("render-cup");
+    let cup = s.model("cup.ink", "(import \"std\")\n(body cup (shape (subtract (cylinder-z 40 60) (move (cylinder-z 39.6 60) 0 0 1))))\n");
+    for size in ["256", "512"] {
+        let d = s.ink(["render", &cup, "--out", &s.path("cup.png"), "--size", size]).ok();
+        let drawn = d["legend"][0]["res"].as_f64().unwrap() < 0.4 && d["legend"][0]["unresolved"]["material"] == 0;
+        assert!(drawn || (size == "256" && warned(&d, &["'cup'", "leaves out"])), "--size {size}: {}", pretty(&d));
+    }
 }
 
 #[test]

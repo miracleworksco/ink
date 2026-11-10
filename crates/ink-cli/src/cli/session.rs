@@ -64,6 +64,11 @@ pub(crate) fn scope_fields(out: &mut J, s: &Session) {
             .collect()
     };
     let (spans, solved) = (spans(false), spans(true));
+    // Text params are read while the file loads: every claim was asked
+    // with these values, and says nothing of other text.
+    if !s.doc.texts.is_empty() {
+        out["texts"] = J::Object(s.doc.texts.iter().map(|p| (p.name.clone(), json!(p.value))).collect());
+    }
     if !solved.is_empty() {
         out["solved_over_ranges"] = J::Object(solved);
     }

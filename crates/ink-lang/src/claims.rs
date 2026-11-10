@@ -79,8 +79,21 @@ pub enum Evidence {
     /// A package's metric of one of its forms; `head` is the form's kind,
     /// `quantity` the metric's (its value's unit), if it has one.
     /// `undecided`: why what it measured does not decide it (what it left
-    /// out would answer otherwise), and how to decide it.
-    Metric { measured: Measured, head: &'static str, form: String, quantity: Option<crate::Quantity>, undecided: Option<(String, String)> },
+    /// out would answer otherwise), and how to decide it. `stopped`: the
+    /// call's time limit passed before the cells asked finished.
+    Metric {
+        measured: Measured,
+        head: &'static str,
+        form: String,
+        quantity: Option<crate::Quantity>,
+        undecided: Option<(String, String)>,
+        stopped: Option<Short>,
+        /// An estimate's basis (its cells, its grid check): none where exact.
+        estimate: Option<String>,
+        /// Its grid error (`grid_error`) and how it was found, where its
+        /// grid check ran.
+        grid_error: Option<(f64, &'static str)>,
+    },
     /// A value at the given params and t.
     Value(f64),
     /// A value at every value of the ranged params it reads.
@@ -115,6 +128,16 @@ pub enum Evidence {
     Stopped,
     /// Not checked: outside ink's range (crate::validity), saying why.
     Outside(String),
+}
+
+/// A grid's estimate the call's time limit stopped before the cells asked
+/// (`res`) finished (metric_claim): its value is the finest coarser cells'
+/// that finished, with their grid error from the next coarser (None: none
+/// finished, or they were the coarsest).
+#[derive(Clone, Copy, Debug)]
+pub struct Short {
+    pub res: f64,
+    pub error: Option<f64>,
 }
 
 /// An estimate over ranged params at values of them (`estimate_scope`):
@@ -348,6 +371,8 @@ pub struct AssertResult {
     /// AssertDef::terms where the value is (its witness, or the given
     /// params and t); empty where there is no one point.
     pub terms: Vec<(String, f64)>,
+    /// What gave it its accuracy, where not its default.
+    pub accuracy_by: Option<AccuracyBy>,
 }
 
 /// What gave a claim the res it was checked at.
@@ -409,7 +434,7 @@ pub use ink_kernel::progress::progress;
 /// those written in the file loaded, not in its imports, if `own`), at the
 /// view's params and time. Each is reported as it is decided (`progress`).
 pub fn run_asserts(v: &mut ModelView, only: Option<&str>, own: bool, opts: ClaimOptions) -> Result<AssertReport, InkError> {
-    run_asserts_with(v, only, own, opts, |_| None)
+    run_asserts_with(v, only, own, opts, None, |_| None)
 }
 
 /// An answer's note on what it asked at one moment though the question
@@ -429,12 +454,15 @@ pub fn one_moment_note(asked: &[(String, f64)]) -> Option<String> {
 
 /// `run_asserts`, each answer reported with its row of the caller's answer,
 /// `row` (so a run stopped before its answer gives the rows done as the
-/// whole answer would).
+/// whole answer would). At a param's `case` (its values, a run of a
+/// declared case), each line it reports says so, and it reports no total:
+/// its caller's counts every case.
 pub fn run_asserts_with(
     v: &mut ModelView,
     only: Option<&str>,
     own: bool,
     opts: ClaimOptions,
+    case: Option<&serde_json::Value>,
     row: impl Fn(&AssertResult) -> Option<serde_json::Value>,
 ) -> Result<AssertReport, InkError> {
     v.scope_question()?;
@@ -463,7 +491,23 @@ pub fn run_asserts_with(
         })
         .collect();
     let mut asserts = Vec::new();
-    progress(serde_json::json!({"total": list.len(), "of": "asserts", "kept": true}));
+    if case.is_none() {
+        progress(serde_json::json!({"total": list.len(), "of": "asserts", "kept": true}));
+        // What each will cost, for a caller that may stop the run (ink
+        // mcp): its answer then says which were the costly ones. Said once,
+        // by the run at the values: a case's run is its caller's.
+        if ink_kernel::progress::reporting() {
+            let ks: Vec<usize> = (0..v.doc.asserts.len()).filter(|&k| list.iter().any(|l| l.0 == v.doc.asserts[k].name)).collect();
+            let fields: Vec<u32> = ks.iter().flat_map(|&k| crate::cost::sketched(v, k)).collect();
+            let sk = crate::cost::Sketches::surveyed(v, &fields);
+            let mut each = serde_json::Map::new();
+            for k in ks {
+                let name = v.doc.asserts[k].name.clone();
+                each.insert(name, crate::cost::of_assert(v, &sk, k, opts.res).map_or(serde_json::Value::Null, |c| c.json()));
+            }
+            progress(serde_json::json!({"estimates": each}));
+        }
+    }
     for (name, claim, source, c, bound, (own_res, tol, quantity), terms, fixed, file) in list {
         // Over the motion of the file it is written in, imported or not
         // (ModelView::motion_of).
@@ -474,12 +518,16 @@ pub fn run_asserts_with(
         let roots: Vec<u32> = v.doc.claim_roots(&c).into_iter().chain(bound).collect();
         // What it sweeps, said as it starts: the ranged params it reads.
         let mut running = serde_json::json!({"running": name});
+        if let Some(c) = case {
+            running["case"] = c.clone();
+        }
         let ranged = ranged_reads(v, &roots);
         if !ranged.is_empty() {
             running["ranged"] = ranged.iter().map(|&(k, s)| (v.doc.params[k as usize].name.clone(), serde_json::json!([s.0, s.1]))).collect::<serde_json::Map<_, _>>().into();
         }
         progress(running);
         let res = claim_res(own_res, opts.res);
+        let accuracy_by = accuracy_by(v, &c, tol, opts.accuracy);
         let start = std::time::Instant::now();
         let count = || {
             use std::sync::atomic::Ordering::Relaxed;
@@ -493,8 +541,11 @@ pub fn run_asserts_with(
         // (past the call's time limit) is not cached either.
         let after = count();
         let cached = after.0 == before.0 && after.1 > before.1 && !matches!(check.evidence, Evidence::Stopped);
-        let a = AssertResult { name, claim, source, res, check, ms, cached, terms };
+        let a = AssertResult { name, claim, source, res, check, ms, cached, terms, accuracy_by };
         let mut done = serde_json::json!({"done": a.name, "status": a.check.status.as_str(), "ms": ms});
+        if let Some(c) = case {
+            done["case"] = c.clone();
+        }
         if let Some(r) = row(&a) {
             done["row"] = r;
         }
@@ -665,6 +716,16 @@ fn ask_in(v: &mut ModelView, claim: Claim, bound: Option<u32>, opts: ClaimOption
     let inexact = v.doc.inexact(&roots, &v.certified());
     let motion = v.motion.filter(|&span| moves(v, &roots, span));
     let opts = ClaimOptions { accuracy: Some(tol), ..opts };
+    if motion.is_none() && planar(v, &claim, &roots) {
+        return v.in_plane(|v| {
+            let (scope, span, _) = judged_scope(v, &roots, v.motion);
+            let c = match validate(v, &claim, &roots, tol, opts.res, scope, span) {
+                Some(c) => c,
+                None => decide(v, claim.clone(), opts)?,
+            };
+            Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact)))
+        });
+    }
     // Judged before anything answers it (`validate`), over the scope it is
     // asked over (`judged_scope`).
     let (scope, span, _) = judged_scope(v, &roots, v.motion);
@@ -681,6 +742,18 @@ fn ask_in(v: &mut ModelView, claim: Claim, bound: Option<u32>, opts: ClaimOption
         None => Asked::Done(decide(v, claim.clone(), opts)?),
     };
     c.then(v, move |v, c| Ok(Asked::Done(finished(v, &claim, &roots, c, tol, inexact))))
+}
+
+/// Whether `claim` (reading `roots`) is asked in the plane: a question the
+/// same at every height, of shapes that read no z (2D profiles, prisms),
+/// is a search over x and y alone (ModelView::in_plane).
+fn planar(v: &ModelView, claim: &Claim, roots: &[u32]) -> bool {
+    let same = match claim {
+        Claim::Empty(_) | Claim::Range(_) | Claim::Clearance(..) | Claim::Disjoint(..) | Claim::Subset(..) | Claim::Touches(..) | Claim::Overlaps(..) => true,
+        Claim::Metric { metric, .. } => metric.shape.is_some() && v.doc.registry.plane_metric(metric.metric),
+        _ => false,
+    };
+    same && roots.iter().all(|&r| !v.doc.g.value_depends_on(r, |x| x == Var::Z))
 }
 
 /// The one judgement made of a claim before any path answers it: ink's
@@ -757,15 +830,67 @@ pub(crate) fn answer(c: Check, tol: f64, inexact: crate::Inexact, quantity: Opti
 }
 
 /// The accuracy a claim is checked to: the one given, else its default:
-/// for a claim about shapes the model's (a length), for a comparison
+/// for a claim about shapes its parts' (a length: `finest`), for a comparison
 /// (a value, a volume, an integral, a mean, a metric, a thickness) 0, and
 /// a point or a range is decided exactly (Claim::accuracy).
 pub(crate) fn claim_accuracy(v: &ModelView, claim: &Claim, given: Option<f64>) -> f64 {
     match claim.accuracy() {
-        crate::Accuracy::Length => given.unwrap_or_else(|| v.accuracy()),
-        crate::Accuracy::Value if v.doc.shape_accuracy(claim) => given.unwrap_or_else(|| v.accuracy()),
+        crate::Accuracy::Length => given.unwrap_or_else(|| parts_accuracy(v, claim).0),
+        crate::Accuracy::Value if v.doc.shape_accuracy(claim) => given.unwrap_or_else(|| parts_accuracy(v, claim).0),
         crate::Accuracy::Value => given.unwrap_or(0.0),
         crate::Accuracy::Exact => 0.0,
+    }
+}
+
+/// A claim about shapes' accuracy where none is given: `finest` of the
+/// parts its shapes are made of (Doc::parts_of).
+fn parts_accuracy(v: &ModelView, claim: &Claim) -> (f64, Vec<(String, f64)>) {
+    finest(v.accuracy(), v.doc.claim_roots(claim).into_iter().flat_map(|f| v.doc.parts_of(f)))
+}
+
+/// The accuracy a claim about parts is checked to where none is given:
+/// the finest of its parts' (Doc::parts_of), each its declared tolerance,
+/// `(attr tolerance x)`, or else `model`'s (ModelView::accuracy), as is
+/// material of no part. A part made to 0.2 mm against one made to 0.01 is
+/// checked to 0.01; two made to 0.2, to 0.2. With the tolerances declared,
+/// where one of them is that accuracy (none where the model's is finer).
+pub fn finest(model: f64, parts: impl IntoIterator<Item = Option<(String, f64)>>) -> (f64, Vec<(String, f64)>) {
+    let (mut declared, mut undeclared) = (Vec::new(), false);
+    for p in parts {
+        match p {
+            Some(p) if !declared.contains(&p) => declared.push(p),
+            Some(_) => {}
+            None => undeclared = true,
+        }
+    }
+    let tol = declared.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    match tol <= model || !undeclared {
+        true if !declared.is_empty() => (tol, declared),
+        _ => (model, Vec::new()),
+    }
+}
+
+/// Where a claim's accuracy came from, where it is not its default.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccuracyBy {
+    /// The claim's own `(accuracy x)`.
+    Claim,
+    /// The run's (`ClaimOptions::accuracy`, the CLI's `--accuracy`).
+    Run,
+    /// Its parts' declared tolerances (`finest`), each part's name and its.
+    Tolerance(Vec<(String, f64)>),
+}
+
+/// What gives claim `c` its accuracy: its own (`own`), the run's (`run`,
+/// for the claims about shapes) or its parts' tolerances (`finest`); None,
+/// its default.
+pub fn accuracy_by(v: &ModelView, c: &Claim, own: Option<f64>, run: Option<f64>) -> Option<AccuracyBy> {
+    let length = c.accuracy_is_length() || v.doc.shape_accuracy(c);
+    match (own, run) {
+        (Some(_), _) => Some(AccuracyBy::Claim),
+        _ if !length => None,
+        (_, Some(_)) => Some(AccuracyBy::Run),
+        _ => Some(parts_accuracy(v, c).1).filter(|parts| !parts.is_empty()).map(AccuracyBy::Tolerance),
     }
 }
 
@@ -979,16 +1104,6 @@ fn point_status(c: Comparison, x: f64) -> Status {
     }
 }
 
-/// The side of the cube about a point whose sign its bounds there leave
-/// undecided (`point`): every point of it in the shape, or none, puts the
-/// point there.
-const POINT_CUBE: f64 = 0.005;
-
-/// How far below 0 the field must be shown over that cube for the point to
-/// be inside (not on a face of no thickness inside the material, where the
-/// field is 0, as where two pieces abut).
-const POINT_MARGIN: f64 = 1e-9;
-
 /// `(subset a b)`'s search field, max(a, -b): what its witnesses read, and
 /// its question with a and b themselves (`query::Except`: no point inside a
 /// and not inside b, which counts where b reads 0).
@@ -1129,33 +1244,6 @@ fn point(v: &mut ModelView, f: u32, at: [u32; 3], inside: bool) -> Check {
     if !ranged && c.fails_on(iv) {
         return checked(Status::Fails, evidence);
     }
-    // Bounds at a point straddle 0 where a branch cut of the field's
-    // formula runs through it (a thread's angle at its root), though its
-    // value there is one number: every point of a small cube about it at
-    // least POINT_MARGIN inside the shape (or not inside it), shown exactly
-    // by the search, cells either side of the cut, at every value of the
-    // ranged params, puts it there. Its corners are rounded outward, so the
-    // point is strictly inside it however large its coordinates (at 1e16,
-    // p - 0.0025 rounds to p, and a cube of no width holds nothing to
-    // show: both sides would be proven).
-    if !moving {
-        let lo = p.map(|x| (x - 0.5 * POINT_CUBE).next_down());
-        let hi = p.map(|x| (x + 0.5 * POINT_CUBE).next_up());
-        let g = &mut v.doc.g;
-        let side = if inside {
-            let m = g.constant(POINT_MARGIN);
-            let nf = g.neg(f);
-            g.sub(nf, m)
-        } else {
-            f
-        };
-        let cube = v.doc.box_field(lo, hi);
-        let field = v.doc.g.max(cube, side);
-        let (proof, whole) = v.prove(field, None, 0.0);
-        if whole && proof.status() == ranged::Status::Proven {
-            return checked(Status::Holds, evidence);
-        }
-    }
     if !ranged {
         return checked(Status::Unknown, evidence);
     }
@@ -1189,15 +1277,12 @@ struct Summed {
 }
 
 /// Sums over `parts` of each integrand's integral over the part's shape,
-/// estimated at the view's params and moment, each part halved as
-/// query::refine halves one, from a 100th of its own box (at `res`, once,
-/// where given), all stopping once every part is halved and `done` takes
-/// the sums with their spreads; the sums, the coarsest cells a part stopped at, and whether
-/// every part is proven bounded (else the sums are of the rest, and
-/// `done` takes none). A placed body is integrated in its own frame
+/// estimated at the view's params and moment; the sums, the coarsest
+/// cells a part stopped at, and whether every part is proven bounded (else
+/// the sums are of the rest). A placed body is integrated in its own frame
 /// (frame::in_frame), times 1 / |det R|: copies of a body are one
 /// question there, answered once (the cache).
-fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, done: impl Fn(&[f64], &[f64]) -> bool) -> (Vec<f64>, f64, bool) {
+fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, decided: impl Fn(&[f64], &[f64]) -> bool) -> (Vec<f64>, f64, bool) {
     let n = parts.first().map_or(0, |p| p.1.len());
     // Each part as integrated (its frame's shape and integrands), alike
     // parts once, with how many and their scale.
@@ -1220,31 +1305,31 @@ fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, done: imp
         let tapes: Vec<Option<Tape>> = gs.iter().map(|g| g.map(|g| Tape::new(&v.doc.g, g))).collect();
         each.push((v.clipped(shape), tapes, lo, hi, scale));
     }
-    let ctx = &v.ctx;
-    let at = |(tape, tapes, lo, hi, _): &(Arc<Tape>, Vec<Option<Tape>>, V3, V3, f64), h: f64| {
-        let gs: Vec<Option<&Tape>> = tapes.iter().map(Option::as_ref).collect();
-        let m = query::measured(tape, &gs, false, ctx, *lo, *hi, Some(h));
-        query::Sums { sums: m.sums, cells: m.cells }
+    // Measured as `ink mass` measures a mass, to 16 and 4 times its
+    // accuracy first, stopping where the bounds proven so far decide the
+    // claim (at `res` once, where given); one part at a time: each
+    // measurement is parallel, and holds its boxes until it ends.
+    let steps: Vec<query::Until> = match res {
+        Some(r) => vec![query::Until::Res(r)],
+        None => [16.0, 4.0, 1.0].map(|k| query::Until::Accuracy(k * query::ACCURACY)).to_vec(),
     };
-    let mut found: Vec<query::Measured> =
-        each.iter().map(|p| query::Measured { settled: res.is_some(), ..query::Measured::first(res.unwrap_or(query::max_extent(p.2, p.3) / 100.0), |h| at(p, h)) }).collect();
-    loop {
-        let (mut sums, mut spread) = (vec![0.0; n], vec![0.0; n]);
-        for (m, p) in found.iter().zip(&each) {
+    let (mut sums, mut coarsest): (Vec<f64>, f64) = (vec![0.0; n], 0.0);
+    for (i, &until) in steps.iter().enumerate() {
+        let (mut lo, mut hi) = (vec![0.0; n], vec![0.0; n]);
+        (sums, coarsest) = (vec![0.0; n], 0.0);
+        for (tape, tapes, blo, bhi, scale) in &each {
+            let gs: Vec<Option<&Tape>> = tapes.iter().map(Option::as_ref).collect();
+            let m = query::measured(tape, &gs, false, &v.ctx, *blo, *bhi, until);
             for k in 0..n {
-                sums[k] += p.4 * m.sums[k];
-                spread[k] += p.4 * m.spread.get(k).unwrap_or(&0.0);
+                (sums[k], lo[k], hi[k]) = (sums[k] + scale * m.sums[k], lo[k] + scale * m.lo[k], hi[k] + scale * m.hi[k]);
             }
+            coarsest = coarsest.max(m.res);
         }
-        if !found.iter().any(query::Measured::halves) || (whole && found.iter().all(|m| m.coarse.is_some()) && done(&sums, &spread)) {
-            return (sums, found.iter().map(|m| m.res).fold(0.0, f64::max), whole);
-        }
-        for (m, p) in found.iter_mut().zip(&each) {
-            if m.halves() {
-                *m = m.halved(|h| at(p, h));
-            }
+        if i + 1 == steps.len() || (whole && decided(&lo, &hi)) {
+            break;
         }
     }
+    (sums, coarsest, whole)
 }
 
 /// Values of a span an estimate is taken at, evenly spaced, its ends
@@ -1255,6 +1340,33 @@ fn estimate_parts(v: &mut ModelView, parts: &[Part], res: Option<f64>, done: imp
 /// measured claims' time; 33 values of a band doubled a holding band
 /// estimate's (examples/desk-lamp.ink's swung claims, 1.7 s to 3.3 s).
 pub const SAMPLES: usize = 17;
+
+/// The most combinations of declared cases one `ink assert` asks.
+pub const MOST_CASES: usize = 256;
+
+/// Why a param's `(cases ...)` are refused where a combination of the
+/// cases declares `here` of them and the params' values `first`, and how
+/// to make the declarations agree.
+pub fn cases_count_changes(name: &str, first: usize, here: usize) -> String {
+    let cases = |k: usize| if k == 1 { "1 case".to_string() } else { format!("{k} cases") };
+    format!(
+        "{name} declares {} at this combination but {first} at the params' values: a param's (cases ...) name as many values at every combination, \
+         their values may differ. Declare it with every case at each, a value chosen by the other params where it differs ((cases 1 (if (== a 1) 2 1)), say), \
+         or check each as its own file",
+        cases(here)
+    )
+}
+
+/// Why a param's `(cases ...)` are refused where it is declared at some
+/// combinations of the cases and not others (`where_`: where it is and
+/// is not), and what to do instead.
+pub fn cases_not_everywhere(name: &str, where_: &str) -> String {
+    format!(
+        "{name}'s (cases ...) are refused: {name} {where_}, so not every combination of the cases declares it (a `for` or `if` over a param makes it). \
+         Cases go on params every combination declares, and a param declared at some takes its value there. To check other values of it, \
+         name them as cases of a param every combination declares (the count the `for` reads, say), or check each as its own file"
+    )
+}
 
 /// SAMPLES values of `span`, evenly spaced, its ends included (one, where
 /// it is a single value).
@@ -1298,15 +1410,15 @@ fn estimate_scope(v: &mut ModelView, parts: &[Part], res: Option<f64>, status: i
     }
     let read = ranged_reads(v, &fields);
     let summed = |v: &mut ModelView| {
-        // Settled where the status stays with the sums moved by their
-        // spreads, each way (the first and the rest apart too: a mean's
+        // Decided where the status is the same at every corner of the
+        // integrals' proven bounds (the first and the rest apart: a mean's
         // weight and moments).
-        let stays = |x: &[f64], d: &[f64]| {
-            let st = status(x);
-            let moved = |a: f64, b: f64| x.iter().zip(d).enumerate().map(|(k, (x, d))| x + if k == 0 { a } else { b } * d).collect::<Vec<f64>>();
-            st != Status::Unknown && [(1.0, 1.0), (-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)].iter().all(|&(a, b)| status(&moved(a, b)) == st)
+        let decided = |lo: &[f64], hi: &[f64]| {
+            let corner = |a: bool, b: bool| status(&(0..lo.len()).map(|k| if (k == 0 && a) || (k > 0 && b) { hi[k] } else { lo[k] }).collect::<Vec<f64>>());
+            let st = corner(false, false);
+            st != Status::Unknown && [(true, true), (true, false), (false, true)].iter().all(|&(a, b)| corner(a, b) == st)
         };
-        let (sums, res, whole) = estimate_parts(v, parts, res, stays);
+        let (sums, res, whole) = estimate_parts(v, parts, res, decided);
         let status = if whole { status(&sums) } else { Status::Unknown };
         Summed { sums, res, whole, status }
     };
@@ -1620,10 +1732,10 @@ pub fn distance(v: &mut ModelView, fa: u32, fb: u32, opts: ClaimOptions) -> Resu
 /// cells of 2h (`x2`) and 4h (`x4`, if it has one): Roache's grid
 /// convergence index. Where the three converge monotonically, at the
 /// observed order p = log2((x4 - x2) / (x2 - x)), 1.25 |x - x2| / (2^p - 1);
-/// otherwise (two grids, or three that do not converge: a feature the
-/// coarser grids cannot see) 3 |x - x2|, the index of an assumed first
-/// order. Never under |x - x2|, the optimizer's rule
-/// (ink-design `finer`). With how it was found.
+/// otherwise (two grids, as a read the call's time limit stopped, or three
+/// that do not converge: a feature the coarser grids cannot see)
+/// 3 |x - x2|, the index of an assumed first order. Never under |x - x2|,
+/// the optimizer's rule (ink-design `finer`). With how it was found.
 pub fn grid_error(x: f64, x2: f64, x4: Option<f64>) -> (f64, &'static str) {
     let d1 = x - x2;
     match x4.map(|x4| x2 - x4) {
@@ -1637,6 +1749,64 @@ pub fn grid_error(x: f64, x2: f64, x4: Option<f64>) -> (f64, &'static str) {
     }
 }
 
+/// The grids a value that holds on cells of h is checked on: three, each
+/// twice as coarse as the last, whose coarsest is the coarsest of 4h, 2h
+/// and h that reads the part (solves it, and sees what it holds). A part
+/// thinner than the coarser cells hold (a printed wall, a sheet) is so
+/// checked on cells finer than its own, and answered on the finest. A
+/// claim that holds is checked so (`metric_claim`), and an optimize's
+/// search measures each design so, holding or not, so that the design it
+/// returns keeps the margin its claim needs.
+pub struct Ladder {
+    /// The finest grid's measurement: the answer.
+    pub finest: Measured,
+    /// The value on each grid, finest first, and its cells.
+    pub values: [f64; 3],
+    pub cells: [f64; 3],
+}
+
+impl Ladder {
+    /// The finest value's grid error, and how it was found (`grid_error`).
+    pub fn error(&self) -> (f64, &'static str) {
+        let [x, x2, x4] = self.values;
+        grid_error(x, x2, Some(x4))
+    }
+}
+
+/// The ladder of the measurement `base` (`Ladder`), or the cells it was
+/// asked on and why no ladder reads the part.
+pub fn ladder(v: &mut ModelView, m: &FormMetric, accuracy: Option<f64>, base: &Measured) -> Result<Ladder, (f64, String)> {
+    let h = base.res.expect("a grid's measurement");
+    let x = base.value.clone().expect("a value that holds");
+    let mut read = |k: f64| -> Result<Measured, String> {
+        let r = v.measure(m, RunOpts { res: Some(k * h), tol: 1e-8, accuracy }).map_err(|e| e.message)?;
+        match (&r.unseen, &r.value) {
+            (Some(why), _) => Err(format!("cells of {} mm cannot see the part ({why})", k * h)),
+            (None, Err(why)) => Err(format!("cells of {} mm read nothing ({why})", k * h)),
+            (None, Ok(_)) => Ok(r),
+        }
+    };
+    let value = |r: &Measured| r.value.clone().expect("a measurement read");
+    let up = read(2.0).and_then(|x2| read(4.0).map(|x4| (x2, x4)));
+    let up = match up {
+        Ok((x2, x4)) => return Ok(Ladder { finest: base.clone(), values: [x, value(&x2), value(&x4)], cells: [h, 2.0 * h, 4.0 * h] }),
+        Err(why) => why,
+    };
+    // 2h reads the part (4h does not): h/2, h, 2h; else h/4, h/2, h.
+    let fail = |why: String| (h, format!("{up}; {why}"));
+    match read(2.0) {
+        Ok(x2) => {
+            let f = read(0.5).map_err(fail)?;
+            Ok(Ladder { values: [value(&f), x, value(&x2)], cells: [h / 2.0, h, 2.0 * h], finest: f })
+        }
+        Err(_) => {
+            let f2 = read(0.5).map_err(fail)?;
+            let f4 = read(0.25).map_err(fail)?;
+            Ok(Ladder { values: [value(&f4), value(&f2), x], cells: [h / 4.0, h / 2.0, h], finest: f4 })
+        }
+    }
+}
+
 /// A package's metric against its comparison: an estimate (its accuracy
 /// moves the comparison, and guarantees nothing; exact where the metric is
 /// proven, Measured::proven), and unknown where the
@@ -1644,19 +1814,81 @@ pub fn grid_error(x: f64, x2: f64, x4: Option<f64>) -> (f64, &'static str) {
 /// keep their own (res ...): the geometry's res is not theirs (cells a
 /// hundredth of a millimetre would not fit a study); `res` overrides (a
 /// shape's metric: the claim's).
+///
+/// A shape's metric on a grid (Package::shape_res) checks its grid error
+/// on cells of 2h and 4h. Where the call has a time limit, those are
+/// measured first, coarsest first: a limit passing before cells of h
+/// finish leaves the finest that did, with their grid error from the next
+/// coarser, an estimate that holds or fails only where that error cannot
+/// move it past its bound (`Short`). Unstopped, it reads what it would
+/// read after, and answers the same.
 fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f64>, accuracy: Option<f64>, excluding: &[&str]) -> Result<Check, InkError> {
-    let mut measured = v.measure(m, RunOpts { res, tol: 1e-8, accuracy })?;
+    let opts = |res| RunOpts { res, tol: 1e-8, accuracy };
+    let limited = if ink_kernel::stop::limited() { v.shape_res(m, res) } else { None };
+    let mut coarser: Vec<(f64, Measured)> = Vec::new();
+    if let Some(h) = limited {
+        for k in [4.0, 2.0] {
+            coarser.push((k, v.measure(m, opts(Some(k * h)))?));
+        }
+    }
+    let mut measured = v.measure(m, opts(res))?;
+    // A value on a grid that holds is checked on a ladder of grids
+    // (`ladder`), and answered on its finest.
+    let holds_on = |m: &Measured| !m.proven && m.unseen.is_none() && m.res.is_some() && m.value.as_ref().is_ok_and(|&x| point_status(c, x) == Status::Holds);
+    let ladder = holds_on(&measured).then(|| ladder(v, m, accuracy, &measured));
+    if let Some(Ok(l)) = &ladder {
+        measured = l.finest.clone();
+    }
     let head = v.doc.ext_form(Some(m.package), &m.form).map_or("form", |e| e.head);
+    let num = |x: f64| if x.is_finite() { format!("{}", (x * 1e4).round() / 1e4) } else { "unbounded".into() };
+    // A grid's value that saw the part.
+    let seen = |m: &Measured| m.unseen.is_none().then(|| m.value.clone().ok()).flatten();
+    let mut undecided: Option<(Vec<String>, Vec<String>)> = None;
     let mut status = match measured.value {
         Ok(x) => point_status(c, x),
         Err(_) => Status::Unknown,
+    };
+    // Stopped before cells of h finished: the finest coarser that did.
+    let stopped = match limited {
+        Some(h) if measured.value.is_err() && ink_kernel::stop::reached() => {
+            let finest = coarser.iter().rposition(|(_, c)| seen(c).is_some());
+            let mut short = Short { res: h, error: None };
+            if let Some(i) = finest {
+                let (k, at) = coarser[i].clone();
+                let x = seen(&at).expect("seen");
+                let next = coarser[..i].last().and_then(|(k, c)| Some((*k, seen(c)?)));
+                short.error = next.map(|(_, x2)| grid_error(x, x2, None).0);
+                let said = match (short.error, next) {
+                    (Some(e), Some((k2, x2))) => format!("grid error about {} (two grids: {} on cells of {} mm)", num(e), num(x2), k2 * h),
+                    _ => "the coarsest, so its grid error is not known".into(),
+                };
+                let why = format!("the call's time limit passed before cells of {h} mm finished: {} is its value on cells of {} mm, {said}", num(x), k * h);
+                status = match short.error {
+                    Some(e) if point_status(c, x - e) == point_status(c, x + e) => point_status(c, x - e),
+                    _ => Status::Unknown,
+                };
+                measured = at;
+                match (status, short.error) {
+                    (Status::Unknown, Some(_)) => undecided.get_or_insert_with(Default::default).0.push(format!("{why}, more than its margin to the bound")),
+                    (Status::Unknown, None) => undecided.get_or_insert_with(Default::default).0.push(why),
+                    _ => measured.warnings.push(why),
+                }
+            }
+            if status == Status::Unknown {
+                let u = undecided.get_or_insert_with(Default::default);
+                if u.0.is_empty() {
+                    u.0.push(format!("the call's time limit passed before any cells finished (cells of {h} mm asked)"));
+                }
+                u.1.push(format!("the same call with a larger timeout_s goes on from the cache to cells of {h} mm"));
+            }
+            Some(short)
+        }
+        _ => None,
     };
     // What the metric leaves out, where counting it would answer
     // otherwise: the claim is undecided by what was measured, and says
     // what was left out, where, and how to decide it; unless it leaves
     // that out on purpose, when the answer stands and says so.
-    let num = |x: f64| if x.is_finite() { format!("{}", (x * 1e4).round() / 1e4) } else { "unbounded".into() };
-    let mut undecided: Option<(Vec<String>, Vec<String>)> = None;
     // A proven value's claim is exact, unless it leaves out on purpose
     // what would change it.
     let mut exact = measured.proven;
@@ -1694,8 +1926,10 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
     }
     // A grid's answer holds only where its grid saw the part, and its grid
     // error, estimated from coarser grids, cannot move it past its bound
-    // (`grid_error`); coarser grids that do not see the part it does cannot
-    // check it.
+    // (`grid_error`); coarser grids that do not see the part, or solve
+    // nothing, cannot check it, and leave it unknown.
+    let mut grid: Option<String> = None;
+    let mut grid_err: Option<(f64, &'static str)> = None;
     if status == Status::Holds
         && let Some(why) = measured.unseen.clone()
     {
@@ -1705,44 +1939,27 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
         u.1.push("refine (res r) to under half the gap's width, or close the gap in the model".into());
     }
     if status == Status::Holds
-        && !measured.proven
-        && let (Ok(x), Some(h)) = (measured.value.clone(), measured.res)
+        && let Some(l) = ladder
     {
-        let mut coarse = |k: f64| -> Result<f64, String> {
-            match v.measure(m, RunOpts { res: Some(k * h), tol: 1e-8, accuracy }) {
-                Ok(c) => match c.unseen {
-                    Some(why) => Err(format!("unseen: {why}")),
-                    None => c.value,
-                },
-                Err(e) => Err(e.message),
-            }
-        };
-        match coarse(2.0) {
-            Err(why) if why.starts_with("unseen: ") => {
+        match l {
+            Err((h, why)) => {
                 status = Status::Unknown;
                 let u = undecided.get_or_insert_with(Default::default);
                 u.0.push(format!(
-                    "it holds on cells of {h} mm, but cells of {} mm cannot see the part ({}), so cannot check it. The part may have a feature these cells see no better",
-                    2.0 * h,
-                    &why[8..]
+                    "it holds on cells of {h} mm, but no three grids, each twice as coarse as the last, the coarsest no coarser than four times these, all read the part: {why}"
                 ));
-                u.1.push(format!("refine it, (res r) at {} mm or finer, until two grids see the part and agree", h / 2.0));
+                u.1.push(format!("refine it, (res r) at {} mm or finer, or give the part walls the cells can hold", h / 2.0));
             }
-            Err(why) => measured.warnings.push(format!("not checked against coarser cells ({} mm): {why}", 2.0 * h)),
-            Ok(x2) => {
-                let x4 = coarse(4.0).ok();
-                let (e, how) = grid_error(x, x2, x4);
+            Ok(l) => {
+                let ([x, x2, x4], [h, h2, h4]) = (l.values, l.cells);
+                let (e, how) = l.error();
+                grid_err = Some((e, how));
+                let read = format!("{how}: {} on cells of {h2} mm, {} on cells of {h4} mm", num(x2), num(x4));
+                grid = Some(format!("its grid error about {} ({read})", num(e)));
                 if point_status(c, x - e) != Status::Holds || point_status(c, x + e) != Status::Holds {
                     status = Status::Unknown;
                     let u = undecided.get_or_insert_with(Default::default);
-                    u.0.push(format!(
-                        "it holds at {} on cells of {h} mm, but its grid error is about {} ({how}: {} on cells of {} mm{}), more than its margin to the bound",
-                        num(x),
-                        num(e),
-                        num(x2),
-                        2.0 * h,
-                        x4.map_or(String::new(), |x4| format!(", {} on cells of {} mm", num(x4), 4.0 * h)),
-                    ));
+                    u.0.push(format!("it holds at {} on cells of {h} mm, but its grid error is about {} ({read}), more than its margin to the bound", num(x), num(e)));
                     u.1.push(format!("refine it, (res r) at {} mm or finer, until its value moves by less than its margin", h / 2.0));
                 }
             }
@@ -1751,6 +1968,11 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
     let undecided = undecided.map(|(why, how)| (why.join("; "), how.join("; ")));
     let quantity = v.doc.registry.metric_quantity(m.metric);
     let held = measured.held.clone();
-    let check = Check { held, ..checked(status, Evidence::Metric { measured, head, form: m.form.clone(), quantity, undecided }) };
+    // What an estimate rests on: its cells, and its grid check where it had one.
+    let estimate = (!exact).then(|| {
+        let on = measured.res.map_or("a numerical value, not a bound".to_string(), |h| format!("a value on cells of {h} mm, not a bound"));
+        grid.map_or(on.clone(), |g| format!("{on}; {g}"))
+    });
+    let check = Check { held, ..checked(status, Evidence::Metric { measured, head, form: m.form.clone(), quantity, undecided, stopped, estimate, grid_error: grid_err }) };
     Ok(if exact { check } else { check.estimate() })
 }

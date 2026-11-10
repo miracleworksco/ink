@@ -197,6 +197,14 @@ pub(crate) fn polygon(input: &[[f64; 3]]) -> Result<T, String> {
     Ok(T::Max(vec![f, lp.bounds()]))
 }
 
+/// The box past which `polygon`'s field of `input` is shown outside (its
+/// own `bounds`: its arcs' extremes too, grown by its allowance, rounded
+/// outward), as (lo, hi).
+pub(crate) fn polygon_box(input: &[[f64; 3]]) -> Result<(P, P), String> {
+    let (_, lp, _) = build(input, allowance(input))?;
+    Ok(lp.extent())
+}
+
 /// polygon's eps: 1e-9 of the size of its points' box (its allowance for its
 /// data is 100 eps).
 fn allowance(input: &[[f64; 3]]) -> f64 {
@@ -1487,14 +1495,20 @@ impl Doc {
             pts.push(p);
         }
         let bad = |d: &mut Doc, m: String| d.err_hint(e, m, Some(usage.into()));
+        // Drawn; with rounds built exactly where each is certified, else
+        // solved (their tangent points floats) and read by polygon's
+        // construction.
+        let flat = |d: &mut Doc| -> R<Value> {
+            let drawn = pts.iter().all(|p| p[3] == 0.0);
+            if !drawn && let Some(f) = d.rounded_polygon(&pts) {
+                return Ok(Value::Field(f, None));
+            }
+            let q = if drawn { Ok(pts.iter().map(|p| [p[0], p[1], p[2]]).collect()) } else { Walls::new(&pts, &vec![0.0; pts.len()]).and_then(|w| Ok(w.solve(0.0)?.0)) };
+            let f = q.and_then(|q| d.flat_polygon(&q, drawn)).map_err(|m| bad(d, m))?;
+            Ok(Value::Field(f, None))
+        };
         let Some((d, z0, z1)) = draft else {
-            let flat = if pts.iter().all(|p| p[3] == 0.0) {
-                Ok(pts.iter().map(|p| [p[0], p[1], p[2]]).collect())
-            } else {
-                Walls::new(&pts, &vec![0.0; pts.len()]).and_then(|w| Ok(w.solve(0.0)?.0))
-            };
-            let f = flat.and_then(|q| self.flat_polygon(&q)).map_err(|m| bad(self, m))?;
-            return Ok(Value::Field(f, None));
+            return flat(self);
         };
         let angles: Vec<f64> = match self.eval(d, env)? {
             Value::Vec(v) => {
@@ -1506,7 +1520,7 @@ impl Doc {
                     ));
                 }
                 let mut a = Vec::with_capacity(v.len());
-                for x in &v {
+                for x in v.iter() {
                     let Value::Field(f, _) = x else { return Err(self.err_hint(d, "a polygon's drafts are numbers (degrees)", Some(usage.into()))) };
                     a.push(self.load_number(d, *f)?.ok_or_else(|| self.err_hint(d, "a polygon's drafts must be known at load time", Some(MOVING.into())))?);
                 }
@@ -1524,8 +1538,28 @@ impl Doc {
         }
         let (z0, z1) = (z0.min(z1), z0.max(z1));
         let slopes: Vec<f64> = angles.iter().map(|a| a.to_radians().tan()).collect();
+        // No draft: the profile at every height.
+        if slopes.iter().all(|&s| s == 0.0) {
+            return flat(self);
+        }
+        let end = match self.exact_drafted(&pts, &slopes, z0, z1) {
+            Ok(f) => return Ok(Value::Field(f, None)),
+            Err(end) => end,
+        };
         let w = Walls::new(&pts, &slopes).map_err(|m| bad(self, m))?;
         let d = w.drafted(z0, z1).map_err(|m| bad(self, m))?;
+        // Straight walls are built exactly or not at all, but where they
+        // degenerate within the allowance of an end (rounded data a hair
+        // from where an edge or the section closes), or over a span the
+        // floats lose at their size: there by the allowance.
+        if pts.iter().all(|p| p[2] == 0.0) && !end {
+            return Err(bad(
+                self,
+                format!(
+                    "the drafted polygon over z = {z0}..{z1}: ink cannot build its straight walls exactly there (two edges vanishing at one height, a rounded corner beside one that vanishes, its section closing, or walls meeting too nearly tangentially to bound): shorten the span or change the drafts"
+                ),
+            ));
+        }
         let (x, y, z) = (self.g.var(Var::X), self.g.var(Var::Y), self.g.var(Var::Z));
         let clamp = |d: &mut Doc, v: NodeId, lo: f64, hi: f64| {
             let (lo, hi) = (d.g.constant(lo), d.g.constant(hi));
@@ -1564,7 +1598,7 @@ impl Doc {
         // down, as a line turning fast near where a construction changes
         // does its piece's), cut to the heights past that end.
         for (h, past) in [(d.pieces[0].held[0], -1.0), (d.pieces[last].held[1], 1.0)] {
-            if let Ok(end) = w.solve(h).and_then(|(q, _)| self.flat_polygon(&q)) {
+            if let Ok(end) = w.solve(h).and_then(|(q, _)| self.flat_polygon(&q, false)) {
                 let cut = self.ramp(past * h, -past, z);
                 fs.push(self.g.max(end, cut));
             }
@@ -1880,6 +1914,7 @@ impl Doc {
 }
 
 mod curve;
+mod drafted;
 mod exact;
 mod walls;
 

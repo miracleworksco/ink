@@ -74,10 +74,13 @@ impl<'a> Reader<'a> {
         Ok(f)
     }
 
-    /// An expression as a number known at load time (constants and params).
+    /// An expression as a number known at load time (constants and params):
+    /// a setting that decides how the form runs (a limit, a count), so one
+    /// reading sampled data or a solved value is refused, as any load-time
+    /// decision is (Doc::load_number).
     pub fn number(&mut self, e: &Sexp) -> R<f64> {
         let f = self.field(e)?;
-        self.doc.load_value(f).ok_or_else(|| self.err(e, "expected a number known at load time (constants and params only)"))
+        self.doc.load_number(e, f)?.ok_or_else(|| self.err(e, "expected a number known at load time (constants and params only)"))
     }
 
     /// An expression where the form takes quantity `q` (`what` names the
@@ -103,10 +106,11 @@ impl<'a> Reader<'a> {
         self.doc.accuracy_clause(e, q, &mut self.env)
     }
 
-    /// A number known at load time where the form takes quantity `q`.
+    /// A number known at load time where the form takes quantity `q`, as
+    /// `number` reads it.
     pub fn number_of(&mut self, e: &Sexp, q: Quantity, what: &str) -> R<f64> {
         let f = self.field_of(e, q, what)?;
-        self.doc.load_value(f).ok_or_else(|| self.err(e, "expected a number known at load time (constants and params only)"))
+        self.doc.load_number(e, f)?.ok_or_else(|| self.err(e, "expected a number known at load time (constants and params only)"))
     }
 
     /// The cell size of a `(res h)` clause: above 0 and finite
@@ -263,7 +267,7 @@ impl<'a> Reader<'a> {
         self.doc.check_param_name(at, name, "the param")?;
         let key = self.doc.defined(name, at.line);
         self.doc.param_keys.insert(key, self.doc.params.len());
-        self.doc.params.push(Param { name: name.to_string(), default, tol: None });
+        self.doc.add_param(Param { name: name.to_string(), default, tol: None });
         Ok(self.doc.params.len() - 1)
     }
 
@@ -277,7 +281,7 @@ impl<'a> Reader<'a> {
     /// A param a provider sets, named `name` as answers name it (no name a
     /// file can write): not a number until provided.
     pub fn derived(&mut self, name: &str) -> usize {
-        self.doc.params.push(Param { name: name.to_string(), default: f64::NAN, tol: None });
+        self.doc.add_param(Param { name: name.to_string(), default: f64::NAN, tol: None });
         self.doc.params.len() - 1
     }
 
@@ -288,7 +292,7 @@ impl<'a> Reader<'a> {
     /// argument) moves along the coordinate as the argument does (a
     /// simulated motion, read through a def).
     pub fn as_coordinate(&mut self, value: NodeId, name: &str) -> NodeId {
-        self.doc.params.push(Param { name: name.to_string(), default: 0.0, tol: None });
+        self.doc.add_param(Param { name: name.to_string(), default: 0.0, tol: None });
         let k = self.doc.params.len() - 1;
         let own = self.doc.g.var(Var::Param(k as u32));
         let sum = self.doc.g.add(value, own);

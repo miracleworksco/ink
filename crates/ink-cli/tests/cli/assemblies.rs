@@ -102,13 +102,14 @@ fn check_says_where_it_sought_a_name_it_did_not_see_and_bounds_nothing() {
 
 /// Check weighs no published mass it need not, and keeps what it knows of
 /// those it does: an inner assembly's, measured because an outer mass
-/// reads its density, says it did not settle (a 0.25 mm plate's volume).
+/// reads its density, says it did not settle (an egg crate's volume, its
+/// cells 0.16 mm across).
 #[test]
 fn check_says_how_a_density_it_measured_settled() {
     let s = sc("unsettled");
     let f = s.model(
         "plate.ink",
-        "(import \"std\")\n(body plate (shape (box 150 150 0.25)))\n(body block (shape (move (box 10 10 10) 0 0 20)))\n\
+        "(import \"std\")\n(body plate (shape (max (box 60 60 1) (* (sin (* 20 x)) (sin (* 20 y))))))\n(body block (shape (move (box 10 10 10) 0 0 20)))\n\
         (assembly inner (attr mass 27) (instance p plate))\n(assembly root (attr mass 100) (instance i inner) (instance b block))\n",
     );
     let d = run(&s, &["check", &f]);
@@ -137,12 +138,13 @@ fn a_void_count_stops_at_the_calls_time_limit() {
 
 /// A void count its budget stops says so, with the sizes of the cells it
 /// left, and that a finer res will not help (a hole flush with the void's
-/// ceiling: f = 0 across its mouth, which no res decides).
+/// ceiling, its height read as (z + 3 y) - 3 y: f = 0 across its mouth,
+/// which no res decides).
 #[test]
 fn a_void_count_its_budget_stops_says_so() {
     let s = sc("voids-budget");
     let f =
-        s.model("flush.ink", "(import \"std\")\n(body flush (shape (subtract (move (box 100 100 100) 0 0 50) (move (box 94 94 94) 0 0 50) (extrude-z (circle-2d 5) 97 101))))\n");
+        s.model("flush.ink", "(import \"std\")\n(body flush (shape (subtract (move (box 100 100 100) 0 0 50) (move (box 94 94 94) 0 0 50) (warp (extrude-z (circle-2d 5) 97 101) x y (- (+ z (* 3 y)) (* 3 y))))))\n");
     let d = run(&s, &["components", &f]);
     let c = &d["targets"][0]["proven"]["cavities"];
     assert!(c["ended"] == "Limit" && c["undecided"][0].as_f64().is_some_and(|a| a >= c["finest"].as_f64().unwrap()), "{}", pretty(c));
@@ -441,30 +443,141 @@ fn gear_mesh_claims_fail_too_close_tilted_or_past_tip_clearance() {
 }
 
 #[test]
-fn a_planet_orbiting_its_sun_is_related_by_gear_mesh_over_the_motion() {
-    // A planetary stage: three planets on a carrier turning a full turn,
-    // the sun 4 times as fast (a fixed ring of 36), each planet phased by
-    // mesh-turn. Each sun-planet mesh's claims hold over t, its direction
-    // across the axes proven to have a length at every moment. A planet
-    // whose orbit falls through the sun's axis (fall=2: at t = 0.5) has
-    // none there, and the load says when.
+fn a_planetary_stage_is_related_by_gear_mesh_over_the_motion_ring_included() {
+    // Three planets on a carrier turning a full turn, the sun 4 times as
+    // fast, the ring (-36: an internal gear) fixed, each planet phased by
+    // mesh-turn. Each planet meshes with the sun and with the ring (its
+    // centre the difference, 12 mm), every claim proven over t. A planet
+    // whose orbit falls through the sun's axis (fall=2: at t = 0.5) has no
+    // direction across the axes there, and the load says when. The planet
+    // in its ring turns clear of it, and turned off where mesh-turn puts
+    // it, interfere finds the clash.
     let s = sc("planetary");
     let m = s.model(
         "planetary.ink",
         "(import \"std\")\n(param fall 0)\n(t-span 0 1)\n\
-         (fn gear (n) (subtract (extrude-z (involute-gear-2d n 1 20 0.05) 0 8) (cylinder-z 2 20)))\n\
+         (fn gear (n) (subtract (extrude-z (involute-gear-2d n 1 20 0.1) 0 8) (cylinder-z 2 20)))\n\
          (body sun (shape (gear 12)))\n(body planet (shape (gear 12)))\n(body carrier (shape (extrude-z (circle-2d 16) -4 -1)))\n\
+         (body ring (shape (max (extrude-z (involute-gear-2d -36 1 20 0.1) 0 8) (cylinder-z 22 20))))\n\
          (def c (* 360 t))\n(def s (* 4 c))\n(def rp (* (mesh-distance 12 12 1) (- 1 (* fall t))))\n\
-         (assembly root (instance carrier carrier (at (rot-z c))) (instance sun sun (at (rot-z s)))\n\
+         (assembly root (instance carrier carrier (at (rot-z c))) (instance sun sun (at (rot-z s))) (instance ring ring)\n\
          \x20 (for i (range 3)\n\
          \x20   (instance p$i planet (at (rot-z (- (mesh-turn 12 12 (+ c (* 120 i)) s) (+ c (* 120 i)))) (move rp 0 0) (rot-z (+ c (* 120 i)))))\n\
-         \x20   (relate sun p$i (gear-mesh 12 12 1 20 0.1))))\n",
+         \x20   (relate sun p$i (gear-mesh 12 12 1 20 0.1))\n\
+         \x20   (relate p$i ring (gear-mesh 12 -36 1 20 0.1))))\n",
     );
     let d = run(&s, &["assert", &m]);
-    let held: Vec<_> = d["asserts"].as_array().unwrap().iter().filter(|a| a["status"] == "holds" && a["name"].as_str().unwrap().starts_with("relate:root/sun~p")).collect();
-    assert!(d["all_hold"] == true && held.len() == 9, "{}", pretty(&d));
+    let held: Vec<_> = d["asserts"].as_array().unwrap().iter().filter(|a| a["status"] == "holds" && a["name"].as_str().unwrap().starts_with("relate:root/")).collect();
+    assert!(d["all_hold_guaranteed"] == true && held.len() == 18, "{}", pretty(&d));
     let e = refused(&s, &["assert", &m, "--param", "fall=2"]);
     assert!(msg(&e).contains("(unit across)") && msg(&e).contains("zero length at t = 0.5"), "{}", pretty(&e));
+    let pr = s.model(
+        "planet-ring.ink",
+        "(import \"std\")\n(param a 0)\n(param off 0)\n\
+         (body ring (shape (max (extrude-z (involute-gear-2d -36 1 20 0.1) 0 8) (cylinder-z 22 20))))\n\
+         (body planet (shape (extrude-z (involute-gear-2d 12 1 20 0.1) 0 8)))\n\
+         (assembly root (instance p planet (at (rot-z a)))\n\
+         \x20 (instance r ring (at (rot-z (+ off (mesh-turn 12 -36 30 a))) (move (mesh-distance 12 -36 1) 0 0) (rot-z 30))))\n",
+    );
+    let o: Vec<Value> = [["a=0", "off=0"], ["a=7", "off=0"], ["a=7", "off=5"]]
+        .iter()
+        .map(|p| run(&s, &["interfere", &pr, "--param", p[0], "--param", p[1]])["overlapping_pairs"].clone())
+        .collect();
+    assert_eq!(o, [0, 0, 1]);
+}
+
+#[test]
+fn assemblies_built_with_different_relations_are_built_apart() {
+    // An assembly taking a relation as its argument is built once per
+    // relation: one claiming 0 == 0 holds, one claiming 1 == 0 fails (the
+    // two are not one cached build).
+    let s = sc("relation-cache");
+    let m = s.model(
+        "relation-cache.ink",
+        "(import \"std\")\n(body block (shape (box 1 1 1)))\n(fn rule (v) (relation check (claim c v 0 0)))\n\
+         (assembly (pair (r (rule 0))) (instance a block) (instance b block) (relate a b (lambda (fa fb sa sb) r)))\n\
+         (assembly root (instance good (pair (rule 0))) (instance bad (pair (rule 1))))\n",
+    );
+    let d = run(&s, &["assert", &m]);
+    let bad = d["asserts"].as_array().unwrap().iter().find(|a| a["name"].as_str().unwrap().ends_with("bad/a~b/c"));
+    assert!(bad.is_some_and(|a| a["status"] == "fails"), "{}", pretty(&d["asserts"]));
+}
+
+#[test]
+fn a_gear_mesh_holds_each_gear_to_the_numbers_its_body_declares() {
+    // 20:40 module 1 gears at their 30 mm centres, related as 10:20 module
+    // 2 (also 30 mm): bodies that declare their numbers fail where they
+    // differ, each with its value and the mesh's; related as built, all
+    // hold. Bodies declaring nothing are held to nothing but the
+    // placement (interfere's over the motion).
+    let s = sc("mesh-declared");
+    let m = |attrs: (&str, &str), kind: &str| {
+        format!(
+            "(import \"std\")\n(param mb 1)\n(fn gear (n) (extrude-z (involute-gear-2d n 1 20 0.1) 0 8))\n\
+             (body a (shape (gear 20)){})\n(body b (shape (gear 40)){})\n\
+             (assembly root (instance a a) (instance b b (at (rot-z (mesh-turn 20 40 0 0)) (move 30 0 0))) (relate a b {kind}))\n",
+            attrs.0, attrs.1
+        )
+    };
+    let claim = |d: &Value, n: &str| d["asserts"].as_array().unwrap().iter().find(|a| a["name"] == format!("relate:root/a~b/{n}")).cloned();
+    let declared = (" (attr gear (vec 20 1 20))", " (attr gear (vec 40 mb 20))");
+    let wrong = s.model("wrong.ink", &m(declared, "(gear-mesh 10 20 2 20 0.2)"));
+    let d = run(&s, &["assert", &wrong]);
+    assert_eq!(failed(&s, &[&wrong]), ["a-module", "a-teeth", "b-module", "b-teeth"]);
+    let at = claim(&d, "a-teeth").unwrap();
+    assert!(f(&at["terms"]["a-teeth"]) == 20.0 && f(&at["terms"]["lo"]) == 10.0, "{}", pretty(&at));
+    let right = s.model("right.ink", &m(declared, "(gear-mesh 20 40 1 20 0.2)"));
+    assert_eq!(failed(&s, &[&right]), Vec::<String>::new());
+    // A param's value reads as a number does; the wheel's module 1.5 is
+    // not the mesh's.
+    assert_eq!(failed(&s, &[&right, "--param", "mb=1.5"]), ["b-module"]);
+    // An end declares one gear, whole and exactly so; any other
+    // declaration is refused, never left unchecked: a cluster's list, a
+    // number by itself, a gear of another shape.
+    for (attr, says) in [
+        (" (attr gears (vec (vec 27 1 20) (vec 40 1 20)))", "'gears' is not how this end declares"),
+        (" (attr centre-teeth 30)", "'centre-teeth' is not how this end declares"),
+        (" (attr gear (vec 40 1 20)) (attr teeth 40)", "'teeth' is not how this end declares"),
+        (" (attr gear (vec (vec 40 999 20) 1 20))", "a gear declares (vec teeth module pressure-angle)"),
+        (" (attr gear (vec 40 1))", "a gear declares (vec teeth module pressure-angle)"),
+        (" (attr gear (vec))", "a gear declares (vec teeth module pressure-angle)"),
+        (" (attr gear (vec (vec 40) 1 20))", "expected a field (number expression), got a vec"),
+        (" (attr rack (vec 1 20))", "'rack' is not how this end declares"),
+    ] {
+        let e = refused(&s, &["assert", &s.model("odd.ink", &m((" (attr gear (vec 20 1 20))", attr), "(gear-mesh 20 40 1 20 0.2)"))]);
+        assert!(msg(&e).contains(says), "{attr}: {}", pretty(&e));
+    }
+    // No ring meshes another ring, nor a pinion as large as itself.
+    for (kind, says) in [("(gear-mesh -36 -12 1 20 0.2)", "two rings do not mesh"), ("(gear-mesh 40 -20 1 20 0.2)", "a ring meshes only a pinion of fewer teeth")] {
+        let e = refused(&s, &["assert", &s.model("rings.ink", &m(("", ""), kind))]);
+        assert!(msg(&e).contains(says), "{kind}: {}", pretty(&e));
+    }
+    // An end is the gear's body: an assembly's attributes are no one
+    // shape's (its declared 20T could lie anywhere), so it is refused, and
+    // the mesh names its gear by its path, which holds.
+    let compound = |end: &str| {
+        format!(
+            "(import \"std\")\n(fn gear (n z0) (extrude-z (involute-gear-2d n 1 20 0.1) z0 (+ z0 8)))\n\
+             (body a (shape (gear 40 0)) (attr gear (vec 40 1 20)))\n\
+             (body small (shape (gear 20 0)) (attr gear (vec 20 1 20)))\n(body big (shape (gear 40 10)) (attr gear (vec (vec 40 42) 1 20)))\n\
+             (assembly compound (instance s small) (instance g big))\n\
+             (assembly root (instance a a) (instance b compound (at (rot-z (mesh-turn 40 20 0 0)) (move 30 0 0))) (relate a {end} (gear-mesh 40 20 1 20 0.2)))\n"
+        )
+    };
+    let e = refused(&s, &["assert", &s.model("compound.ink", &compound("b"))]);
+    assert!(msg(&e).contains("'b' is an assembly, and a relation reading its ends' attributes relates bodies: relate the one meshing by its path"), "{}", pretty(&e));
+    assert_eq!(failed(&s, &[&s.model("compound-s.ink", &compound("b/s"))]), Vec::<String>::new());
+    let bare = s.model("bare.ink", &m(("", ""), "(gear-mesh 10 20 2 20 0.2)"));
+    let r = short(&s, &[&bare]);
+    assert!(r.len() == 3 && r.values().all(|v| v == "holds"), "nothing declared, nothing checked of the teeth: {r:?}");
+    // A toleranced param read at load is one number there: a run ranging
+    // it refuses the claims; an attribute of x is an error.
+    let ranged = s.model("ranged.ink", &m(declared, "(gear-mesh 20 40 1 20 0.2)").replace("(param mb 1)", "(param mb 1 (tol -0.1 0.1))"));
+    let d = run(&s, &["assert", &ranged]);
+    let bm = claim(&d, "b-module").unwrap();
+    assert!(bm["status"] == "unknown" && bm.to_string().contains("ranged mb as one number"), "{}", pretty(&bm));
+    let e = refused(&s, &["assert", &s.model("field.ink", &m((" (attr module (+ x 1))", ""), "(gear-mesh 20 40 1 20 0.2)"))]);
+    assert!(msg(&e).contains("attribute 'module' is a field of x y z"), "{}", pretty(&e));
 }
 
 #[test]
@@ -579,15 +692,15 @@ fn distance_finds_pieces_far_outside_the_window_and_a_press_fit_overlaps() {
     let d = &run(&s, &["distance", &far, "--a", "a", "--b", "b", "--res", "0.1"])["distance"];
     assert!(0.85 < f(&d["lower_proven"]) && f(&d["lower_proven"]) <= 1.0 + 1e-9 && f(&d["upper_witness"]) >= 1.0 - 1e-6, "gap 1: {}", pretty(d));
     // A witness needs no accuracy: a 0.04 press fit (under the 0.05) has
-    // points inside both, so it overlaps; faces that only touch are unknown
-    // (the fit said false).
+    // points inside both, so it overlaps; faces that only touch do not
+    // (no point is inside both: the bounds split at the face).
     let press = s.model(
         "press.ink",
         "(import \"std\")\n(body a (shape (box 2 2 2)))\n(body b (shape (move (box 2 2 2) 1.96 0 0)))\n\
         (body c (shape (move (box 2 2 2) 2 0 0)))\n(assembly root (instance a a) (instance b b) (instance c c))\n",
     );
     let o: Vec<Value> = ["root/b", "root/c"].iter().map(|x| run(&s, &["distance", &press, "--a", "root/a", "--b", x])["overlapping"].clone()).collect();
-    assert_eq!(o, [Value::Bool(true), Value::Null]);
+    assert_eq!(o, [Value::Bool(true), Value::Bool(false)]);
 }
 
 /// A robot arm's rear fork, six turn joints out (demos/assembly's arm at
@@ -870,6 +983,28 @@ fn an_unbounded_shape_is_examined_in_the_window_and_what_needs_all_of_it_is_unkn
     assert!(!w.is_empty(), "check warns about a body not proven bounded");
 }
 
+/// A bevel gear's teeth cut by their back face, turned off the origin in
+/// an assembly: far out their angle about an axis off the origin is
+/// settled only where that offset fades, beyond ink's range. Its box is not
+/// walked out past the range (useless to every answer, so the claim
+/// unknown): the claim is decided.
+#[test]
+fn a_shape_settled_far_out_only_beyond_inks_range_is_not_boxed_beyond_it() {
+    let s = sc("bevel-far");
+    let m = s.model(
+        "bevel.ink",
+        "(import \"std\")
+(body g (shape (place (min (max (move (rotate-z (straight-bevel-gear 45 1.5 20 0 71.5651 25.578 35.5785) 4) 0 0 11.2487) (- -3.25128 z)) (sphere 5)) (at (rot-x -90)))))
+(body pin (shape (move (cylinder-z 5 10) 100.9116 100.9116 -15.4469)))
+(assembly w (instance g g (at (rot 0.577350269 0.577350269 0.577350269 120) (move 0 0 24.386200117))))
+(assembly s (instance wheel w (at (rot -0.678598344 -0.281084638 -0.678598344 148.60028518) (move 0 0 -44.45))))
+(assembly root (instance steer s (at (move 82.55 82.55 0))) (instance pin pin))
+(assert t (touches (max (shape-of root/pin) (move (box 6 6 6) 100.9116 100.9116 -15.4469)) (shape-of root/steer/wheel/g)))
+",
+    );
+    assert_eq!(short(&s, &[&m]), map([("t", "fails")]));
+}
+
 #[test]
 fn interfere_checks_an_unbounded_body_against_every_other() {
     let s = sc("half-pair");
@@ -1105,6 +1240,18 @@ fn a_pinion_on_std_s_rack_meshes_and_fails_lifted_past_the_end_or_beside() {
     let d = run(&s, &["interfere", &rk]);
     let a = &run(&s, &["check", &rk])["assemblies"][0]["relations"][0];
     assert!(verdict(&d["pairs"][0]) == "holds" && (f(&a["data"]["lead"]) - std::f64::consts::PI * 20.0).abs() < 1e-6, "{}\n{}", pretty(&d["pairs"]), pretty(a));
+    // A rack declares its module and pressure angle; one of 25 is not the
+    // mesh's 20.
+    let text = std::fs::read_to_string(&rk).unwrap();
+    let declared = |pa: &str| text.replace("(- -4 y))))", &format!("(- -4 y))) (attr rack (vec 1 {pa})))"));
+    assert_eq!(failed(&s, &[&s.model("rack-20.ink", &declared("20"))]), Vec::<String>::new());
+    assert_eq!(failed(&s, &[&s.model("rack-25.ink", &declared("25"))]), ["b-pressure-angle"]);
+    let racks = "(body rack (shape (shape-of rack1)) (attr rack (vec 1 20)))\n(assembly racks (instance a rack) (instance b rack (at (move 0 -20 0))))\n(assembly root";
+    let two = text.replace("(body rack ", "(body rack1 ").replace("(instance r rack)", "(instance r racks)").replace("(assembly root", racks);
+    let e = refused(&s, &["assert", &s.model("rack-two.ink", &two)]);
+    assert!(msg(&e).contains("'r' is an assembly"), "{}", pretty(&e));
+    let e = refused(&s, &["assert", &s.model("rack-gear.ink", &text.replace("(- -4 y))))", "(- -4 y))) (attr gear (vec 20 1 20)))"))]);
+    assert!(msg(&e).contains("'gear' is not how this end declares"), "{}", pretty(&e));
 }
 
 #[test]
@@ -1195,6 +1342,13 @@ fn a_mesh_of_a_param_module_loads_and_one_reading_a_toleranced_face_is_unknown_o
     );
     let r = short(&s, &[&t, "--nominal"]);
     assert!(r.len() == 4 && r.values().all(|v| v == "holds"), "at its values: {r:?}");
+    // A box of a moving part holds over the whole motion, not at each
+    // moment: a kind reading one is refused.
+    let moving = LIFTED
+        .replace("(param lift 0)", "(param lift 0)\n(t-span 0 1)")
+        .replace("(body wheel (shape (gear 45)))", "(body wheel (shape (subtract (extrude-z (involute-gear-2d 45 1 20 0.1) 0 (+ 8 t)) (cylinder-z 2 20))))");
+    let e = refused(&s, &["check", &s.model("mesh-moving.ink", &moving)]);
+    assert!(msg(&e).contains("KIND read a box of a part that moves"), "{}", pretty(&e));
 }
 
 #[test]

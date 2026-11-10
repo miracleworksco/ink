@@ -4,7 +4,8 @@
 //! by rays.
 
 use crate::octree::{Cell, Grid, Local, descend_padded, root_for};
-use crate::query::{Side, ray_to};
+use crate::query::{Side, ray_to_within};
+use crate::stop::Stopped;
 use ink_core::V3;
 use ink_core::eval::{Ctx, decided_names, eval_grads, eval_interval, names_on_paths};
 use ink_core::sign::inside;
@@ -33,12 +34,22 @@ const CELL_TOL: f64 = 1e-7;
 /// for the block grown by one cell, so big unions cost what the nearby
 /// parts cost; the Newton steps stay within that grown block.
 pub fn surface(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec<(V3, V3, f64)>, f64) {
+    let (blocks, h) = surface_blocks(shape, ctx, lo, hi, cells);
+    (blocks.into_iter().flat_map(|b| b.0).collect(), h)
+}
+
+/// `surface`, by block of 4^3 cells, each with the length of the tape the
+/// octree simplified for it: what evaluating the field there costs.
+fn surface_blocks(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec<(Vec<(V3, V3, f64)>, usize)>, f64) {
     const B: i64 = 4;
     let ext = crate::query::max_extent(lo, hi);
     let h = ext / cells;
-    let pad = [lo[0] - h, lo[1] - h, lo[2] - h];
-    let (grid, top) = root_for(pad, [hi[0] + h, hi[1] + h, hi[2] + h], h, B);
-    let blocks: Vec<Vec<(V3, V3, f64)>> = descend_padded(
+    let (pad, padhi) = ([lo[0] - h, lo[1] - h, lo[2] - h], [hi[0] + h, hi[1] + h, hi[2] + h]);
+    // Only cells meeting lo..hi, padded: a field not clipped to it along an
+    // axis it does not read (a profile's z) is sampled there alone.
+    let (grid, top) = root_for(pad, padhi, h, B);
+    let grid = crate::octree::Grid { clip: (pad, padhi), ..grid };
+    let blocks: Vec<(Vec<(V3, V3, f64)>, usize)> = descend_padded(
         shape,
         ctx,
         &grid,
@@ -121,11 +132,36 @@ pub fn surface(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec
                 // Its area: the tangent plane clipped to the cell.
                 out.push((*q, n, plane_area_in_cell(scale(add(*a, *b), 0.5), h, *q, n)));
             }
-            Some(out)
+            Some((out, t.len()))
         },
         &|_, _| None,
     );
-    (blocks.into_iter().flatten().collect(), h)
+    (blocks, h)
+}
+
+/// A shape's surface seen coarsely, for saying what a question about it
+/// will cost before it is asked (ink check): a survey's (Survey::sketch),
+/// its area from the survey's samples, and the area-weighted mean length of the tape the
+/// octree simplified where the surface is (the instructions an evaluation
+/// there runs). One query, cached.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Sketch {
+    pub area: f64,
+    /// Instructions per evaluation near the surface.
+    pub ops: f64,
+}
+
+impl Sketch {
+    /// Of surface samples by block, each block with its tape's length.
+    fn of(blocks: &[(Vec<(V3, V3, f64)>, usize)], whole: usize) -> Sketch {
+        let (mut weighed, mut area) = (0.0, 0.0);
+        for (b, len) in blocks {
+            for (_, _, a) in b {
+                (weighed, area) = (weighed + a * *len as f64, area + a);
+            }
+        }
+        Sketch { area, ops: if area > 0.0 { weighed / area } else { whole as f64 } }
+    }
 }
 
 /// What a model's lint needs to know of a shape's surface (`ink check`),
@@ -151,6 +187,9 @@ pub struct Survey {
     /// shape with no interior that intervals cannot prove empty (a sheet of
     /// no thickness, as where two shapes that only touch are intersected).
     pub interior: bool,
+    /// Its area and the instructions an evaluation near it runs, from its
+    /// samples: what a question about it will cost (ink check).
+    pub sketch: Sketch,
 }
 
 /// Interval widths over small boxes (a quarter of a cell across, of the
@@ -190,36 +229,49 @@ const SURVEYED: usize = 4000;
 /// boxes a quarter of a cell `cells` across; with the names that can form
 /// its surface, proven at `cells` across, if `names`.
 pub fn survey(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64, names: bool) -> Survey {
-    // Its names and cases give tags by the model's numbers.
-    let raw = |fp: &mut ink_core::graph::Fingerprint| ink_core::tape::Names::of(&[shape], ctx).raw(fp);
     crate::cache::memo_region(
         "survey",
         &[shape],
         ctx,
         (lo, hi),
-        |fp| raw(fp.f64(cells).word(names as u64)),
+        |fp| survey_inputs(shape, ctx, cells, names, fp),
         |ctx| {
-            let (samples, h) = samples(shape, ctx, lo, hi, cells);
+            let (blocks, h) = samples(shape, ctx, lo, hi, cells);
+            let sketch = Sketch::of(&blocks, shape.len());
+            let samples: Vec<(V3, V3, f64)> = blocks.into_iter().flat_map(|b| b.0).collect();
             let interior = interior(shape, ctx, &samples, h);
             let pts: Vec<V3> = samples.into_iter().map(|p| p.0).collect();
             let (undefined, points) = undefined(shape, ctx, &pts, lo, hi);
             let (formed, unseen) = if names { surface_names(shape, ctx, lo, hi, cells) } else { Default::default() };
             let loose = loose(shape, ctx, &pts, crate::query::max_extent(lo, hi) / cells);
-            Survey { h, formed, unseen, loose, undefined, points, interior }
+            Survey { h, formed, unseen, loose, undefined, points, interior, sketch }
         },
     )
+}
+
+/// What a survey's answer depends on besides its tape, context and region:
+/// its names and cases give tags by the model's numbers, as the context it
+/// reads (`Ctx::project`) numbers them.
+fn survey_inputs(shape: &Tape, ctx: &Ctx, cells: f64, names: bool, fp: &mut ink_core::graph::Fingerprint) {
+    ink_core::tape::Names::of(&[shape], &ctx.project(&[shape])).raw(fp.f64(cells).word(names as u64));
+}
+
+/// `survey`'s answer where it is cached already (ink check ran it), with
+/// nothing computed where it is not.
+pub fn survey_cached(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64, names: bool) -> Option<Survey> {
+    crate::cache::cached_region("survey", &[shape], ctx, (lo, hi), |fp| survey_inputs(shape, ctx, cells, names, fp))
 }
 
 /// About SURVEYED samples of the surface, one per cell crossed (`surface`),
 /// no finer than `cells` across: the cells a surface crosses go as the
 /// square of the cells across, so a pass 16 across says how fine to go.
-fn samples(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec<(V3, V3, f64)>, f64) {
-    let first = surface(shape, ctx, lo, hi, cells.min(16.0));
-    let n = first.0.len();
+fn samples(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> (Vec<(Vec<(V3, V3, f64)>, usize)>, f64) {
+    let first = surface_blocks(shape, ctx, lo, hi, cells.min(16.0));
+    let n: usize = first.0.iter().map(|b| b.0.len()).sum();
     if n >= SURVEYED || cells <= 16.0 {
         return first;
     }
-    surface(shape, ctx, lo, hi, (16.0 * (SURVEYED as f64 / n.max(1) as f64).sqrt()).min(cells))
+    surface_blocks(shape, ctx, lo, hi, (16.0 * (SURVEYED as f64 / n.max(1) as f64).sqrt()).min(cells))
 }
 
 /// Whether the field is negative a thousandth of the spacing `h` inside
@@ -406,7 +458,7 @@ fn onto(t: &Tape, ctx: &Ctx, mut pts: Vec<V3>, tol: f64) -> Vec<Option<(V3, V3)>
         .collect()
 }
 
-fn loose(tape: &Tape, ctx: &Ctx, pts: &[V3], h: f64) -> Option<Loose> {
+fn loose(tape: &Arc<Tape>, ctx: &Ctx, pts: &[V3], h: f64) -> Option<Loose> {
     use ink_core::interval::I;
     let step = (pts.len() / 2000).max(1);
     let sample: Vec<V3> = pts.iter().step_by(step).copied().collect();
@@ -425,13 +477,13 @@ fn loose(tape: &Tape, ctx: &Ctx, pts: &[V3], h: f64) -> Option<Loose> {
     let corners: Vec<V3> = sample.iter().flat_map(|p| (0..8).map(move |k| std::array::from_fn(|a| p[a] + if (k >> a) & 1 == 1 { r } else { -r }))).collect();
     let mut at = Vec::new();
     ink_core::eval::eval_points(tape, ctx, &corners, &mut at);
-    let ratios: Vec<f64> = sample
+    let boxes: Vec<[I; 3]> = sample.iter().map(|p| p.map(|v| I::new(v - r, v + r))).collect();
+    let widths = intervals_over(tape, ctx, &boxes);
+    let ratios: Vec<f64> = grads
         .iter()
-        .zip(&grads)
         .zip(at.chunks(8))
-        .map(|((p, gr), at)| {
-            let b = p.map(|v| I::new(v - r, v + r));
-            let w = ink_core::eval::eval_interval(tape, ctx, b, None);
+        .zip(&widths)
+        .map(|((gr, at), w)| {
             let slope = (gr[1] * gr[1] + gr[2] * gr[2] + gr[3] * gr[3]).sqrt().max(1e-12);
             let (lo, hi) = at.iter().fold((gr[0], gr[0]), |(lo, hi), &v| (lo.min(v), hi.max(v)));
             (w.hi - w.lo) / (2.0 * 3f64.sqrt() * r * slope).max(hi - lo)
@@ -446,6 +498,92 @@ fn loose(tape: &Tape, ctx: &Ctx, pts: &[V3], h: f64) -> Option<Loose> {
     let share = ratios.iter().filter(|&&x| x > 5.0).count() as f64 / ratios.len() as f64;
     let (k, _) = ratios.iter().enumerate().fold((0, 0.0), |b, (k, &x)| if x > b.1 { (k, x) } else { b });
     Some(Loose { p90, share, max: sorted[sorted.len() - 1], at: sample[k] })
+}
+
+/// `eval_interval` of `tape` over each of `boxes`, each read on the tape
+/// simplified over a cell of an octree that holds it (the same bounds:
+/// what the simplification drops is beaten throughout the cell): the cells
+/// halved while they hold boxes that fit in their halves, so a long tape
+/// is read whole only near the root, not once a box.
+pub fn intervals_over(tape: &Arc<Tape>, ctx: &Ctx, boxes: &[[ink_core::interval::I; 3]]) -> Vec<ink_core::interval::I> {
+    use ink_core::interval::I;
+    fn split(tape: &Arc<Tape>, ctx: &Ctx, boxes: &[[I; 3]], cell: [I; 3], idx: Vec<usize>, out: &Mutex<Vec<I>>) {
+        let mut ch = vec![BOTH; tape.len()];
+        counted(tape);
+        eval_interval(tape, ctx, cell, Some(&mut ch));
+        let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
+        // Halved on each axis it is more than twice as wide as its boxes
+        // (where it can be).
+        let mid = cell.map(|x| x.mid());
+        let cut: [bool; 3] = std::array::from_fn(|a| {
+            let widest = idx.iter().map(|&i| boxes[i][a].hi - boxes[i][a].lo).fold(0.0, f64::max);
+            cell[a].hi - cell[a].lo > 2.0 * widest && cell[a].lo < mid[a] && mid[a] < cell[a].hi
+        });
+        // The part of the cell a box lies in, if one.
+        let octant = |b: &[I; 3]| -> Option<usize> {
+            if !cut.iter().any(|&c| c) {
+                return None;
+            }
+            (0..3).filter(|&a| cut[a]).try_fold(0, |o, a| {
+                if b[a].hi <= mid[a] {
+                    Some(o)
+                } else if b[a].lo >= mid[a] {
+                    Some(o | 1 << a)
+                } else {
+                    None
+                }
+            })
+        };
+        let mut parts: Vec<Vec<usize>> = vec![Vec::new(); 8];
+        let mut here = Vec::new();
+        for i in idx {
+            match octant(&boxes[i]) {
+                Some(o) => parts[o].push(i),
+                None => here.push(i),
+            }
+        }
+        // A box alone in its octant is read on this cell's tape.
+        for p in parts.iter_mut().filter(|p| p.len() == 1) {
+            here.append(p);
+        }
+        let read: Vec<(usize, I)> = here
+            .iter()
+            .map(|&i| {
+                counted(&sub);
+                (i, eval_interval(&sub, ctx, boxes[i], None))
+            })
+            .collect();
+        {
+            let mut o = out.lock().unwrap();
+            read.into_iter().for_each(|(i, v)| o[i] = v);
+        }
+        parts.into_par_iter().enumerate().filter(|(_, p)| !p.is_empty()).for_each(|(o, p)| {
+            let c: [I; 3] = std::array::from_fn(|a| match (cut[a], o >> a & 1) {
+                (false, _) => cell[a],
+                (true, 0) => I::new(cell[a].lo, mid[a]),
+                _ => I::new(mid[a], cell[a].hi),
+            });
+            split(&sub, ctx, boxes, c, p, out);
+        });
+    }
+    if boxes.is_empty() {
+        return Vec::new();
+    }
+    let cell: [I; 3] = std::array::from_fn(|a| boxes.iter().map(|b| b[a]).reduce(|x, y| I::new(x.lo.min(y.lo), x.hi.max(y.hi))).unwrap());
+    let out = Mutex::new(vec![I::point(0.0); boxes.len()]);
+    split(tape, ctx, boxes, cell, (0..boxes.len()).collect(), &out);
+    out.into_inner().unwrap()
+}
+
+// The instructions `intervals_over` read on this thread: its tests' measure
+// of its work.
+#[cfg(test)]
+thread_local!(static READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+/// Count a read of `tape` toward `READ` (tests only).
+fn counted(_tape: &Tape) {
+    #[cfg(test)]
+    READ.with(|r| r.set(r.get() + _tape.len()));
 }
 
 /// The undefined cases (division by zero, ln of a negative, ...) the field
@@ -513,45 +651,125 @@ pub fn plane_area_in_cell(c: V3, h: f64, q: V3, n: V3) -> f64 {
     area
 }
 
-/// Wall thickness by the ray method: from each surface sample, the distance
-/// along the inward normal to where the material ends. Corners take their
-/// faces' thickness; fins, ribs and skins their true width. Each ray's exit
-/// is found by query::ray_to (interval arithmetic over its segments, so no
-/// gap wider than a twentieth of the sample spacing is stepped over), with
-/// tapes simplified per block of 4 samples across, shared by the rays
-/// through it. Samples on edges, whose rays leave through the neighbouring
-/// face within a quarter of the spacing, are skipped (thickness finer than
-/// that is not resolved). Returns (point, outward normal, area weight,
-/// thickness).
-pub fn thickness(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> Vec<(V3, V3, f64, f64)> {
+/// The thinnest wall by the ray method: from each surface sample, the
+/// distance along the inward normal to where the material ends. Corners
+/// take their faces' thickness; fins, ribs and skins their true width. Each
+/// ray's exit is found by query::ray_to (interval arithmetic over its
+/// segments, so no gap wider than a twentieth of the sample spacing is
+/// stepped over), with tapes simplified per block of 4 samples across,
+/// shared by the rays through it. Samples on edges, whose rays leave
+/// through the neighbouring face within a quarter of the spacing, are
+/// skipped (thickness finer than that is not resolved). A ray is searched
+/// only as far as the thinnest wall found so far: an exit past it cannot be
+/// the thinnest, so the answer is the one tracing every ray in full gives.
+/// Rays spread over the samples go first (SPREAD), so how soon the thinnest
+/// walls are found does not hang on where they come in the samples' order.
+/// Returns where the thinnest sample is and its thickness (the first in
+/// sample order where several tie; a ray with no exit measures the box's
+/// diagonal); None: no sample measured one. Stopped: the call's time limit
+/// passed before every ray was traced (crate::stop).
+pub fn thickness(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -> Result<Option<(V3, f64)>, Stopped> {
+    if crate::stop::reached() {
+        return Err(Stopped);
+    }
     let (pts, h) = surface(shape, ctx, lo, hi, cells);
-    let diag = norm(sub(hi, lo)) + 4.0 * h;
     let local = Local::new(shape, ctx, sub(lo, [h; 3]), 4.0 * h);
-    let exits: Vec<Option<f64>> = pts.par_iter().map(|(p, n, _)| ray_to(&local, *p, scale(*n, -1.0), (1e-3 * h, diag), Side::Outside, 0.05 * h).map(|x| x.t)).collect();
-    // The field's gradient where each ray left, in one batch.
-    let far: Vec<V3> = pts.iter().zip(&exits).filter_map(|((p, n, _), t)| t.map(|t| sub(*p, scale(*n, t)))).collect();
-    let mut g = local.grads(&far).into_iter();
-    pts.iter()
-        .zip(exits)
-        .filter_map(|(&(p, n, w), t)| {
-            let Some(t) = t else { return Some((p, n, w, diag)) };
-            // A wall's far side faces back at the ray (normals within 60
-            // degrees of opposite). An exit through a neighbouring face, as
-            // from near a drafted rim's edge, measures the corner, not a
-            // wall: no thickness there.
-            let g = g.next().unwrap();
-            let gl = (g[1] * g[1] + g[2] * g[2] + g[3] * g[3]).sqrt();
-            if gl > 0.0 && (g[1] * n[0] + g[2] * n[1] + g[3] * n[2]) / gl > -0.5 {
-                return None;
-            }
-            (t >= 0.25 * h).then_some((p, n, w, t))
-        })
-        .collect()
+    thinnest(&local, &pts, h, norm(sub(hi, lo)) + 4.0 * h)
+}
+
+/// The order rays are traced in (`thinnest`): every 1024th sample's, then
+/// every 64th's, every 4th's, and the rest; each once.
+const SPREAD: [usize; 4] = [1024, 64, 4, 1];
+
+/// `thickness` from its surface samples `pts` spaced `h`, rays traced
+/// through `local` (its `ray_evals` counts them) up to `diag`; no ray is
+/// begun past the call's time limit.
+fn thinnest(local: &Local, pts: &[(V3, V3, f64)], h: f64, diag: f64) -> Result<Option<(V3, f64)>, Stopped> {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+    let ctx = local.ctx();
+    // The thinnest so far (positive floats order as their bits).
+    let best = AtomicU64::new(diag.to_bits());
+    let stopped = AtomicBool::new(false);
+    // Sample i's thickness: None where it cannot be the thinnest.
+    let ray = |i: usize| -> Option<f64> {
+        if stopped.load(Relaxed) || crate::stop::reached() {
+            stopped.store(true, Relaxed);
+            return None;
+        }
+        let (p, n, _) = pts[i];
+        let stop = f64::from_bits(best.load(Relaxed));
+        let Some(t) = ray_to_within(local, p, scale(n, -1.0), (1e-3 * h, diag), Side::Outside, 0.05 * h, stop).map(|x| x.t) else {
+            // No exit at all, or none before the thinnest so far.
+            return (stop == diag).then_some(diag);
+        };
+        if t > stop {
+            return None;
+        }
+        // A wall's far side faces back at the ray (normals within 60
+        // degrees of opposite). An exit through a neighbouring face, as
+        // from near a drafted rim's edge, measures the corner, not a
+        // wall: no thickness there.
+        let q = sub(p, scale(n, t));
+        let g = eval_grads(&local.tape_over(&q.map(ink_core::interval::I::point)), ctx, &[q])[0];
+        let gl = (g[1] * g[1] + g[2] * g[2] + g[3] * g[3]).sqrt();
+        if (gl > 0.0 && (g[1] * n[0] + g[2] * n[1] + g[3] * n[2]) / gl > -0.5) || t < 0.25 * h {
+            return None;
+        }
+        best.fetch_min(t.to_bits(), Relaxed);
+        Some(t)
+    };
+    let mut each: Vec<Option<f64>> = vec![None; pts.len()];
+    for (k, &every) in SPREAD.iter().enumerate() {
+        let these: Vec<usize> = (0..pts.len()).step_by(every).filter(|&i| SPREAD[..k].iter().all(|&s| i % s != 0)).collect();
+        let got: Vec<Option<f64>> = these.par_iter().map(|&i| ray(i)).collect();
+        these.into_iter().zip(got).for_each(|(i, t)| each[i] = t);
+    }
+    if stopped.into_inner() {
+        return Err(Stopped);
+    }
+    Ok(pts.iter().zip(each).filter_map(|(s, t)| Some((s.0, t?))).min_by(|a, b| a.1.total_cmp(&b.1)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bounds over many small boxes of a long field (a row of 200 balls)
+    /// are each box's own, to the bit, and read far less than the whole
+    /// field once a box: 2,000 boxes along the row read 315 times its
+    /// length (2,000 times, a box at a time).
+    #[test]
+    fn bounds_over_many_boxes_read_the_field_simplified_near_each() {
+        use ink_core::graph::{BinOp, UnOp, Var};
+        use ink_core::interval::I;
+        let mut b = crate::test_fields::B::new();
+        let (x, y, z) = (b.v(Var::X), b.v(Var::Y), b.v(Var::Z));
+        let mut balls = Vec::new();
+        for i in 0..200 {
+            let c = b.c(3.0 * i as f64);
+            let dx = b.bin(BinOp::Sub, x, c);
+            let (dx, dy, dz) = (b.un(UnOp::Square, dx), b.un(UnOp::Square, y), b.un(UnOp::Square, z));
+            let r = b.bin(BinOp::Add, dx, dy);
+            let r = b.bin(BinOp::Add, r, dz);
+            let r = b.un(UnOp::Sqrt, r);
+            let one = b.c(1.0);
+            balls.push(b.bin(BinOp::Sub, r, one));
+        }
+        let f = balls.into_iter().reduce(|p, q| b.bin(BinOp::Min, p, q)).unwrap();
+        let tape = Arc::new(b.tape(f));
+        let ctx = Ctx::new(0.0, vec![]);
+        let boxes: Vec<[I; 3]> = (0..2000).map(|k| [0.3 * k as f64, 0.9, -0.2].map(|c| I::new(c - 0.01, c + 0.01))).collect();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let (got, read) = pool.install(|| {
+            READ.with(|r| r.set(0));
+            (intervals_over(&tape, &ctx, &boxes), READ.with(|r| r.get()))
+        });
+        for (bx, v) in boxes.iter().zip(&got) {
+            let w = eval_interval(&tape, &ctx, *bx, None);
+            assert_eq!((v.lo.to_bits(), v.hi.to_bits()), (w.lo.to_bits(), w.hi.to_bits()), "over {bx:?}");
+        }
+        assert!(read < 400 * tape.len(), "{read} instructions read, the field {} long, over {} boxes", tape.len(), boxes.len());
+    }
 
     #[test]
     fn a_surface_sample_has_a_normal() {
@@ -576,6 +794,89 @@ mod tests {
     }
 
     #[test]
+    fn a_ray_is_traced_only_as_far_as_the_thinnest_wall_so_far() {
+        // A 0.8 fin on a 40 mm block: the fin's rays end within 0.8, the
+        // block's run 40 through it. Only the thinnest is wanted, so a ray
+        // stops once it is past the thinnest found so far: the answer is
+        // the fin's, for a fraction of the evaluations tracing every ray
+        // through gives.
+        use ink_core::graph::{Graph, UnOp, Var};
+        let mut g = Graph::new();
+        let xyz = [Var::X, Var::Y, Var::Z].map(|v| g.var(v));
+        let mut cuboid = |c: V3, half: V3| {
+            let d: Vec<_> = (0..3)
+                .map(|k| {
+                    let (c, r) = (g.constant(c[k]), g.constant(half[k]));
+                    let o = g.sub(xyz[k], c);
+                    let a = g.un(UnOp::Abs, o);
+                    g.sub(a, r)
+                })
+                .collect();
+            let m = g.max(d[0], d[1]);
+            g.max(m, d[2])
+        };
+        let block = cuboid([0.0; 3], [20.0; 3]);
+        let fin = cuboid([10.0, 0.0, 25.0], [0.4, 10.0, 5.0]);
+        let f = g.min(block, fin);
+        let (t, ctx) = (Arc::new(Tape::new(&g, f)), Ctx::new(0.0, vec![]));
+        let (lo, hi) = ([-21.0, -21.0, -21.0], [21.0, 21.0, 31.0]);
+        let (pts, h) = surface(&t, &ctx, lo, hi, 64.0);
+        let diag = norm(sub(hi, lo)) + 4.0 * h;
+        // Each count is its own Local's: no other test's rays reach it.
+        let local = || Local::new(&t, &ctx, sub(lo, [h; 3]), 4.0 * h);
+        // On one thread the rays are taken in their order, so the count
+        // does not depend on how threads are scheduled. Taken in the
+        // samples' own order, with the fin's samples (highest in z) first,
+        // or last: rays spread over the samples go first, so the fin is
+        // found early whichever it is, and the counts stay close.
+        let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let ordered = |by: f64| {
+            let mut order = pts.clone();
+            order.sort_by(|a, b| (by * a.0[2]).total_cmp(&(by * b.0[2])));
+            order
+        };
+        let counts: Vec<((V3, f64), usize)> = [pts.clone(), ordered(-1.0), ordered(1.0)]
+            .iter()
+            .map(|order| {
+                one.install(|| {
+                    let measured = local();
+                    (thinnest(&measured, order, h, diag).unwrap().unwrap(), measured.ray_evals())
+                })
+            })
+            .collect();
+        // The same wall in every order (where several tie, maybe another of them).
+        for &((at, thinnest), _) in &counts {
+            assert!((thinnest - 0.8).abs() < 1e-9 && (at[0] - 10.0).abs() <= 0.4 + 1e-9, "{thinnest} at {at:?}");
+        }
+        assert_eq!(thickness(&t, &ctx, lo, hi, 64.0), Ok(Some(counts[0].0)));
+        let (least, most) = counts.iter().fold((usize::MAX, 0), |(l, m), c| (l.min(c.1), m.max(c.1)));
+        assert!(2 * least > most, "{counts:?}: the order decides how soon the fin is found");
+        // Every ray traced through, as thickness traced them before.
+        let through = local();
+        pts.par_iter().for_each(|&(p, n, _)| _ = crate::query::ray_to(&through, p, scale(n, -1.0), (1e-3 * h, diag), Side::Outside, 0.05 * h));
+        let full = through.ray_evals();
+        assert!(3 * most < full, "{most} evaluations, {full} tracing every ray through");
+    }
+
+    #[test]
+    fn a_profile_is_sampled_in_the_box_asked() {
+        // A disc of radius 10 that reads no z (a 2D profile: a prism), asked
+        // at z = 0 alone, 64 cells across: its rim's cells in at most the
+        // four layers of a block, not in every layer of the root cube (64).
+        use ink_core::graph::{Graph, UnOp, Var};
+        let mut g = Graph::new();
+        let (x, y) = (g.var(Var::X), g.var(Var::Y));
+        let (xx, yy) = (g.mul(x, x), g.mul(y, y));
+        let s = g.add(xx, yy);
+        let d = g.un(UnOp::Sqrt, s);
+        let r = g.constant(10.0);
+        let f = g.sub(d, r);
+        let (pts, h) = surface(&Arc::new(Tape::new(&g, f)), &Ctx::new(0.0, vec![]), [-10.0, -10.0, 0.0], [10.0, 10.0, 0.0], 64.0);
+        let per_layer = 2.0 * std::f64::consts::PI * 10.0 / h;
+        assert!((pts.len() as f64) < 4.0 * 1.5 * per_layer, "{} samples, {per_layer} a layer", pts.len());
+    }
+
+    #[test]
     fn a_crease_is_as_loose_as_its_variation() {
         // max(x, -x): a cut whose face lies exactly on a face of what it
         // cuts (KQ2L06-01NS's release button in its housing, quarter turns
@@ -588,7 +889,7 @@ mod tests {
         let nx = g.neg(x);
         let f = g.max(x, nx);
         let pts: Vec<V3> = (0..100).map(|k| [0.0, 0.1 * k as f64, 0.0]).collect();
-        assert!(loose(&Tape::new(&g, f), &Ctx::new(0.0, vec![]), &pts, 0.1).is_none());
+        assert!(loose(&Arc::new(Tape::new(&g, f)), &Ctx::new(0.0, vec![]), &pts, 0.1).is_none());
     }
 
     #[test]
@@ -605,14 +906,14 @@ mod tests {
         let m = g.max(m, a[2]);
         let f = g.sub(m, r);
         let ctx = Ctx::new(0.0, vec![]);
-        let n = samples(&Arc::new(Tape::new(&g, f)), &ctx, [-50.0; 3], [50.0; 3], 128.0).0.len();
+        let n: usize = samples(&Arc::new(Tape::new(&g, f)), &ctx, [-50.0; 3], [50.0; 3], 128.0).0.iter().map(|b| b.0.len()).sum();
         assert!((SURVEYED / 2..2 * SURVEYED).contains(&n), "{n}");
         let sq = xyz.map(|v| g.mul(v, v));
         let (s, r) = (g.add(sq[0], sq[1]), g.constant(0.5));
         let s = g.add(s, sq[2]);
         let d = g.un(UnOp::Sqrt, s);
         let f = g.sub(d, r);
-        let n = samples(&Arc::new(Tape::new(&g, f)), &ctx, [-50.0; 3], [50.0; 3], 128.0).0.len();
+        let n: usize = samples(&Arc::new(Tape::new(&g, f)), &ctx, [-50.0; 3], [50.0; 3], 128.0).0.iter().map(|b| b.0.len()).sum();
         assert!(n > 4, "{n}");
     }
 }

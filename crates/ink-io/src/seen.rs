@@ -133,7 +133,7 @@ pub fn surface(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3) -> f64 {
     )
 }
 
-fn key<'a>(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &'a Ctx, lo: V3, hi: V3, how: How) -> (Option<u128>, std::borrow::Cow<'a, Ctx>) {
+fn key(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &Ctx, lo: V3, hi: V3, how: How) -> (Option<u128>, Ctx) {
     let tapes: Vec<&Tape> = std::iter::once(&**tape).chain(paint.iter().map(|t| &**t)).collect();
     ink_kernel::cache::ask_region("seen mesh", &tapes, ctx, (lo, hi), |fp| {
         fp.f64(how.res).f64(how.limit.bricks as f64).f64(how.limit.search).f64(how.tol.unwrap_or(-1.0)).f64(how.tol_per_res);
@@ -161,7 +161,7 @@ fn made(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &Ctx, lo: V3, hi: V3, how: H
     // and so may its search.
     let (mut h, mut limit) = (how.res, how.limit);
     let (fine, mut unresolved) = loop {
-        match mesh_checked(tape, ctx, lo, hi, h, limit) {
+        match mesh_checked(tape, ctx, lo, hi, h, limit, how.tol.unwrap_or(how.tol_per_res * h)) {
             Some(m) => break m,
             None => (h, limit.search) = (2.0 * h, 0.25 * limit.search),
         }
@@ -185,7 +185,7 @@ fn made(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &Ctx, lo: V3, hi: V3, how: H
         (fine, 0.0)
     };
     let m = cut_paint(m, &paint, h);
-    let normals = corner_normals(&m, &|p: &[V3]| local.grads(p), &creased(&local, ctx, &m.verts, tol.max(h * f64::EPSILON)));
+    let normals = corner_normals(&m, &field, &|p: &[V3]| local.grads(p), &creased(&local, ctx, &m.verts, tol.max(h * f64::EPSILON)), h);
     let paint_at = under(&m.verts);
     let reads = paint.reads.get();
     let v = Viewed { verts: m.verts, tris: m.tris, normals, paint_at, res: h, tol, uniform_triangles, paint_work: reads[1], moved, unresolved, cached: false };
@@ -634,8 +634,18 @@ fn cut_paint(mut m: Mesh, paint: &Paint, res: f64) -> Mesh {
 /// there whose gradients point apart. Elsewhere its normal turns smoothly
 /// there. A vertex of a mesh simplified to tol lies within tol of the
 /// surface it stands for: of a crease it was placed on, too.
+///
+/// Branches whose gradients' bounds over the box cannot show them apart
+/// (they hold 0: an emax's, so std's extrude-z and rounded-rect-2d's)
+/// are told apart by their gradients at the point itself, exact there: two
+/// that may meet in the box and point apart at its centre may crease in it.
+/// Taking a smooth vertex for a crease costs a corner its neighbours'
+/// normal (its triangle's own, a quarter of the way in, instead); taking a
+/// crease for smooth gives a face the other face's normal at its corner,
+/// and shades it across with a wedge of the wrong light.
 fn creased(local: &Local, ctx: &Ctx, pts: &[V3], r: f64) -> Vec<bool> {
-    use ink_core::interval::I;
+    use ink_core::eval::eval_interval_grad_every;
+    use ink_core::interval::{G, I};
     use rayon::prelude::*;
     pts.par_iter()
         .map(|p| {
@@ -643,49 +653,128 @@ fn creased(local: &Local, ctx: &Ctx, pts: &[V3], r: f64) -> Vec<bool> {
             let tape = local.tape_over(&b);
             let mut ch = vec![ink_core::tape::BOTH; tape.len()];
             ink_core::eval::eval_interval(&tape, ctx, b, Some(&mut ch));
-            tape.may_crease(&ch, &ink_core::eval::eval_interval_grad_every(&tape, ctx, b))
+            let over = eval_interval_grad_every(&tape, ctx, b);
+            if tape.may_crease(&ch, &over) {
+                return true;
+            }
+            // The box's values (which branches may meet, where an abs or
+            // floor may turn), the point's gradients.
+            let at = eval_interval_grad_every(&tape, ctx, p.map(I::point));
+            let mixed: Vec<G> = over.iter().zip(at).map(|(o, a)| G { d: a.d, ..*o }).collect();
+            tape.may_crease(&ch, &mixed)
         })
         .collect()
 }
 
 /// The field's unit normal at each triangle's corners: at the vertex where
 /// the shape is smooth (`creased`), so shading is continuous across
-/// triangles; else (the vertex is on a crease or corner, where the
-/// gradient takes one side) a quarter of the way in from the corner to the
-/// triangle's centre, the side the triangle lies on. Where the field has
-/// no gradient, the face's.
-fn corner_normals(m: &Mesh, grads: &dyn Fn(&[V3]) -> Vec<[f64; 4]>, creased: &[bool]) -> Vec<[f32; 3]> {
-    let inner: Vec<V3> = m
-        .tris
-        .iter()
-        .flat_map(|t| {
-            let p = t.map(|i| m.verts[i as usize]);
-            let c: V3 = std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k]) / 3.0);
-            p.map(|v| std::array::from_fn(|k| v[k] + 0.25 * (c[k] - v[k])))
-        })
-        .collect();
-    let (at_corner, at_vertex) = (grads(&inner), grads(&m.verts));
-    let unit = |g: [f64; 4]| {
-        let v = [g[1], g[2], g[3]];
+/// triangles. At a vertex on a crease or corner the gradient takes one
+/// side, so the corner takes the side its triangle lies on: the normal of
+/// the surface where the triangle stands for it, a quarter of the way in
+/// from the corner to the triangle's centre, else at the centre, else at
+/// the vertex (`onto`), else the triangle's own. Where the field has no
+/// gradient, the face's.
+fn corner_normals(m: &Mesh, values: &dyn Fn(&[V3]) -> Vec<f64>, grads: &dyn Fn(&[V3]) -> Vec<[f64; 4]>, creased: &[bool], reach: f64) -> Vec<[f32; 3]> {
+    let unit = |v: V3| {
         let l = ink_core::v3::norm(v);
         (l > 0.0 && l.is_finite()).then(|| v.map(|x| x / l))
     };
-    let vertex: Vec<Option<V3>> = at_vertex.into_iter().map(unit).collect();
+    let grad = |g: [f64; 4]| unit([g[1], g[2], g[3]]);
+    let vertex: Vec<Option<V3>> = grads(&m.verts).into_iter().map(grad).collect();
+    let face: Vec<Option<V3>> = m.tris.iter().map(|t| unit(ink_core::v3::normal(t.map(|i| m.verts[i as usize])))).collect();
+    // A creased corner's samples: a quarter of the way in, the centre.
+    let mut wanted: Vec<(usize, [V3; 2], V3)> = Vec::new();
+    for (f, t) in m.tris.iter().enumerate() {
+        let (Some(n), true) = (face[f], t.iter().any(|&i| creased[i as usize])) else { continue };
+        let p = t.map(|i| m.verts[i as usize]);
+        let c: V3 = std::array::from_fn(|k| (p[0][k] + p[1][k] + p[2][k]) / 3.0);
+        for (k, v) in p.iter().enumerate() {
+            if creased[t[k] as usize] {
+                wanted.push((3 * f + k, [std::array::from_fn(|a| v[a] + 0.25 * (c[a] - v[a])), c], n));
+            }
+        }
+    }
+    let starts: Vec<V3> = wanted.iter().flat_map(|w| w.1).collect();
+    let dirs: Vec<V3> = wanted.iter().flat_map(|w| [w.2; 2]).collect();
+    let on = onto(values, &starts, &dirs, reach);
+    let found: Vec<Option<V3>> = {
+        let at: Vec<V3> = on.iter().flatten().copied().collect();
+        let mut g = grads(&at).into_iter().map(grad);
+        on.iter().map(|p| p.and_then(|_| g.next().flatten())).collect()
+    };
+    let mut side: Vec<Option<V3>> = vec![None; 3 * m.tris.len()];
+    for (k, w) in wanted.iter().enumerate() {
+        side[w.0] = found[2 * k].or(found[2 * k + 1]);
+    }
     m.tris
         .iter()
         .enumerate()
         .flat_map(|(f, t)| {
-            let face = ink_core::v3::normal(t.map(|i| m.verts[i as usize]));
-            let face = unit([0.0, face[0], face[1], face[2]]);
-            let (at_corner, vertex) = (&at_corner, &vertex);
+            let (vertex, side, face) = (&vertex, &side, &face);
             (0..3).map(move |c| {
-                let own = unit(at_corner[3 * f + c]).or(face);
                 let v = vertex[t[c] as usize];
-                let n = if creased[t[c] as usize] { own.or(v) } else { v.or(own) };
+                let n = if creased[t[c] as usize] { side[3 * f + c].or(v).or(face[f]) } else { v.or(face[f]) };
                 n.map_or([0.0, 0.0, 1.0], |n| n.map(|x| x as f32))
             })
         })
         .collect()
+}
+
+/// Each point moved along its direction to the surface: to the nearest
+/// sign change of the field within `reach` either way (looked for from
+/// reach / 64 out, doubling), then bisected. None where there is none: the
+/// point is over a face that stands for nothing there (a thin triangle
+/// reaching over a crease, within tol, its point over air beyond it).
+fn onto(values: &dyn Fn(&[V3]) -> Vec<f64>, pts: &[V3], dirs: &[V3], reach: f64) -> Vec<Option<V3>> {
+    let along = |p: V3, d: V3, s: f64| -> V3 { std::array::from_fn(|k| p[k] + s * d[k]) };
+    let at0 = values(pts);
+    // Each point's bracket: s where the field has its sign at 0, and s
+    // where it has the other.
+    let mut bracket: Vec<Option<(f64, f64)>> = at0.iter().map(|&f| (f == 0.0).then_some((0.0, 0.0))).collect();
+    let mut s = reach / 64.0;
+    while s <= reach * (1.0 + 1e-9) {
+        let open: Vec<usize> = (0..pts.len()).filter(|&i| bracket[i].is_none() && at0[i].is_finite()).collect();
+        if open.is_empty() {
+            break;
+        }
+        let q: Vec<V3> = open.iter().flat_map(|&i| [along(pts[i], dirs[i], -s), along(pts[i], dirs[i], s)]).collect();
+        let f = values(&q);
+        for (k, &i) in open.iter().enumerate() {
+            // Toward the surface first: against the field's sign along the
+            // outward normal.
+            let order = if at0[i] > 0.0 { [(0, -s), (1, s)] } else { [(1, s), (0, -s)] };
+            if let Some(&(_, end)) = order.iter().find(|&&(j, _)| f[2 * k + j].is_finite() && (f[2 * k + j] == 0.0 || (f[2 * k + j] > 0.0) != (at0[i] > 0.0))) {
+                bracket[i] = Some((end / 2.0, end));
+            }
+        }
+        s *= 2.0;
+    }
+    // The first doubling's inner end is 0, not half of it.
+    for b in bracket.iter_mut().flatten() {
+        if b.1.abs() <= reach / 64.0 * (1.0 + 1e-9) {
+            b.0 = 0.0;
+        }
+    }
+    for _ in 0..40 {
+        let open: Vec<usize> = (0..pts.len()).filter(|&i| bracket[i].is_some_and(|(a, b)| a != b)).collect();
+        if open.is_empty() {
+            break;
+        }
+        let mid: Vec<f64> = open.iter().map(|&i| bracket[i].map(|(a, b)| 0.5 * (a + b)).unwrap()).collect();
+        let f = values(&open.iter().zip(&mid).map(|(&i, &m)| along(pts[i], dirs[i], m)).collect::<Vec<_>>());
+        for ((&i, &m), &fm) in open.iter().zip(&mid).zip(&f) {
+            let (a, b) = bracket[i].unwrap();
+            bracket[i] = Some(if fm == 0.0 || m == a || m == b {
+                (m, m)
+            } else if (fm > 0.0) == (at0[i] > 0.0) {
+                (m, b)
+            } else {
+                (a, m)
+            });
+        }
+    }
+    // The bracket's end past the crossing: within reach / 2^46 of it.
+    bracket.iter().enumerate().map(|(i, b)| b.map(|(_, end)| along(pts[i], dirs[i], end))).collect()
 }
 
 #[cfg(test)]
@@ -839,6 +928,116 @@ mod tests {
                 assert_eq!(*at.entry(i).or_insert(v.normals[3 * f + c]), v.normals[3 * f + c], "vertex {i}");
             }
         }
+    }
+
+    #[test]
+    fn a_pocket_and_its_rim_are_shaded_flat_to_their_edges() {
+        // A block with a pocket cut down into it, extruded as std's
+        // extrude-z is (an emax of its outline's field and the slab's):
+        // the floor meets the walls at a concave crease. Over a box round a
+        // vertex there, the bounds of the outline's gradient (an emax's
+        // too) hold 0, so they cannot show the wall and floor apart; at the
+        // vertex they are. Each floor corner takes the floor's normal, not
+        // the wall's the field's gradient at a vertex on the crease takes.
+        let mut g = Graph::new();
+        let [x, y, z] = [Var::X, Var::Y, Var::Z].map(|v| g.var(v));
+        let abs = |g: &mut Graph, v, half: f64| {
+            let n = g.neg(v);
+            let a = g.max(v, n);
+            let h = g.constant(half);
+            g.sub(a, h)
+        };
+        // The block: |x| <= 1, |y| <= 0.31, -0.5 <= z <= top, its top
+        // between the grid's samples too: round the pocket a rim little
+        // more than a cell wide, as a bin's wall is.
+        let top = 0.5137;
+        let centre = g.constant((top - 0.5) / 2.0);
+        let zc = g.sub(z, centre);
+        let (bx, by, bz) = (abs(&mut g, x, 1.0), abs(&mut g, y, 0.31), abs(&mut g, zc, (top + 0.5) / 2.0));
+        let block = g.max(bx, by);
+        let block = g.max(block, bz);
+        // The pocket: std's rounded-rect-2d, 1.6 by 0.5 with corners of
+        // radius 0.2, extruded from a floor between the grid's samples (on
+        // one, its vertices would lie on it exactly) up through the top.
+        let (qx, qy) = (abs(&mut g, x, 0.6), abs(&mut g, y, 0.05));
+        let outline = g.bin(ink_core::graph::BinOp::Emax, qx, qy);
+        let r = g.constant(0.2);
+        let outline = g.sub(outline, r);
+        let at = 0.0137;
+        let mid = g.constant(1.0 + at);
+        let lifted = g.sub(z, mid);
+        let slab = abs(&mut g, lifted, 1.0);
+        let pocket = g.bin(ink_core::graph::BinOp::Emax, outline, slab);
+        let cut = g.neg(pocket);
+        let f = g.max(block, cut);
+        let how = How { res: 0.05, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
+        let v = make(&Arc::new(Tape::new(&g, f)), &[], &Ctx::new(0.0, vec![]), [-1.2; 3], [1.2; 3], how);
+        // The floor, and the block's top round the pocket's rim (a convex
+        // crease: a long top triangle may reach over the pocket, within
+        // tol, its inner point nearer the pocket's wall than the top).
+        for (face, least) in [(at, 10), (top, 4)] {
+            let mut on = 0;
+            for (f, t) in v.tris.iter().enumerate() {
+                let p = t.map(|i| v.verts[i as usize]);
+                if p.iter().any(|q| (q[2] - face).abs() > v.tol + 1e-9) {
+                    continue;
+                }
+                on += 1;
+                for (n, q) in v.normals[3 * f..3 * f + 3].iter().zip(p) {
+                    assert!(n[2] > 0.99999, "{n:?} at {q:?} on the face at z = {face} ({p:?})");
+                }
+            }
+            assert!(on > least, "{on} triangles at z = {face}");
+        }
+    }
+
+    #[test]
+    fn a_flared_foot_is_shaded_flat_on_its_bottom() {
+        // A Gridfinity bin's foot: a rounded rectangle growing 1 mm per mm
+        // up from its flat bottom (its outline less clamp(z), as the
+        // catalog writes it) for half its height, then straight. Over a
+        // box round a vertex on the bottom's edge the clamp may take either
+        // side, so the bounds of the side's gradient hold the bottom's
+        // direction too; at the vertex they are one side's. Each bottom
+        // corner takes the bottom's normal.
+        let mut g = Graph::new();
+        let [x, y, z] = [Var::X, Var::Y, Var::Z].map(|v| g.var(v));
+        let abs = |g: &mut Graph, v, half: f64| {
+            let n = g.neg(v);
+            let a = g.max(v, n);
+            let h = g.constant(half);
+            g.sub(a, h)
+        };
+        let at = 0.0137;
+        let (qx, qy) = (abs(&mut g, x, 0.6), abs(&mut g, y, 0.4));
+        let outline = g.bin(ink_core::graph::BinOp::Emax, qx, qy);
+        let r = g.constant(0.2);
+        let outline = g.sub(outline, r);
+        let (lift, zero, rise) = (g.constant(at), g.constant(0.0), g.constant(0.5));
+        let up = g.sub(z, lift);
+        let grown = g.max(up, zero);
+        let grown = g.min(grown, rise);
+        let side = g.sub(outline, grown);
+        let slab = {
+            let mid = g.constant(0.5);
+            let c = g.sub(up, mid);
+            abs(&mut g, c, 0.5)
+        };
+        let f = g.max(side, slab);
+        let how = How { res: 0.05, limit: Limit::GRID, tol: None, tol_per_res: 0.25, bend: None };
+        let v = make(&Arc::new(Tape::new(&g, f)), &[], &Ctx::new(0.0, vec![]), [-1.2; 3], [1.2; 3], how);
+        let mut bottoms = 0;
+        for (f, t) in v.tris.iter().enumerate() {
+            let p = t.map(|i| v.verts[i as usize]);
+            if p.iter().any(|q| (q[2] - at).abs() > v.tol + 1e-9) {
+                continue;
+            }
+            bottoms += 1;
+            for (n, q) in v.normals[3 * f..3 * f + 3].iter().zip(p) {
+                assert!(n[2] < -0.99999, "{n:?} at {q:?} on the bottom ({p:?})");
+            }
+        }
+        assert!(bottoms > 4, "{bottoms}");
     }
 
     #[test]

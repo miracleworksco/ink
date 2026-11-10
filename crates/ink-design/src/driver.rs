@@ -32,7 +32,11 @@ use ink_kernel::query::{self, max_extent};
 pub struct Requirement {
     pub claim: String,
     pub measured: f64,
+    /// Signed so that above 0 violates: a grid metric's measured value
+    /// moved by its grid error toward its bound (`measure_design`).
     pub violation: f64,
+    /// A grid metric's grid error at the design (claims::Ladder).
+    pub grid_error: Option<f64>,
     pub answer: Option<Check>,
 }
 
@@ -148,11 +152,8 @@ pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<
     Ok(match metric {
         "min-thickness" => match v.thickness(f, res) {
             None => measured(Ok(f64::INFINITY), None, None),
-            Some(Err(h)) => measured(Err(crate::lang::view::UNSAMPLED.into()), None, Some(h)),
-            Some(Ok((samples, h))) => {
-                let min = samples.iter().min_by(|a, b| a.3.total_cmp(&b.3)).expect("at least one sample");
-                measured(Ok(min.3), Some(min.0), Some(h))
-            }
+            Some(Err((h, why))) => measured(Err(why.into()), None, Some(h)),
+            Some(Ok((at, t, h))) => measured(Ok(t), Some(at), Some(h)),
         },
         _ => match v.voids(f, res, accuracy)? {
             None => Measured { proven: true, held: Some(Held::Outright), ..measured(Ok(0.0), None, None) },
@@ -211,7 +212,7 @@ fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String
             Some((lo, hi, _)) => {
                 let t = v.clipped(f);
                 let g = g.map(|g| Tape::new(&v.doc.g, g));
-                query::sums(&t, &[g.as_ref()], false, &v.ctx, lo, hi, max_extent(lo, hi) / 100.0).sums[0]
+                query::integrate(&t, &[g.as_ref()], false, &v.ctx, lo, hi, query::Until::Res(max_extent(lo, hi) / 100.0)).sums[0]
             }
         }
     };
@@ -261,6 +262,7 @@ fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String
     let worst = |xs: &[f64], bound: f64, cmp: Cmp| -> (f64, f64) { xs.iter().map(|&x| (x, rel(x, bound, cmp))).max_by(|a, b| a.1.total_cmp(&b.1)).unwrap_or((0.0, 0.0)) };
     let mut out = Vec::new();
     for (text, claim) in requires {
+        let mut grid_error = None;
         let (measured, violation) = match claim {
             Claim::Empty(f) | Claim::Range(f) => {
                 let x = integral(v, f, None);
@@ -305,7 +307,22 @@ fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String
                 }
             }
             Claim::Metric { metric: m, cmp, value: bound, .. } => {
-                let (x, _) = measured(v, &m).map_err(|e| InkError::msg(format!("{text}: {}", e.message)))?;
+                let (mut x, r) = measured(v, &m).map_err(|e| InkError::msg(format!("{text}: {}", e.message)))?;
+                // A grid metric's claim is answered on its ladder of grids,
+                // and holds only by more than its grid error
+                // (claims::ladder): the search measures each design so,
+                // holding or not, and steers by the value that error makes
+                // worst, so that the design it returns keeps the margin its
+                // claim needs. Where no ladder reads the part, the value
+                // alone (its claim is then unknown, saying why).
+                if !r.proven
+                    && r.res.is_some()
+                    && r.unseen.is_none()
+                    && let Ok(l) = crate::lang::claims::ladder(v, &m, opts.accuracy, &r)
+                {
+                    x = l.values[0];
+                    grid_error = Some(l.error().0);
+                }
                 // A count: < b is <= the largest whole number under b, so
                 // one void more than allowed is a violation of 1, not 0 at b.
                 let violation = match (m.metric, cmp) {
@@ -313,7 +330,7 @@ fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String
                     ("cavities", Cmp::Le) => x - bound.floor(),
                     ("cavities", Cmp::Gt) => (bound.floor() + 1.0) - x,
                     ("cavities", Cmp::Ge) => bound.ceil() - x,
-                    _ => rel(x, bound, cmp),
+                    _ => rel(x, bound, cmp) + grid_error.map_or(0.0, |e| e / bound.abs().max(1e-9)),
                 };
                 (x, violation)
             }
@@ -351,7 +368,7 @@ fn measure_design(v: &mut ModelView, objective: Objective, requires: Vec<(String
                 (x, if x > 0.0 { -libm::cbrt(x) } else { 1.0 })
             }
         };
-        out.push(Requirement { claim: text, measured, violation, answer: None });
+        out.push(Requirement { claim: text, measured, violation, grid_error, answer: None });
     }
     Ok(Measures { objective: value, requires: out, warnings })
 }
@@ -580,7 +597,7 @@ impl<'a> Trials<'a> {
                 let (v, c, feasible) = (&m.objective, &m.requires, m.within());
                 row["objective"] = json!(v);
                 row["search_feasible"] = json!(feasible);
-                row["requires"] = json!(c.iter().map(|c| json!({"claim": c.claim, "search_measured": c.measured, "search_violation": c.violation.max(0.0)})).collect::<Vec<_>>());
+                row["requires"] = json!(c.iter().map(search_json).collect::<Vec<_>>());
                 let score = if feasible { if self.maximize { -v } else { *v } } else { c.iter().map(|c| c.violation.max(0.0)).sum() };
                 let better = match self.best.get() {
                     None => !score.is_nan(),
@@ -612,6 +629,16 @@ impl<'a> Trials<'a> {
         crate::lang::claims::progress(json!({"done": format!("design {}", self.count.get()), "status": status, "ms": t0.elapsed().as_secs_f64() * 1e3, "row": row}));
         r
     }
+}
+
+/// A requirement as the search measured it: its value, its grid error
+/// where it has one, and its violation (0 where within).
+fn search_json(r: &Requirement) -> serde_json::Value {
+    let mut j = serde_json::json!({"claim": r.claim, "search_measured": r.measured, "search_violation": r.violation.max(0.0)});
+    if let Some(e) = r.grid_error {
+        j["search_grid_error"] = serde_json::json!(e);
+    }
+    j
 }
 
 /// The designs a run could not evaluate, as its answer gives them: each

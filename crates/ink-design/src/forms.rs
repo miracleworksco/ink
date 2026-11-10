@@ -79,8 +79,18 @@ impl Package for Design {
         metric == "cavities"
     }
 
+    /// A prism's walls are its profile's in the plane, and it has no
+    /// cavity: both are the same asked there.
+    fn plane_metric(&self, _metric: &str) -> bool {
+        true
+    }
+
     fn shape_metric(&self, v: &mut crate::lang::view::ModelView, metric: &str, f: NodeId, res: Option<f64>, accuracy: f64) -> R<Measured> {
         crate::driver::shape_metric(v, metric, f, res, accuracy)
+    }
+
+    fn shape_res(&self, v: &mut crate::lang::view::ModelView, metric: &str, f: NodeId, res: Option<f64>) -> Option<f64> {
+        (metric == "min-thickness").then(|| v.thickness_res(f, res)).flatten()
     }
 
     fn read(&self, r: &mut Reader, form: &Sexp, head: &str, args: &[Sexp]) -> R<std::sync::Arc<dyn Form>> {
@@ -280,7 +290,11 @@ fn read_solve(r: &mut Reader, form: &Sexp, args: &[Sexp]) -> R<SolveSys> {
         }
         let Some([un, guess]) = u.list() else { return Err(r.err_hint(u, "unknowns are (name guess)", Some(usage.into()))) };
         let un_name = r.name(un)?;
-        let g = r.number(guess)?;
+        // Where its search starts, not a setting: a guess read from sampled
+        // data or a solved value is kept, the solve's answer reading it
+        // (the form's inputs, Doc::inexact).
+        let gf = r.field(guess)?;
+        let g = r.load_value(gf).ok_or_else(|| r.err(guess, "expected a number known at load time (constants and params only)"))?;
         unknowns.push(r.new_param(un, &un_name, g)?);
     }
     let mut residuals = Vec::new();

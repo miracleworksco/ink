@@ -37,8 +37,10 @@ pub mod check;
 /// Checking a document's claims on a model view.
 pub mod claims;
 pub mod command;
+pub mod cost;
 mod ext;
 pub mod follow;
+mod font;
 mod frame;
 mod inexact;
 pub mod interfere;
@@ -106,7 +108,8 @@ pub enum Value {
     /// frame (R p + T, forward); it is no field, and no warp moves it.
     Point([NodeId; 3]),
     Str(String),
-    Vec(Vec<Value>),
+    /// A list, shared: a copy of the value is a copy of the pointer.
+    Vec(Rc<Vec<Value>>),
     Data(Data),
     /// A function as a value (for map, reduce, apply, and higher-order fns).
     Fn(Callable),
@@ -182,7 +185,10 @@ impl Scope {
 /// document (`p.plate` for `plate` in a file imported as p: Doc::resolve).
 /// `ahead`: where it defines each value, and `declared` every name its
 /// forms declare (top_names: bodies and assemblies too). `given`: the
-/// values its import gave its params (ImportValue).
+/// values its import gave its params (ImportValue). `own`: where it
+/// defines a built-in's name (line, col: its definition is read from
+/// there on), and `built_in_read` the line it first read each built-in at
+/// (Doc::shadows).
 struct SourceFile {
     name: Rc<str>,
     path: String,
@@ -193,11 +199,25 @@ struct SourceFile {
     ahead: HashMap<String, u32>,
     declared: HashSet<String>,
     given: Vec<ImportValue>,
+    own: HashMap<String, (u32, u32)>,
+    built_in_read: HashMap<String, u32>,
 }
 
 impl SourceFile {
     fn new(name: Rc<str>, path: String, ns: Option<String>, dir: std::path::PathBuf) -> SourceFile {
-        SourceFile { name, path, ns, dir, bindings: HashMap::new(), objects: HashMap::new(), ahead: HashMap::new(), declared: HashSet::new(), given: Vec::new() }
+        SourceFile {
+            name,
+            path,
+            ns,
+            dir,
+            bindings: HashMap::new(),
+            objects: HashMap::new(),
+            ahead: HashMap::new(),
+            declared: HashSet::new(),
+            given: Vec::new(),
+            own: HashMap::new(),
+            built_in_read: HashMap::new(),
+        }
     }
 }
 
@@ -210,6 +230,8 @@ impl SourceFile {
 struct ImportValue {
     name: String,
     value: f64,
+    /// A text param's value, where it gives text (then `value` is NaN).
+    text: Option<Rc<str>>,
     said: Option<Rc<units::Said>>,
     tol: Option<(f64, f64)>,
     file: Rc<str>,
@@ -270,6 +292,11 @@ fn said(v: &Value) -> Vec<&units::Said> {
 }
 
 impl Value {
+    /// A list of values.
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::Vec(Rc::new(items))
+    }
+
     /// What it is, for messages ("field", "frame").
     pub fn kind(&self) -> &'static str {
         match self {
@@ -287,7 +314,7 @@ impl Value {
     /// The fields it holds, in order, onto `out`: a frame's, a point's, a
     /// vec's and a relation's; a closure's captured values only with
     /// `closures` (a promise's inputs treat a function as code).
-    pub(crate) fn fields_into(&self, out: &mut Vec<NodeId>, closures: bool) {
+    pub fn fields_into(&self, out: &mut Vec<NodeId>, closures: bool) {
         match self {
             Value::Field(f, _) => out.push(*f),
             Value::Point(p) => out.extend(p),
@@ -317,6 +344,70 @@ pub struct FnDef {
 /// a number ("t-slot-reaches 0"), a space no written name has.
 pub fn unnamed_range(name: &str) -> bool {
     name.contains(' ')
+}
+
+/// A text param, `(param name "Ada" [(chars S)] [(len lo hi)])`: a string
+/// read while the file loads (what a customer types), set by `--param
+/// name=Grace` or an import, every value checked against what it allows.
+#[derive(Clone, Debug)]
+pub struct TextParam {
+    pub name: String,
+    pub default: String,
+    /// The value this load read: the default, an import's or `--param`'s.
+    pub value: String,
+    /// The characters it may hold, where it says (`(chars S)`).
+    pub chars: Option<String>,
+    /// How many characters it may hold, where it says (`(len lo hi)`).
+    pub len: Option<(usize, usize)>,
+    /// Where an import set it ("b.ink:4").
+    pub set_at: Option<String>,
+}
+
+impl TextParam {
+    /// Why `v` is not a value it allows (`by`: who gave it), else None.
+    /// Why `v` is not a text it allows, else None.
+    pub fn refuses(&self, v: &str) -> Option<Refusal> {
+        let n = v.chars().count();
+        if let Some((lo, hi)) = self.len
+            && !(lo..=hi).contains(&n)
+        {
+            return Some(Refusal::Length { n, lo, hi });
+        }
+        let allowed = self.chars.as_deref()?;
+        let (at, c) = v.chars().enumerate().find(|(_, c)| !allowed.contains(*c))?;
+        Some(Refusal::Char { at, c })
+    }
+
+    /// `refuses`, said: who gave `v` (`by`), and why the param refuses it.
+    fn refused(&self, v: &str, by: &str) -> Option<String> {
+        self.refuses(v).map(|r| format!("{by}: {}", r.said(self, v)))
+    }
+}
+
+/// Why a text param does not allow a text (TextParam::refuses).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Refusal {
+    /// It holds `n` characters, not `lo` to `hi`.
+    Length { n: usize, lo: usize, hi: usize },
+    /// Its character `c`, the `at`-th (from 0), is not one it allows.
+    Char { at: usize, c: char },
+}
+
+impl Refusal {
+    /// What param `p` says of text `v` it refuses so.
+    pub fn said(&self, p: &TextParam, v: &str) -> String {
+        let v = serde_json::json!(v);
+        match *self {
+            Refusal::Length { n, lo, hi } => format!("{v} holds {n} characters; {} holds {lo} to {hi}", p.name),
+            Refusal::Char { at, c } => format!(
+                "{v} holds {} (character {}), which {} does not allow; it allows {}",
+                serde_json::json!(c.to_string()),
+                at + 1,
+                p.name,
+                serde_json::json!(p.chars.as_deref().unwrap_or_default())
+            ),
+        }
+    }
 }
 
 pub struct Param {
@@ -879,6 +970,19 @@ pub struct Doc {
     pub registry: &'static Registry,
     pub g: Graph,
     pub params: Vec<Param>,
+    /// Text params, `(param name "Ada" ...)`: load-time strings, each
+    /// bound as a def of its value (TextParam).
+    pub texts: Vec<TextParam>,
+    /// At a load given declared cases (Given::case: a combination ink
+    /// assert asks), a text param's refusal of the text it took there: the
+    /// param, the text and why. The load stopped there (run_forms), so the
+    /// document holds only what came before: no combination to ask.
+    pub refused: Vec<(TextParam, String, Refusal)>,
+    /// Each param that names cases, `(cases v ...)`, and their values:
+    /// what `ink assert` checks its claims at besides the param's value.
+    pub cases: Vec<(String, Vec<Given>)>,
+    /// The fonts read and glyphs built (font.rs).
+    fonts: font::Fonts,
     pub defs: Vec<(String, Value)>,
     def_index: HashMap<String, usize>,
     pub fns: HashMap<String, Rc<FnDef>>,
@@ -946,8 +1050,8 @@ pub struct Doc {
     /// to what that run defined (`library_under`).
     libraries: HashMap<String, (u32, String)>,
     /// How many reads of what differs by namespace the load has made: a
-    /// file imported that is not std or a library. A run during which it
-    /// grew is no library.
+    /// file imported that is not std or a library, a spatial def named
+    /// under a namespace. A run during which it grew is no library.
     varies: usize,
     /// The JSON files read (`read-json`), by path: read once, shared.
     json: HashMap<std::path::PathBuf, Data>,
@@ -962,6 +1066,10 @@ pub struct Doc {
     /// numerical method's answer), certified where a view derives them over
     /// ranged params (ModelView::set_param_spans).
     pub solved_params: HashSet<usize>,
+    /// Sampled data found at load time from other sampled data (a box of
+    /// it: measured_box), each with what it was found from, which an
+    /// answer reading it reads too (Doc::inexact).
+    found_from: Vec<(std::sync::Arc<crate::grid::Source>, Vec<std::sync::Arc<crate::grid::Source>>)>,
     /// The variables `(ranged lo hi)` made (params at lo, no tolerance),
     /// each with [lo, hi]: a range of the question, which every claim
     /// reading one ranges over and no run pins (ModelView::declared_spans).
@@ -1029,6 +1137,8 @@ pub struct Doc {
     /// (ordinary names are unique; std names may be shadowed per file).
     origin: HashMap<String, (u32, u32)>,
     param_keys: HashMap<String, usize>,
+    /// Each text param's key, its index in `texts`.
+    text_keys: HashMap<String, usize>,
     depth: usize,
     /// Per call being evaluated, innermost last: how many entries its env
     /// starts with that are its inputs (what a closure captured, then the
@@ -1048,6 +1158,14 @@ pub struct Doc {
     /// where first: the top-level form's file and line, and its head and
     /// name. A proof cannot cover such a param over a range.
     materialized: std::cell::RefCell<HashMap<usize, String>>,
+    /// Each ranged param a load-time box or reach was found over the
+    /// whole band of (`load_scope`), with the band and where: a run may
+    /// range one within the band, not beyond it (ModelView::scope_spans).
+    covered: Vec<(usize, (f64, f64), String)>,
+    /// The span of t each load-time box or reach of a field reading t
+    /// holds over (`load_scope`), and where: a moment or motion beyond one
+    /// is refused (Doc::covers_t).
+    load_t: Vec<((f64, f64), String)>,
     /// Undefined cases the current form's load-time numbers passed through
     /// (`load_eval`), for `at_form` to report.
     undefined_at_load: std::cell::RefCell<Vec<&'static str>>,
@@ -1236,6 +1354,7 @@ const SPECIAL: &[&str] = &[
     "attr-of",
     "met-by",
     "check",
+    "offset-shape",
     "error",
     "profile-reach",
     "polygon",
@@ -1243,6 +1362,11 @@ const SPECIAL: &[&str] = &[
     "probe",
     "relation",
     "ranged",
+    "font",
+    "glyph-2d",
+    "glyph-metrics",
+    "glyph-run",
+    "glyph-reach",
 ];
 /// The forms that are functions: each argument an expression, evaluated
 /// once (no names, clauses or literal text), so they are values like a
@@ -1264,12 +1388,17 @@ const FORM_FUNCTIONS: &[&str] = &[
     "get",
     "warp",
     "lipschitz",
+    "offset-shape",
     "bounds",
     "profile-reach",
     "polygon",
     "revolve-z",
     "probe",
     "ranged",
+    "glyph-2d",
+    "glyph-metrics",
+    "glyph-run",
+    "glyph-reach",
 ];
 /// Builtins beyond the kernel ops: comparisons yielding 1 or 0 (as fields).
 const COMPARISONS: &[&str] = &["<", "<=", ">", ">=", "=="];
@@ -1288,12 +1417,20 @@ fn is_reserved(name: &str) -> bool {
     builtin(name).is_some() || SPECIAL.contains(&name) || CONSTANTS.contains(&name) || COMPARISONS.contains(&name)
 }
 
-/// An error's hint naming what is_reserved keeps, words first (the
-/// operators' symbols aside): every name hit is in it.
-fn reserved_hint() -> String {
+/// The forms built in that a word names (the operators' symbols and the
+/// constants aside), sorted: the kernel's operations and the language's
+/// own forms, which no std definition takes (a file's own may: Doc::shadows).
+pub fn builtin_words() -> Vec<&'static str> {
     let mut words: Vec<&str> = BUILTINS.iter().map(|(n, _)| *n).chain(SPECIAL.iter().copied()).filter(|n| n.starts_with(char::is_alphabetic)).collect();
     words.sort();
-    format!("the built-in names: {}; {}", CONSTANTS.join(" "), words.join(" "))
+    words.dedup();
+    words
+}
+
+/// An error's hint naming what is_reserved keeps, words first (the
+/// operators' symbols aside): every name refused is in it.
+fn reserved_hint() -> String {
+    format!("the built-in names: {}; {}", CONSTANTS.join(" "), builtin_words().join(" "))
 }
 
 /// `(fn NAME ARGS ...)` for a function written as a def: `(def (f x)
@@ -1396,9 +1533,25 @@ fn near<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Vec<&'a st
     c.into_iter().map(|(_, c)| c).collect()
 }
 
-/// Words agents bring from other CAD tools, with what std calls the same
-/// thing, and how it is written where that is not a call by another name.
+/// An error's hint where what it is at is, or directly holds, a word
+/// another language opens a comment with (`//`, `/*`): read as a name, the
+/// comment is what is refused. Such a word is a name elsewhere (data's
+/// paths and globs), so only an error says it.
+fn comment_hint(at: &Sexp) -> Option<String> {
+    let opens = |e: &Sexp| e.sym().is_some_and(|w| w.starts_with("//") || w.starts_with("/*"));
+    (opens(at) || at.list().is_some_and(|l| l.iter().any(opens))).then(|| "a comment runs from ';' to the line's end".to_string())
+}
+
+/// Words agents bring from other CAD tools and languages, with what ink
+/// calls the same thing, and how it is written where that is not a call
+/// by another name.
 const CAD_WORDS: &[(&str, &[&str], &str)] = &[
+    ("list", &["vec"], "a list is (vec a b ...)"),
+    (
+        "for",
+        &["map", "reduce"],
+        "in an expression, map over a list: (reduce min (map (lambda (i) (move s (* 10 i) 0 0)) (range n))); (for ...) repeats forms, at top level and among clauses",
+    ),
     ("hole", &["subtract", "cylinder-z"], "a hole is the part minus a cylinder: (subtract part (move (cylinder-z r h) x y z))"),
     ("bore", &["subtract", "cylinder-z"], "a bore is the part minus a cylinder: (subtract part (move (cylinder-z r h) x y z))"),
     ("drill", &["subtract", "cylinder-z"], "a drilled hole is the part minus a cylinder: (subtract part (move (cylinder-z r h) x y z))"),
@@ -1426,10 +1579,12 @@ const CAD_WORDS: &[(&str, &[&str], &str)] = &[
     ("combine", &["min"], "a union is the min of its shapes: (min a b ...)"),
     ("intersect", &["max"], "an intersection is the max of its shapes: (max a b ...)"),
     ("intersection", &["max"], "an intersection is the max of its shapes: (max a b ...)"),
-    ("offset", &["-"], "f grown by d is (- f d), shrunk by d (+ f d)"),
+    ("or", &["max"], "a condition is 1 or 0: (max a b) is a or b, (min a b) a and b"),
+    ("and", &["min"], "a condition is 1 or 0: (min a b) is a and b, (max a b) a or b"),
     ("array", &["pattern-linear", "pattern-polar", "repeat-linear", "repeat-x"], ""),
     ("hollow", &["shell"], ""),
-    ("thicken", &["shell", "-"], ""),
+    ("thicken", &["shell", "offset-shape"], ""),
+    ("offset", &["offset-shape"], "a shape grown by d is (offset-shape f d), shrunk for d < 0"),
     ("plane", &["half-space"], ""),
     ("ring", &["ring-2d", "torus-z"], ""),
     ("annulus", &["ring-2d"], ""),
@@ -1490,6 +1645,10 @@ impl Doc {
             registry,
             g: Graph::new(),
             params: Vec::new(),
+            texts: Vec::new(),
+            refused: Vec::new(),
+            fonts: Default::default(),
+            cases: Vec::new(),
             defs: Vec::new(),
             def_index: HashMap::new(),
             fns: HashMap::new(),
@@ -1524,6 +1683,7 @@ impl Doc {
             checks_seen: HashSet::new(),
             calls: Vec::new(),
             solved_params: HashSet::new(),
+            found_from: Vec::new(),
             ranged: Vec::new(),
             rates_of: HashMap::new(),
             held: HashMap::new(),
@@ -1541,12 +1701,15 @@ impl Doc {
             running: Vec::new(),
             origin: HashMap::new(),
             param_keys: HashMap::new(),
+            text_keys: HashMap::new(),
             depth: 0,
             inputs: Vec::new(),
             import_depth: 0,
             overrides: Vec::new(),
             baked: Default::default(),
             materialized: Default::default(),
+            covered: Vec::new(),
+            load_t: Vec::new(),
             undefined_at_load: Default::default(),
             shape_of: HashMap::new(),
             form_at: String::new(),
@@ -1688,6 +1851,17 @@ impl Doc {
         // again.
         d.source = Some(origin.clone());
         let mut read = d.run_source_as(&origin.src, &origin.name, &origin.path, &origin.base, None);
+        // Stopped at a refused case (Doc::refused): read no further.
+        if read.is_ok() && !d.refused.is_empty() {
+            return Ok(d);
+        }
+        // A combination of cases (ink assert's) that does not declare a
+        // param whose cases it takes: one some combinations make.
+        if read.is_ok()
+            && let Some((k, _)) = d.overrides.iter().find(|(_, g)| g.case.is_some() && g.text.is_none() && g.value.is_nan())
+        {
+            read = Err(InkError::msg(crate::claims::cases_not_everywhere(k, "is declared at the params' values but not at this combination")));
+        }
         if read.is_ok() {
             d.rate_joints();
         }
@@ -1843,8 +2017,13 @@ impl Doc {
     /// the file's names too, and the forms it makes are read there, under
     /// what its list rested on (Doc::under), a `for` among them expanded as
     /// it is reached in turn.
+    /// At a combination of cases a text param refuses (Doc::refused) the
+    /// load reads no further: what follows might read the text.
     fn run_forms(&mut self, forms: &[Sexp], base: &Path) -> R<()> {
         for f in forms {
+            if !self.refused.is_empty() {
+                return Ok(());
+            }
             if let Some((var, list, body)) = author::for_parts(f) {
                 let (var, values) = self.at_form(f, |d| d.for_values(var, list))?;
                 for (val, text) in values {
@@ -1886,11 +2065,18 @@ impl Doc {
     }
 
     fn err(&self, at: &Sexp, msg: impl Into<String>) -> InkError {
-        InkError { message: msg.into(), file: self.file.to_string(), line: at.line, col: at.col, hint: None, called_from: Vec::new() }
+        InkError { message: msg.into(), file: self.file.to_string(), line: at.line, col: at.col, hint: comment_hint(at), called_from: Vec::new() }
     }
 
     fn err_hint(&self, at: &Sexp, msg: impl Into<String>, hint: Option<String>) -> InkError {
-        InkError { hint, ..self.err(at, msg) }
+        InkError { hint: comment_hint(at).or(hint), ..self.err(at, msg) }
+    }
+
+    /// The load stopped at `at`, sampling a grid (a load's one long step):
+    /// the call's time limit (ink_kernel::stop) passed first.
+    fn stopped(&self, at: &Sexp) -> InkError {
+        let hint = "give the call a larger time limit (timeout_s); the grids sampled are cached for the next call";
+        self.err_hint(at, "the call's time limit (timeout_s) passed while loading, sampling this", Some(hint.into()))
     }
 
     // ---------------------------------------------------------------- lookup
@@ -2041,8 +2227,11 @@ impl Doc {
         ))
     }
 
-    fn check_new_value_name(&self, at: &Sexp, name: &str) -> R<()> {
-        if is_reserved(name) {
+    fn check_new_value_name(&mut self, at: &Sexp, name: &str) -> R<()> {
+        // A file's own definition may take a form's or an operation's name
+        // (Doc::shadows); the constants (x y z t pi inf) are read, not
+        // called, so a file's own one would change what they mean unseen.
+        if CONSTANTS.contains(&name) || (self.scope.file == 0 && is_reserved(name)) {
             return Err(self.err_hint(at, format!("'{name}' is a built-in name and cannot be redefined"), Some(reserved_hint())));
         }
         // std's names are stored under "std:<name>" (and under the name
@@ -2065,6 +2254,17 @@ impl Doc {
                 "names are immutable; pick a new name".into()
             };
             return Err(self.err_hint(at, format!("'{name}' is already defined, at {at_}"), Some(hint)));
+        }
+        if self.scope.file != 0 && is_reserved(name) {
+            let file = &mut self.files[self.scope.file as usize];
+            if let Some(&line) = file.built_in_read.get(name) {
+                return Err(self.err_hint(
+                    at,
+                    format!("this file read '{name}' as the built-in {name} at line {line}, before its own '{name}' here"),
+                    Some(format!("one name has one meaning in a file: rename this one (my-{name}, say)")),
+                ));
+            }
+            file.own.insert(name.to_string(), (at.line, at.col));
         }
         Ok(())
     }
@@ -2117,13 +2317,28 @@ impl Doc {
             if given.iter().any(|(g, _)| g.name == n) {
                 return Err(self.err(name, format!("'{n}' is given twice")));
             }
-            let (x, said) = self.constant(value, "an import's value is a constant number, as a param default is")?;
+            // A number known at load (a param's value, baked as an if's
+            // is), or a text.
+            let v = self.eval(value, &mut Vec::new())?;
+            if let Value::Str(t) = v {
+                if !tol.is_empty() {
+                    return Err(self.err(c, format!("'{n}' is given text, which takes no tolerance")));
+                }
+                given.push((
+                    ImportValue { name: n, value: f64::NAN, text: Some(t.into()), said: None, tol: None, file: self.file.clone(), line: value.line, units: Vec::new() },
+                    c.clone(),
+                ));
+                continue;
+            }
+            let said = if let Value::Field(_, s) = &v { s.clone() } else { None };
+            let f = self.as_field(v, value)?;
+            let x = self.const_of(value, f)?;
             let (tol, mut units) = match tol.first() {
                 Some(t) => self.tol(t, said.as_deref(), usage).map(|(b, u)| (Some(b), u))?,
                 None => (None, Vec::new()),
             };
             units.extend(said.clone().map(|s| (s, value.line, value.col)));
-            given.push((ImportValue { name: n, value: x, said, tol, file: self.file.clone(), line: value.line, units }, c.clone()));
+            given.push((ImportValue { name: n, value: x, text: None, said, tol, file: self.file.clone(), line: value.line, units }, c.clone()));
         }
         Ok(given)
     }
@@ -2140,6 +2355,19 @@ impl Doc {
             return Err(self.err_hint(at, format!("{} has no param '{n}'", f.name), closest(n, params)));
         };
         let not = |what: &str| Err(self.err(at, format!("'{n}' is {what}: an import sets params")));
+        // A text param: set by the run that read it (TextParam), the value
+        // asked the one that run read.
+        if let Some(&t) = self.text_keys.get(key).filter(|_| own(key)) {
+            let p = &self.texts[t];
+            return match first {
+                Some(first) if g.text.as_deref() != Some(p.value.as_str()) => Err(self.err_hint(
+                    at,
+                    format!("{} was read at {first} with {n} {}", f.name, serde_json::json!(p.value)),
+                    Some(format!("give the value at {}'s first import ({first}), or import a second copy under a namespace", f.name)),
+                )),
+                _ => Ok(()),
+            };
+        }
         let k = match self.param_keys.get(key) {
             Some(_) if !own(key) => {
                 let from = self.origin.get(key).map_or("another file", |o| &*self.files[o.0 as usize].name);
@@ -2240,6 +2468,53 @@ impl Doc {
             return std::borrow::Cow::Borrowed(name);
         }
         if let Some(key) = self.files[self.scope.file as usize].bindings.get(name) { std::borrow::Cow::Borrowed(key) } else { std::borrow::Cow::Owned(format!("std:{name}")) }
+    }
+
+    /// Whether a built-in's name read here (`at`, where it is written in
+    /// the file being read) means the file's own definition, which shadows
+    /// the built-in from where it is written on, wherever the read is run
+    /// from (a function's body is read where it is written). One name has
+    /// one meaning in a file: the built-in read anywhere before the file's
+    /// own definition of it (in a function or a `for`'s forms too), or a
+    /// definition of it an import brings, is an error naming both. std and
+    /// imported files keep the built-in: each reads its own names.
+    fn shadows(&mut self, name: &str, at: &Sexp) -> R<bool> {
+        if self.scope.file == 0 || !is_reserved(name) || CONSTANTS.contains(&name) {
+            return Ok(false);
+        }
+        let file = &self.files[self.scope.file as usize];
+        let rename = |line| format!("rename the file's own at line {line} (my-{name}, say) to call the built-in {name} here");
+        let before = |line| format!("'{name}' here is the built-in {name}, but this file defines its own '{name}' at line {line}");
+        if let Some(&(line, col)) = file.own.get(name) {
+            // Its own, read after it is written and once it is defined (not
+            // in its own value).
+            let defined = file.bindings.get(name).and_then(|k| self.origin.get(k)).is_some_and(|&(f, _)| f == self.scope.file);
+            if (at.line, at.col) > (line, col) && defined {
+                return Ok(true);
+            }
+            return Err(self.err_hint(at, before(line), Some(rename(line))));
+        }
+        if let Some(&(f, line)) = file.bindings.get(name).and_then(|k| self.origin.get(k)) {
+            let from = &self.files[f as usize].name;
+            return Err(self.err_hint(
+                at,
+                format!("'{name}' here is both the built-in {name} and {from}'s def at line {line}, imported"),
+                Some(format!("import it under a namespace, (import \"...\" as p), and call its p.{name}")),
+            ));
+        }
+        if let Some(&line) = file.ahead.get(name) {
+            return Err(self.err_hint(at, before(line), Some(rename(line))));
+        }
+        self.files[self.scope.file as usize].built_in_read.entry(name.to_string()).or_insert(at.line);
+        Ok(false)
+    }
+
+    /// The hint where a file's own definition of a built-in's name, called
+    /// at `at`, is no function of those arguments: the built-in was likely
+    /// meant.
+    fn shadow_hint(&self, name: &str) -> String {
+        let line = self.origin.get(&*self.scoped(name)).map_or(0, |&(_, l)| l);
+        format!("'{name}' here is this file's own, defined at line {line}, not the built-in {name}: rename it (my-{name}, say) to call the built-in")
     }
 
     /// A read of a name the file being read defines further on, not yet
@@ -2373,6 +2648,11 @@ impl Doc {
                     if !self.libraries.contains_key(&canon) {
                         self.varies += 1;
                     }
+                    // Stopped at a case its text param refuses (Doc::refused):
+                    // the file is read only so far, so no more is asked of it.
+                    if !self.refused.is_empty() {
+                        return Ok(());
+                    }
                     // The file sees the names of what it imports (Scope),
                     // under its namespace here (`as`).
                     if let Some(i) = self.files.iter().rposition(|f| f.path == canon && f.ns == ns) {
@@ -2398,21 +2678,64 @@ impl Doc {
                 }
             }
             "param" => {
-                let usage = "usage: (param name default-value [(tol lo hi)]). tol: deviations from the value, lo <= hi. (param d 8 (tol 0 0.022)) is 8.000..8.022";
-                let (name, default, tol) = match args {
-                    [name, default] => (name, default, None),
-                    [name, default, tol] => (name, default, Some(tol)),
+                let usage = "usage: (param name default-value [(tol lo hi)] [(cases v ...)]). tol: deviations from the value, lo <= hi. (param d 8 (tol 0 0.022)) is 8.000..8.022. \
+                             cases: other values ink assert checks every claim at. A text param: (param name \"Ada\" [(chars \"ABC...\")] [(len lo hi)] [(cases \"...\" ...)])";
+                let (name, default, opts) = match args {
+                    [name, default, opts @ ..] => (name, default, opts),
                     _ => return Err(self.err_hint(form, "bad param", Some(usage.into()))),
                 };
                 let n = self.name_of(name)?;
                 self.check_param_name(name, &n, "the param")?;
                 self.check_new_value_name(name, &n)?;
+                let dv = self.eval(default, &mut Vec::new())?;
+                if let Value::Str(text) = dv {
+                    return self.text_param(form, name, n, text, opts, usage);
+                }
+                let (mut tol, mut cases) = (None, None);
+                for o in opts {
+                    match o.list().and_then(|l| l.first()).and_then(|h| h.sym()) {
+                        Some("tol") if tol.is_none() => tol = Some(o),
+                        Some("cases") if cases.is_none() => cases = Some(o),
+                        _ => return Err(self.err_hint(o, "a number param takes (tol lo hi) and (cases v ...)", Some(usage.into()))),
+                    }
+                }
                 let (w, n) = (n.clone(), self.public(&n));
+                if let Some((_, g)) = self.overrides.iter().find(|(k, _)| *k == n)
+                    && g.value.is_nan()
+                    && g.case.is_none()
+                {
+                    let m = crate::command::not_a_number(&n, g.text.as_deref().unwrap_or(""));
+                    return Err(self.err_hint(form, m, Some(format!("{n} is a number param: give it a number, --param {n}=6.2"))));
+                }
                 let (mut v, mut said) = self.constant(default, "param default must be a constant number")?;
                 let mut tol = tol.map(|t| self.tol(t, said.as_deref(), usage).map(|(b, _)| b)).transpose()?;
+                if let Some(c) = cases {
+                    let mut vs = Vec::new();
+                    for e in &c.list().expect("a list")[1..] {
+                        let x = self.eval(e, &mut Vec::new())?;
+                        if let Some(s) = &said {
+                            self.fits(&x, e, s.unit.quantity, "a case")?;
+                        }
+                        let f = self.as_field(x, e)?;
+                        let x = self.g.as_const(f).filter(|x| x.is_finite()).ok_or_else(|| self.err(e, "a case is a constant finite number, as the default is"))?;
+                        vs.push(Given::from(x));
+                    }
+                    self.take_case(&n, &vs, form)?;
+                    self.cases.push((n.clone(), vs));
+                }
                 // Its import's value (ImportValue), in the quantity written
                 // here, else in its own.
                 if let Some(g) = self.files[self.scope.file as usize].given.iter().find(|g| g.name == w).cloned() {
+                    if g.text.is_some() {
+                        return Err(InkError {
+                            message: format!("{}'s {w} is a number param, but this import gives it text", self.file),
+                            file: g.file.to_string(),
+                            line: g.line,
+                            col: 0,
+                            hint: None,
+                            called_from: Vec::new(),
+                        });
+                    }
                     if let Some(s) = said.as_ref().or(g.said.as_ref()) {
                         g.fits(s.unit.quantity, &format!("{}'s {w}", self.file))?;
                     }
@@ -2431,7 +2754,7 @@ impl Doc {
                         self.load_warnings.push(w);
                     }
                 }
-                self.params.push(p);
+                self.add_param(p);
             }
             "def" => {
                 if let Some(written) = fn_written_as_def(args) {
@@ -2447,6 +2770,7 @@ impl Doc {
                 // one --param reaches it by (Doc::ranged_named).
                 if let Some((k, _)) = self.ranged_of(&v).filter(|r| self.ranged[made..].contains(r)) {
                     self.params[k].name = n.clone();
+                    self.g.name_param(k as u32, &n);
                     if let Value::Field(f, said) = v {
                         let said = self.param_given(&n, said, e)?;
                         self.param_said.remove(&k);
@@ -2455,12 +2779,14 @@ impl Doc {
                     }
                 }
                 // Every def of a spatial field names a construction: its surface
-                // points report this name (see eval::provenance). Constants stay
+                // points report this name (see eval::provenance), which under
+                // a namespace differs by it (`varies`). Constants stay
                 // untagged so they keep folding.
                 if let Value::Field(f, said) = &v
                     && self.g.depends_on(*f, |x| matches!(x, Var::X | Var::Y | Var::Z))
                 {
                     v = Value::Field(self.g.tag(&n, *f), said.clone());
+                    self.varies += (n != w) as usize;
                 }
                 let key = self.defined(&w, name.line);
                 self.def_index.insert(key, self.defs.len());
@@ -2534,6 +2860,107 @@ impl Doc {
                 return Err(self.err_hint(&items[0], format!("unknown top-level form '{other}'"), closest(other, all.split(", ")).or(Some(format!("top-level forms: {all}")))));
             }
         }
+        Ok(())
+    }
+
+    /// A load at a combination of declared cases: param `n`'s override,
+    /// where it names one of its cases by place (Given::case), takes that
+    /// case's value here, `vs` (its expressions' values, read with every
+    /// param before it set).
+    fn take_case(&mut self, n: &str, vs: &[Given], form: &Sexp) -> R<()> {
+        if let Some((_, g)) = self.overrides.iter_mut().find(|(k, _)| k == n)
+            && let Some(k) = g.case
+        {
+            let v = vs.get(k).ok_or_else(|| InkError::msg(format!("{n} has {} cases, not a case {}", vs.len(), k + 1)));
+            let v = v.map_err(|e| InkError { file: self.file.to_string(), line: form.line, col: form.col, ..e })?;
+            *g = Given { case: Some(k), ..v.clone() };
+        }
+        Ok(())
+    }
+
+    /// `(param name "Ada" [(chars S)] [(len lo hi)])`: a text param named
+    /// `n` (written `name`), its default `text`. Its value (the default,
+    /// an import's, `--param`'s), checked against what it allows, is bound
+    /// as a def is.
+    fn text_param(&mut self, form: &Sexp, name: &Sexp, n: String, text: String, opts: &[Sexp], usage: &str) -> R<()> {
+        let (mut chars, mut len, mut cases) = (None, None, None::<Vec<(String, Sexp)>>);
+        for o in opts {
+            match o.list() {
+                Some([h, v]) if h.sym() == Some("chars") => match self.eval(v, &mut Vec::new())? {
+                    Value::Str(c) if chars.is_none() => chars = Some(c),
+                    Value::Str(_) => return Err(self.err(o, "(chars S) is given twice")),
+                    other => return Err(self.err_hint(v, format!("(chars S) takes a text, the characters allowed, not a {}", other.kind()), Some(usage.into()))),
+                },
+                Some([h, lo, hi]) if h.sym() == Some("len") && len.is_none() => {
+                    let (lo, hi) = (self.const_num(lo, &mut Vec::new())?, self.const_num(hi, &mut Vec::new())?);
+                    let whole = |x: f64| x >= 0.0 && x.fract() == 0.0 && x < 1e9;
+                    if !(whole(lo) && whole(hi) && lo <= hi) {
+                        return Err(self.err_hint(o, format!("(len lo hi) takes whole numbers 0 <= lo <= hi, not {lo} {hi}"), Some(usage.into())));
+                    }
+                    len = Some((lo as usize, hi as usize));
+                }
+                Some([h, vs @ ..]) if h.sym() == Some("cases") && cases.is_none() => {
+                    let mut c = Vec::new();
+                    for v in vs {
+                        match self.eval(v, &mut Vec::new())? {
+                            Value::Str(t) => c.push((t, v.clone())),
+                            other => return Err(self.err_hint(v, format!("a text param's case is a text, not a {}", other.kind()), Some(usage.into()))),
+                        }
+                    }
+                    cases = Some(c);
+                }
+                Some([h, ..]) if h.sym() == Some("tol") => return Err(self.err_hint(o, "a text param has no tolerance", Some(usage.into()))),
+                _ => return Err(self.err_hint(o, "a text param takes (chars S), (len lo hi) and (cases \"...\" ...)", Some(usage.into()))),
+            }
+        }
+        let (w, n) = (n.clone(), self.public(&n));
+        let mut p = TextParam { name: n.clone(), default: text.clone(), value: text, chars, len, set_at: None };
+        // A load at a combination of declared cases (ink assert's, every
+        // override a case) records the param's refusal of the text it
+        // takes, whoever gave it (its default too: another param's case
+        // may set its len), and goes on: that combination is not asked.
+        let at_case = self.overrides.iter().any(|(_, g)| g.case.is_some());
+        if !at_case && let Some(m) = p.refused(&p.default, &format!("{}'s default", n)) {
+            return Err(self.err(form, m));
+        }
+        // Whether a case is a text the param allows is decided at each
+        // combination ink assert asks it in, every param set (another's
+        // case may set its len): `refused`.
+        if let Some(c) = cases {
+            let vs: Vec<Given> = c.iter().map(|(t, _)| Given::text(t)).collect();
+            self.take_case(&n, &vs, form)?;
+            self.cases.push((n.clone(), vs));
+        }
+        if let Some(g) = self.files[self.scope.file as usize].given.iter().find(|g| g.name == w).cloned() {
+            let at = format!("{}:{}", g.file, g.line);
+            let bad = |m: String| InkError { message: m, file: g.file.to_string(), line: g.line, col: 0, hint: None, called_from: Vec::new() };
+            let Some(t) = g.text.as_deref() else { return Err(bad(format!("{}'s {w} is a text param: give it text, ({w} \"...\")", self.file))) };
+            if !at_case && let Some(m) = p.refused(t, &format!("the import at {at}")) {
+                return Err(bad(m));
+            }
+            (p.value, p.set_at) = (t.to_string(), Some(at));
+        }
+        if let Some((_, g)) = self.overrides.iter().find(|(k, _)| *k == n).cloned() {
+            let t = g.text.as_deref().unwrap_or_default().to_string();
+            match p.refuses(&t) {
+                Some(r) if !at_case => return Err(self.err(form, format!("--param {n}: {}", r.said(&p, &t)))),
+                _ => p.value = t,
+            }
+        }
+        // Refused at a combination: recorded, and the load stops here,
+        // before anything reads the text (run_forms).
+        if at_case && let Some(r) = p.refuses(&p.value) {
+            self.refused.push((p.clone(), p.value.clone(), r));
+            return Ok(());
+        }
+        let key = self.defined(&w, name.line);
+        self.text_keys.insert(key.clone(), self.texts.len());
+        self.def_index.insert(key, self.defs.len());
+        if !self.origin.contains_key(&n) || self.scope.file != 0 {
+            self.def_index.insert(n.clone(), self.defs.len());
+        }
+        self.defs.push((n, Value::Str(p.value.clone())));
+        self.texts.push(p);
         Ok(())
     }
 
@@ -2700,10 +3127,26 @@ impl Doc {
                         "density" => Some(Quantity::Density),
                         "mass" => Some(Quantity::Mass),
                         "spin-inertia" => Some(Quantity::Inertia),
+                        "tolerance" => Some(Quantity::Length),
                         _ => None,
                     };
                     if let Some(q) = q {
                         self.fits(&v, e, q, &format!("attr {k}"))?;
+                    }
+                    // A part's tolerance is the accuracy its claims are
+                    // checked to (claims::finest): a constant length.
+                    if k == "tolerance" {
+                        let t = match &v {
+                            Value::Field(f, _) => self.g.as_const(*f),
+                            _ => None,
+                        };
+                        if !t.is_some_and(|t| t > 0.0 && t.is_finite()) {
+                            return Err(self.err_hint(
+                                c,
+                                format!("attr tolerance expects a constant length above 0, got {e}"),
+                                Some("(attr tolerance 0.2mm): how far the made part may differ from its shape".into()),
+                            ));
+                        }
                     }
                     // A look is read once, here: clients take look::Look,
                     // never the layout.
@@ -2819,7 +3262,7 @@ impl Doc {
                 let said = said.clone();
                 let name = format!("{iname}.{p}");
                 let param = |d: &mut Doc, what: &str| {
-                    d.params.push(Param { name: format!("{what}{name}"), default: 0.0, tol: None });
+                    d.add_param(Param { name: format!("{what}{name}"), default: 0.0, tol: None });
                     (d.params.len() - 1, d.g.var(Var::Param(d.params.len() as u32 - 1)))
                 };
                 // A value that is its coordinate's own (a simulated motion:
@@ -2843,7 +3286,7 @@ impl Doc {
                     let t0 = match self.state_t {
                         Some(k) => self.g.var(Var::Param(k as u32)),
                         None => {
-                            self.params.push(Param { name: "moment of the state".into(), default: 0.0, tol: None });
+                            self.add_param(Param { name: "moment of the state".into(), default: 0.0, tol: None });
                             self.state_t = Some(self.params.len() - 1);
                             self.g.var(Var::Param(self.params.len() as u32 - 1))
                         }
@@ -2992,6 +3435,43 @@ impl Doc {
         Ok(child)
     }
 
+    /// The attributes of the body at a relation's end, as a record (`c`
+    /// the relate form, for errors): numbers at load (params' values,
+    /// which a run ranging one refuses the relation's claims over:
+    /// AssertDef::fixed), strings, lists of them and data. The end is a
+    /// body: an assembly's attributes are no one shape's. An attribute no
+    /// record holds (a field of x y z, a function, a frame) is an error,
+    /// never left out.
+    fn end_attrs(&mut self, c: &Sexp, path: &str) -> R<Value> {
+        let ch = self.end_child(path).map_err(|e| self.err(c, e))?;
+        let Some(body) = self.body(&ch) else {
+            return Err(self.err(c, format!("'{path}' is an assembly, and a relation reading its ends' attributes relates bodies: relate the one meshing by its path")));
+        };
+        let mut m = serde_json::Map::new();
+        for (k, v) in body.attrs.clone().iter() {
+            let x = self.attr_json(c, path, k, v)?;
+            m.insert(k.clone(), x);
+        }
+        Ok(Value::Data(Data::new(serde_json::Value::Object(m))))
+    }
+
+    /// Attribute `k`'s value `v` (end_attrs) as data.
+    fn attr_json(&mut self, c: &Sexp, path: &str, k: &str, v: &Value) -> R<serde_json::Value> {
+        let number = |me: &mut Self, f: NodeId| -> R<serde_json::Value> {
+            let x =
+                me.load_number(c, f)?.ok_or_else(|| me.err(c, format!("'{path}''s attribute '{k}' is a field of x y z or t, which a relation's kind cannot read as a number")))?;
+            serde_json::Number::from_f64(x).map(serde_json::Value::Number).ok_or_else(|| me.err(c, format!("'{path}''s attribute '{k}' is not a finite number")))
+        };
+        Ok(match v {
+            Value::Field(f, _) => number(self, *f)?,
+            Value::Point(p) => serde_json::Value::Array(p.iter().map(|&f| number(self, f)).collect::<R<_>>()?),
+            Value::Str(t) => serde_json::Value::String(t.clone()),
+            Value::Vec(xs) => serde_json::Value::Array(xs.iter().map(|x| self.attr_json(c, path, k, x)).collect::<R<_>>()?),
+            Value::Data(d) => d.value().clone(),
+            other => return Err(self.err(c, format!("'{path}''s attribute '{k}' is a {}, which a relation's kind cannot read as a record", other.kind()))),
+        })
+    }
+
     /// The shape of a relation's end (an instance name, or a path into a
     /// sub-assembly, read so far) in its own coordinates: its body's, or
     /// the union of its assembly's bodies.
@@ -3064,18 +3544,44 @@ impl Doc {
         };
         let ((fa, sa), (fb, sb)) = (read(self, &pa, &la)?, read(self, &pb, &lb)?);
         let before: HashSet<usize> = self.materialized.borrow().keys().copied().collect();
-        let r = match self.call(&f, vec![fa, fb, Value::Field(sa, None), Value::Field(sb, None)], kind)? {
+        let (moved, banded) = (self.load_t.len(), self.covered.len());
+        // A kind of six arguments also reads its ends' bodies' attributes,
+        // a record each (a gear's declared teeth and module, say).
+        let takes = match &f {
+            Callable::Closure(c) => c.params.len(),
+            Callable::User(_, d) => d.params.len(),
+            Callable::Builtin(_) => 4,
+        };
+        let mut args = vec![fa, fb, Value::Field(sa, None), Value::Field(sb, None)];
+        if takes == 6 {
+            args.push(self.end_attrs(c, &pa)?);
+            args.push(self.end_attrs(c, &pb)?);
+        }
+        let r = match self.call(&f, args, kind)? {
             Value::Relation(r) => r,
             other => return Err(self.err_hint(kind, format!("KIND gave a {}, not a (relation ...)", other.kind()), Some(usage.into()))),
         };
-        // A ranged param the kind fixed at load (by bounds of a part's shape)
-        // is this relation's claims' to answer for, not the file's: a run
-        // ranging it refuses them alone (AssertDef::fixed).
+        // What the kind found at load of a part's shape (its bounds) is the
+        // part's at one value: its claims name the parts' relation at each.
+        // Over a motion that is not a box's, which holds over every moment
+        // at once: refused.
+        if self.load_t.len() > moved {
+            return Err(self.err_hint(
+                kind,
+                "KIND read a box of a part that moves (reads t): a box found at load holds over the whole motion, so it would relate the parts over all of it at once, not at each moment",
+                Some("relate the parts where neither moves, or claim what the relation means directly".into()),
+            ));
+        }
+        // A ranged param it fixed at load, or found a box over the band
+        // of, is this relation's claims' to answer for, not the file's: a
+        // run ranging it refuses them alone (AssertDef::fixed).
         let fixed: Vec<usize> = {
             let mut m = self.materialized.borrow_mut();
             let mut new: Vec<usize> = m.keys().copied().filter(|k| !before.contains(k) && self.has_range(*k)).collect();
-            new.sort_unstable();
             new.iter().for_each(|k| _ = m.remove(k));
+            new.extend(self.covered.drain(banded..).map(|c| c.0));
+            new.sort_unstable();
+            new.dedup();
             new
         };
         let asm = self.building.as_ref().unwrap().asm.name.clone();
@@ -3177,7 +3683,8 @@ impl Doc {
         };
         let mut r = RelationValue { kind, zone: None, claims: Vec::new(), data: Vec::new(), clauses: Vec::new() };
         let mut data = false;
-        let clauses = &self.optional_clauses(clauses, env, |p| p.relation_clauses(), usage)?;
+        let clauses = self.expand_for_in(clauses, env)?;
+        let clauses = &self.optional_clauses(&clauses, env, |p| p.relation_clauses(), usage)?;
         for c in clauses {
             let parts = c.list().unwrap_or(&[]);
             let head = parts.first().and_then(|h| h.sym());
@@ -3762,7 +4269,7 @@ impl Doc {
     /// (`overrides`), which must be the quantity its default (`said`, at
     /// `at`) was said in, else the default's.
     fn param_given(&self, name: &str, said: Option<Rc<units::Said>>, at: &Sexp) -> R<Option<Rc<units::Said>>> {
-        let Some((_, Given { value, unit: Some(unit) })) = self.overrides.iter().find(|(k, _)| k == name) else { return Ok(said) };
+        let Some((_, Given { value, unit: Some(unit), .. })) = self.overrides.iter().find(|(k, _)| k == name) else { return Ok(said) };
         let (v, unit) = (*value, *unit);
         if let Some(s) = &said
             && s.unit.quantity != unit.quantity
@@ -4143,9 +4650,9 @@ impl Doc {
         match self.eval(e, env)? {
             Value::Field(f, _) => Ok(vec![f]),
             Value::Vec(v) if !v.is_empty() => v
-                .into_iter()
+                .iter()
                 .map(|x| match x {
-                    Value::Field(f, _) => Ok(f),
+                    Value::Field(f, _) => Ok(*f),
                     other => Err(self.err(e, format!("expected fields, got a {} in the vec: {e}", other.kind()))),
                 })
                 .collect(),
@@ -4200,6 +4707,9 @@ impl Doc {
             Some("<=") => Cmp::Le,
             Some(">") => Cmp::Gt,
             Some(">=") => Cmp::Ge,
+            Some("==" | "=") => {
+                return Err(self.err_hint(op, "comparison must be one of < <= > >=", Some("for equality, bound the difference: (value (abs (- a b)) <= tol)".into())));
+            }
             _ => return Err(self.err(op, "comparison must be one of < <= > >=")),
         })
     }
@@ -4214,6 +4724,33 @@ impl Doc {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Declare a param, named in the graph too (Graph::param_names); its
+    /// number.
+    pub fn add_param(&mut self, p: Param) -> usize {
+        let k = self.params.len();
+        self.g.name_param(k as u32, &p.name);
+        self.params.push(p);
+        k
+    }
+
+    /// Err where moment `t`, or `motion`, is beyond the span a load-time
+    /// box or reach of a field reading t holds over (`load_t`).
+    pub fn covers_t(&self, t: f64, motion: Option<(f64, f64)>) -> Result<(), InkError> {
+        let (lo, hi) = motion.unwrap_or((t, t));
+        let Some(((a, b), site)) = self.load_t.iter().find(|((a, b), _)| !(*a <= lo && hi <= *b)) else { return Ok(()) };
+        let asked = if lo == hi { format!("t = {t}") } else { format!("the motion {lo} to {hi}") };
+        Err(InkError {
+            hint: Some("state the motion, (t-span A B), before what is bounded at load, covering every moment asked".into()),
+            ..InkError::msg(format!("{asked} is beyond t in [{a}, {b}], the moments a box found at load at {site} holds over"))
+        })
+    }
+
+    /// The ranged params a load-time box or reach was found over the band
+    /// of, with it and where (`covered`).
+    pub fn covered(&self, k: usize) -> Option<((f64, f64), &str)> {
+        self.covered.iter().find(|c| c.0 == k).map(|c| (c.1, c.2.as_str()))
     }
 
     /// Where param k's value first became a number at load time (a loop
@@ -4585,7 +5122,7 @@ impl Doc {
                 }
                 acc
             })),
-            Value::Vec(items) => Value::Vec(items.iter().map(|i| self.placed_value(i, xf, map)).collect()),
+            Value::Vec(items) => Value::list(items.iter().map(|i| self.placed_value(i, xf, map)).collect()),
             other => self.warp_value(other, map),
         }
     }
@@ -4637,7 +5174,7 @@ impl Doc {
     fn warp_value(&mut self, v: &Value, map: &[(Var, NodeId)]) -> Value {
         match v {
             Value::Field(f, said) => Value::Field(self.g.subst(*f, map), said.clone()),
-            Value::Vec(items) => Value::Vec(items.iter().map(|i| self.warp_value(i, map)).collect()),
+            Value::Vec(items) => Value::list(items.iter().map(|i| self.warp_value(i, map)).collect()),
             other => other.clone(),
         }
     }
@@ -4723,6 +5260,57 @@ impl Doc {
         Ok(out)
     }
 
+    /// A part's declared tolerance, its `(attr tolerance x)`: how far the
+    /// made part may differ from its shape (claims::finest).
+    pub fn tolerance(&self, attrs: &[(String, Value)]) -> Option<f64> {
+        match attrs.iter().find(|(k, _)| k == "tolerance")? {
+            (_, Value::Field(f, _)) => self.g.as_const(*f),
+            _ => None,
+        }
+    }
+
+    /// The parts field `f` is made of, for its accuracy (claims::finest):
+    /// each body whose shape it reaches at any depth by the tag every body's
+    /// shape carries, through unions, assemblies, placements, warps and the
+    /// shapes of other bodies alike, with its declared tolerance (None: it
+    /// declares none); and None for material of no body, a coordinate read
+    /// outside every body's tag. A tag only adds a part, so naming one never
+    /// hides another.
+    pub fn parts_of(&self, f: NodeId) -> Vec<Option<(String, f64)>> {
+        use crate::graph::Node;
+        let mut bodies: HashMap<u32, Vec<&Body>> = HashMap::new();
+        for b in &self.bodies {
+            if let Node::Tag(t, _) = self.g.nodes[b.shape as usize] {
+                bodies.entry(t).or_default().push(b);
+            }
+        }
+        // Each node with whether a body's tag is above it.
+        let (mut out, mut seen, mut tags, mut stack) = (Vec::new(), HashSet::new(), HashSet::new(), vec![(f, false)]);
+        let mut loose = false;
+        while let Some((n, inside)) = stack.pop() {
+            if !seen.insert((n, inside)) {
+                continue;
+            }
+            match self.g.nodes[n as usize] {
+                Node::Tag(t, a) if let Some(bs) = bodies.get(&t) => {
+                    if tags.insert(t) {
+                        out.extend(bs.iter().map(|b| self.tolerance(&b.attrs).map(|x| (b.name.clone(), x))));
+                    }
+                    stack.push((a, true));
+                }
+                Node::Var(Var::X | Var::Y | Var::Z) => loose |= !inside,
+                node => {
+                    let (ch, k) = node.children();
+                    stack.extend(ch[..k].iter().map(|&c| (c, inside)));
+                }
+            }
+        }
+        if loose {
+            out.push(None);
+        }
+        out
+    }
+
     /// An item's field where it is placed (`warped`), recorded as its
     /// body's field and placement (`Doc::placed`).
     /// What world field `w` was placed from, where it was (`Doc::placed`,
@@ -4791,7 +5379,7 @@ impl Doc {
         fn placed(doc: &mut Doc, v: &Value, it: &Item) -> Value {
             match v {
                 Value::Field(f, said) => Value::Field(doc.place(*f, it), said.clone()),
-                Value::Vec(items) => Value::Vec(items.iter().map(|x| placed(doc, x, it)).collect()),
+                Value::Vec(items) => Value::list(items.iter().map(|x| placed(doc, x, it)).collect()),
                 other => other.clone(),
             }
         }
@@ -4876,10 +5464,22 @@ impl Doc {
     }
 
     /// Field that is negative strictly inside an axis-aligned box.
+    /// A side at infinity clips nothing, and is no term.
     pub fn box_field(&mut self, lo: V3, hi: V3) -> NodeId {
-        let lo = lo.map(|c| self.g.constant(c));
-        let hi = hi.map(|c| self.g.constant(c));
-        self.box_nodes(lo, hi)
+        let vars = [Var::X, Var::Y, Var::Z];
+        let mut terms = Vec::new();
+        for i in 0..3 {
+            let v = self.g.var(vars[i]);
+            if lo[i] > f64::NEG_INFINITY {
+                let c = self.g.constant(lo[i]);
+                terms.push(self.g.sub(c, v));
+            }
+            if hi[i] < f64::INFINITY {
+                let c = self.g.constant(hi[i]);
+                terms.push(self.g.sub(v, c));
+            }
+        }
+        self.reduce(BinOp::Max, &terms)
     }
 
     /// `box_field` with corners that are fields (of constants and params).
@@ -4968,11 +5568,12 @@ impl Doc {
         Ok((params, rest))
     }
 
-    /// A name: a bare word. A word quoted or in parentheses says to write it bare.
+    /// A name: a bare word. Words quoted or in parentheses say to write
+    /// them bare (quoted words joined by '-').
     fn name_of(&self, e: &Sexp) -> R<String> {
         e.sym().map(str::to_string).ok_or_else(|| {
             let word = match &e.k {
-                SK::Str(s) => parse(s).ok().and_then(|f| f.first().and_then(|w| w.sym()).filter(|_| f.len() == 1).map(str::to_string)),
+                SK::Str(s) => parse(s).ok().and_then(|f| f.iter().map(|w| w.sym()).collect::<Option<Vec<&str>>>().filter(|w| !w.is_empty()).map(|w| w.join("-"))),
                 SK::List(l) => l.first().and_then(|w| w.sym()).filter(|_| l.len() == 1).map(str::to_string),
                 _ => None,
             };
@@ -4981,13 +5582,37 @@ impl Doc {
     }
 
     fn const_v3(&mut self, e: &Sexp) -> R<V3> {
-        let parts = e.list().filter(|p| p.len() == 3).ok_or_else(|| self.err(e, "expected a point (x y z)"))?;
         let mut out = [0.0; 3];
-        for i in 0..3 {
-            let f = self.field(&parts[i], &mut Vec::new())?;
-            out[i] = self.g.as_const(f).ok_or_else(|| self.err(&parts[i], "expected a constant number"))?;
+        for (i, (f, at)) in self.point(e)?.into_iter().enumerate() {
+            out[i] = self.g.as_const(f).ok_or_else(|| self.err(&at, "expected a constant number"))?;
         }
         Ok(out)
+    }
+
+    /// A point's coordinates, each with what it was written in: (x y z), or
+    /// an expression whose value is a vec of three numbers ((vec x y z),
+    /// (nth box 0), a def holding one, a call of any function). A list is a
+    /// call where its head's value is a function (or it is a form): decided
+    /// by that value, not by how the head is written.
+    fn point(&mut self, e: &Sexp) -> R<Vec<(NodeId, Sexp)>> {
+        let whole = match &e.k {
+            SK::Sym(_) => true,
+            SK::List(l) => match l.first() {
+                Some(h) if h.sym().is_some_and(|h| SPECIAL.contains(&h)) => true,
+                Some(h) => matches!(self.eval(h, &mut Vec::new()), Ok(Value::Fn(_))),
+                None => false,
+            },
+            _ => false,
+        };
+        if whole {
+            return match self.eval(e, &mut Vec::new())? {
+                Value::Vec(v) if v.len() == 3 => v.iter().map(|c| Ok((self.as_field(c.clone(), e)?, e.clone()))).collect(),
+                Value::Vec(v) => Err(self.err(e, format!("expected a point, (x y z) or a vec of three numbers, got a vec of {}", v.len()))),
+                other => Err(self.err(e, format!("expected a point, (x y z) or a vec of three numbers, got a {}", other.kind()))),
+            };
+        }
+        let parts = e.list().filter(|p| p.len() == 3).ok_or_else(|| self.err_hint(e, "expected a point (x y z)", Some("or a vec of three numbers, (vec x y z)".into())))?;
+        parts.iter().map(|p| Ok((self.field(p, &mut Vec::new())?, p.clone()))).collect()
     }
 
     /// A point (x y z) of numbers: constants and params, kept as fields
@@ -5002,12 +5627,10 @@ impl Doc {
     }
 
     fn corner(&mut self, e: &Sexp) -> R<[NodeId; 3]> {
-        let parts = e.list().filter(|p| p.len() == 3).ok_or_else(|| self.err(e, "expected a point (x y z)"))?;
         let mut out = [0; 3];
-        for i in 0..3 {
-            let f = self.field(&parts[i], &mut Vec::new())?;
+        for (i, (f, at)) in self.point(e)?.into_iter().enumerate() {
             if self.g.depends_on(f, |v| matches!(v, Var::X | Var::Y | Var::Z | Var::T)) {
-                return Err(self.err(&parts[i], "a corner is a number (constants and params), not a field of x y z or t"));
+                return Err(self.err(&at, "a corner is a number (constants and params), not a field of x y z or t"));
             }
             out[i] = f;
         }
@@ -5034,6 +5657,7 @@ impl Doc {
             return Ok(v.clone());
         }
         // Lexical: what is visible where it is read (Doc::scoped).
+        self.shadows(s, at)?;
         if let Some(e) = self.later(s, at) {
             return Err(e);
         }
@@ -5083,7 +5707,10 @@ impl Doc {
                 // an instance) or an import's, it is not to be declared again.
                 let instance = self.building.as_ref().is_some_and(|b| b.asm.instances.iter().any(|i| i.name == s) || b.later.iter().any(|l| l == s));
                 let undeclared = !s.contains('.') && !instance && !self.files[self.scope.file as usize].declared.contains(s);
-                let hint = closest(s, names.iter().map(|n| n.as_str())).or_else(|| undeclared.then(|| format!("declare it: (param {s} VALUE) or (def {s} EXPR)")));
+                // A CAD word ((reduce union shapes)) names a function as one
+                // called would.
+                let word = CAD_WORDS.iter().any(|w| w.0 == s).then(|| self.unknown_function_hint(s)).flatten();
+                let hint = word.or_else(|| closest(s, names.iter().map(|n| n.as_str()))).or_else(|| undeclared.then(|| format!("declare it: (param {s} VALUE) or (def {s} EXPR)")));
                 return Err(self.err_hint(at, format!("unknown name '{s}'"), hint));
             }
         };
@@ -5099,7 +5726,7 @@ impl Doc {
 
     fn list(&mut self, e: &Sexp, env: &mut Env) -> R<Vec<Value>> {
         match self.eval(e, env)? {
-            Value::Vec(v) => Ok(v),
+            Value::Vec(v) => Ok(Rc::unwrap_or_clone(v)),
             other => Err(self.err(e, format!("expected a list (vec), got a {}", other.kind()))),
         }
     }
@@ -5129,7 +5756,7 @@ impl Doc {
         };
         match d.value() {
             J::Object(_) => Ok(Value::Data(d.clone())),
-            J::Array(a) => Ok(Value::Vec(a.iter().enumerate().map(|(i, v)| at(v, &|| d.nth(i), self)).collect::<Result<_, _>>()?)),
+            J::Array(a) => Ok(Value::list(a.iter().enumerate().map(|(i, v)| at(v, &|| d.nth(i), self)).collect::<Result<_, _>>()?)),
             v => at(v, &|| d.clone(), self),
         }
     }
@@ -5161,13 +5788,13 @@ impl Doc {
         let (label, params, rest, body, file, mut env) = match f {
             Callable::Builtin(name) if FORM_FUNCTIONS.contains(&name.as_str()) => return self.call_form(name, args, at),
             Callable::Builtin(name) => return self.apply_builtin(name, args, at),
-            Callable::User(name, d) => (name.clone(), d.params.clone(), d.rest, d.body.clone(), (d.file.clone(), d.scope), Vec::new()),
-            Callable::Closure(c) => ("lambda".to_string(), c.params.clone(), c.rest, c.body.clone(), (c.file.clone(), c.scope), c.env.clone()),
+            Callable::User(name, d) => (name.clone(), d.params.clone(), d.rest, &d.body, (d.file.clone(), d.scope), Vec::new()),
+            Callable::Closure(c) => ("lambda".to_string(), c.params.clone(), c.rest, &c.body, (c.file.clone(), c.scope), c.env.clone()),
         };
         let mut args = args;
         if rest && args.len() + 1 >= params.len() {
             let more = args.split_off(params.len() - 1);
-            args.push(Value::Vec(more));
+            args.push(Value::list(more));
         }
         if args.len() != params.len() {
             let (n, ps) = if rest { (format!("{} or more", params.len() - 1), format!("{} ...", params.join(" "))) } else { (params.len().to_string(), params.join(" ")) };
@@ -5182,7 +5809,7 @@ impl Doc {
         self.calls.push((label, self.file.clone(), at.line));
         // The body reads the names of where it was written (Scope).
         let saved = (std::mem::replace(&mut self.file, file.0), std::mem::replace(&mut self.scope, file.1));
-        let r = self.eval(&body, &mut env);
+        let r = self.eval(body, &mut env);
         (self.file, self.scope) = saved;
         let (label, ..) = self.calls.pop().expect("pushed above");
         self.inputs.pop();
@@ -5201,7 +5828,7 @@ impl Doc {
     /// ...))` would.
     fn call_form(&mut self, name: &str, args: Vec<Value>, at: &Sexp) -> R<Value> {
         let sx = |k| Sexp { k, line: at.line, col: at.col };
-        let mut items = vec![sx(SK::Sym(name.to_string()))];
+        let mut items = vec![sx(SK::BuiltIn(name.to_string()))];
         let mut env: Env = Vec::with_capacity(args.len());
         for (i, v) in args.into_iter().enumerate() {
             let a = format!("arg-{}", i + 1);
@@ -5246,7 +5873,7 @@ impl Doc {
                     .collect::<R<Vec<_>>>()?;
                 out.push(self.apply_builtin(name, row, at)?);
             }
-            return Ok(Value::Vec(out));
+            return Ok(Value::list(out));
         }
         // A choice of frames is one of their numbers: a part that changes
         // hands (picked up at a moment) is placed by (select c F G).
@@ -5337,19 +5964,26 @@ impl Doc {
             }
             SK::Str(s) => return Ok(Value::Str(s.clone())),
             SK::Sym(s) => return self.lookup(s, e, env),
+            SK::BuiltIn(s) => return Err(self.err(e, format!("the built-in {s} is written only at the head of a form"))),
             SK::List(items) => items,
         };
         let Some(head) = items.first() else { return Err(self.err(e, "empty list () is not an expression")) };
-        let Some(name) = head.sym() else {
-            // ((lambda (x) ...) 3), or any expression that yields a function.
-            let Value::Fn(f) = self.eval(head, env)? else {
-                return Err(self.err(head, format!("expected a function at the head of {e}")));
-            };
-            let vals = items[1..].iter().map(|a| self.eval(a, env)).collect::<R<Vec<_>>>()?;
-            return self.call(&f, vals, e);
-        };
         let args = &items[1..];
+        let (name, shadowed) = match &head.k {
+            SK::BuiltIn(n) => (n.as_str(), false),
+            SK::Sym(n) => (n.as_str(), self.shadows(n, head)?),
+            // ((lambda (x) ...) 3), or any expression that yields a function.
+            _ => {
+                let Value::Fn(f) = self.eval(head, env)? else {
+                    return Err(self.err(head, format!("expected a function at the head of {e}")));
+                };
+                let vals = args.iter().map(|a| self.eval(a, env)).collect::<R<Vec<_>>>()?;
+                return self.call(&f, vals, e);
+            }
+        };
         match name {
+            // The file's own definition, called below.
+            _ if shadowed => {}
             "let" => {
                 let [binds, body] = args else { return Err(self.err(e, "usage: (let ((name expr) ...) body)")) };
                 let bl = binds.list().ok_or_else(|| self.err(binds, "let bindings must be a list of (name expr)"))?;
@@ -5369,7 +6003,7 @@ impl Doc {
             }
             "vec" => {
                 let vals = args.iter().map(|a| self.eval(a, env)).collect::<R<Vec<_>>>()?;
-                return Ok(Value::Vec(vals));
+                return Ok(Value::list(vals));
             }
             "unit" => {
                 let [v] = args else { return Err(self.err(e, "usage: (unit vec): the unit vector along a vec of fields")) };
@@ -5378,7 +6012,7 @@ impl Doc {
                 let fs = fs.filter(|f| !f.is_empty()).ok_or_else(|| self.err(v, "unit expects a vec of fields (numbers)"))?;
                 let hint = "(unit v) is v / |v|, which needs v nonzero (a path's tangent is zero between two equal points, and a sweep's first normal where `up` lies along its first segment); where it reads a param or t, keep it nonzero over their ranges";
                 let u = self.unit(&fs, e, &format!("the vector of {e}"), hint)?;
-                return Ok(Value::Vec(u.into_iter().map(|f| Value::Field(f, None)).collect()));
+                return Ok(Value::list(u.into_iter().map(|f| Value::Field(f, None)).collect()));
             }
             "lambda" | "map" | "reduce" | "fold" | "flatten" | "apply" | "range" | "len" | "concat" | "char-codes" | "slice" | "if" | "read-json" | "get" | "diff" => {
                 return self.eval_author(name, e, args, env);
@@ -5504,6 +6138,7 @@ impl Doc {
             "grid-bake" | "import-stl" | "redistance" | "bounds" | "profile-reach" => return self.eval_services(name, e, args, env),
             "material" | "by-body" => return self.eval_materials(name, e, args, env),
             "check" => return self.eval_check(e, args, env),
+            "offset-shape" => return self.eval_offset(e, args, env),
             "ranged" => {
                 let usage = "usage: (ranged lo hi [at]): a new variable, which every claim reading it ranges over [lo, hi] (a range of the question: \
                              how far a tool is withdrawn, how far a view looks), and no run pins (--nominal, --param); at (lo if not given) where nothing ranges (eval, mesh, view)";
@@ -5528,7 +6163,7 @@ impl Doc {
                 // A value given it by that name (--param "b 0=2mm") says
                 // its unit as one given a declared param does.
                 let said = self.param_given(&name, said, e)?;
-                self.params.push(Param { name, default: at, tol: None });
+                self.add_param(Param { name, default: at, tol: None });
                 self.ranged.push((self.params.len() - 1, (lo, hi)));
                 if let Some(s) = said.clone() {
                     self.param_said.insert(self.params.len() - 1, s);
@@ -5562,6 +6197,7 @@ impl Doc {
             }
             "relation" => return self.eval_relation(e, args, env),
             "polygon" => return self.eval_polygon(e, args, env),
+            "font" | "glyph-2d" | "glyph-metrics" | "glyph-run" | "glyph-reach" => return self.eval_font(name, e, args, env),
             "revolve-z" => return self.eval_revolve(e, args, env),
             "study-field" => return self.eval_result(e, args, env),
             "at" => return Ok(Value::Frame(self.eval_at(args, env)?)),
@@ -5657,8 +6293,16 @@ impl Doc {
                         let names = self.named_in_all(local);
                         return Err(self.err_hint(p, format!("body '{body}' has no piece built as (tag {part} ...)"), Some(format!("its pieces: {}", names.join(", ")))));
                     }
-                    // Every occurrence (a patterned def appears once per copy), placed like the instance.
+                    // Every occurrence (a patterned def appears once per copy), placed like the instance,
+                    // under the body's own tag: a piece of a part is of that part (Doc::parts_of).
                     let f = self.reduce(BinOp::Min, &found);
+                    let f = match self.g.nodes[local as usize] {
+                        crate::graph::Node::Tag(t, _) => {
+                            let name = self.g.tag_names[t as usize].clone();
+                            self.g.tag(&name, f)
+                        }
+                        _ => f,
+                    };
                     let map = self.inverse_map(&xf);
                     let world = self.g.subst(f, &map);
                     self.record_placed(world, f, &xf);
@@ -5679,7 +6323,7 @@ impl Doc {
             let vals = args.iter().map(|a| self.eval(a, env)).collect::<R<Vec<_>>>()?;
             return self.call(&f, vals, e);
         }
-        if builtin(name).is_some() || COMPARISONS.contains(&name) {
+        if !shadowed && (builtin(name).is_some() || COMPARISONS.contains(&name)) {
             if let ("sin" | "cos" | "tan", [x]) = (name, args) {
                 self.degrees_warning(name, x);
             }
@@ -5700,22 +6344,29 @@ impl Doc {
             err.hint = self.top_form_hint(e, "an expression").or(err.hint);
             return Err(err);
         }
-        if let Some(f) = self.fns.get(&*key).cloned() {
-            let vals = args.iter().map(|a| self.eval(a, env)).collect::<R<Vec<_>>>()?;
-            return self.call(&Callable::User(name.to_string(), f), vals, e);
-        }
         // A def whose value is a function is called as a local name holding one is.
-        if let Some(Value::Fn(f)) = self.def(&key).cloned() {
+        let f = self.fns.get(&*key).map(|f| Callable::User(name.to_string(), f.clone())).or_else(|| match self.def(&key) {
+            Some(Value::Fn(f)) => Some(f.clone()),
+            _ => None,
+        });
+        if let Some(f) = f {
             let vals = args.iter().map(|a| self.eval(a, env)).collect::<R<Vec<_>>>()?;
-            return self.call(&f, vals, e);
+            // Called with the wrong number of arguments: the built-in may
+            // have been meant.
+            return self.call(&f, vals, e).map_err(|mut err| {
+                if shadowed && err.called_from.is_empty() && (err.line, err.col) == (e.line, e.col) {
+                    err.hint = Some(self.shadow_hint(name));
+                }
+                err
+            });
         }
+        let shadow = shadowed.then(|| self.shadow_hint(name));
         if let Some(v) = self.def(&key) {
-            return Err(self.err(head, format!("'{name}' is a def holding a {}, not a function", v.kind())));
+            return Err(self.err_hint(head, format!("'{name}' is a def holding a {}, not a function", v.kind()), shadow));
         }
-        let mut names: Vec<String> = self.fns.keys().filter(|n| !n.contains(':')).cloned().collect();
-        names.extend(SPECIAL.iter().map(|s| s.to_string()));
-        names.extend(BUILTINS.iter().map(|(n, _)| n.to_string()));
-        names.sort();
+        if shadowed && self.param_index(&key).is_some() {
+            return Err(self.err_hint(head, format!("'{name}' is a param, not a function"), shadow));
+        }
         let hint = if let Some(h) = self.hidden_hint(name) {
             Some(h)
         } else if self.registry.top_forms().split(", ").any(|f| f == name) {
@@ -5731,15 +6382,40 @@ impl Doc {
         } else if !self.imported.contains_key("std") && in_std(name) {
             Some(format!("'{name}' is in the standard library: add (import \"std\")"))
         } else {
-            unknown_function_hint(name, &names, self.imported.contains_key("std"))
+            self.unknown_function_hint(name)
         };
         Err(self.err_hint(head, format!("unknown function '{name}'"), hint))
+    }
+
+    /// `unknown_function_hint` over the functions in scope.
+    fn unknown_function_hint(&self, name: &str) -> Option<String> {
+        let mut names: Vec<String> = self.fns.keys().filter(|n| !n.contains(':')).cloned().collect();
+        names.extend(SPECIAL.iter().map(|s| s.to_string()));
+        names.extend(BUILTINS.iter().map(|(n, _)| n.to_string()));
+        names.sort();
+        unknown_function_hint(name, &names, self.imported.contains_key("std"))
     }
 }
 
 /// Doc::reach of `f` in graph `g` with window (`wlo`, `whi`).
 pub fn reach_in(g: &ink_core::graph::Graph, window: (V3, V3), f: NodeId, ctx: &Ctx) -> Reach {
     reach_of(&std::sync::Arc::new(Tape::new(g, f)), window, ctx)
+}
+
+/// Where analysis of a field that reads no z (the same at every height)
+/// looks in the plane: in x and y, the reach of `slab` (the field between
+/// two heights); in z, a band about 0 as deep as its material is wide. The
+/// field is clipped in x and y alone (ModelView::clipped), so no search
+/// halves the band (nothing in it changes along z), and a point of it as
+/// deep as any can be (no deeper than its material is wide) is as deep in
+/// the band.
+pub fn plane_reach(g: &ink_core::graph::Graph, window: (V3, V3), slab: NodeId, ctx: &Ctx) -> Reach {
+    let tape = std::sync::Arc::new(Tape::new(g, slab));
+    let r = reach_of(&tape, window, ctx);
+    // Its material's box (none: empty, any band will do).
+    let (lo, hi) = crate::query::bounds(&tape, ctx, r.lo, r.hi).map_or((r.lo, r.hi), |b| (b.0, b.1));
+    let half = 0.5 * (hi[0] - lo[0]).max(hi[1] - lo[1]);
+    Reach { lo: [r.lo[0], r.lo[1], -half], hi: [r.hi[0], r.hi[1], half], whole: r.whole }
 }
 
 /// Halvings of a ranged param's span `extent_in_pieces` may make.
@@ -6099,6 +6775,88 @@ mod tests {
     }
 
     #[test]
+    fn a_files_own_def_may_take_a_built_ins_name() {
+        // From its definition on, a file's own def, fn or param means
+        // itself where a built-in has its name (names are lexical); std,
+        // and the files it imports, keep the built-in.
+        let dir = Scratch::new("own-built-in-name");
+        let load = |src: &str| Doc::load_str_in(&CORE, &format!("(import \"std\")\n{src}"), "t", &dir, &[]);
+        let num = |d: &Doc, n: &str| match d.def(n) {
+            Some(Value::Field(f, _)) => eval_point(&Tape::new(&d.g, *f), &Ctx::new(0.0, vec![]), [0.0; 3]),
+            v => panic!("{n}: {v:?}"),
+        };
+        // A gift tag, and a def named max that std's clamp (min and max)
+        // does not read.
+        let d = load("(fn tag (w h) (box w h 2))\n(body gift (shape (tag 60 30)))\n(def max 4)\n(def c (clamp 9 0 5))\n(def m (+ max 1))").unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!((num(&d, "c"), num(&d, "m")), (5.0, 5.0));
+        let gift = d.body("gift").unwrap().shape;
+        assert_eq!(eval_point(&Tape::new(&d.g, gift), &Ctx::new(0.0, vec![]), [0.0; 3]), -1.0);
+        // A built-in passed as a value from another file is the built-in
+        // where it is called, in a file whose own len is another.
+        std::fs::write(dir.join("count.ink"), "(def count len)").unwrap();
+        let d = load("(import \"count.ink\" as c)\n(fn len (v) 99)\n(def n (c.count (vec 1 2 3)))\n(def ns (apply + (map c.count (vec (vec 1) (vec 1 2)))))\n(def own (len 0))")
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!((num(&d, "n"), num(&d, "ns"), num(&d, "own")), (3.0, 3.0, 99.0));
+        // A `for` over vecs writes them with the built-in vec.
+        std::fs::write(dir.join("points.ink"), "(def points (vec (vec 1 2) (vec 3 4)))").unwrap();
+        let d = load("(import \"points.ink\" as q)\n(fn vec (a) 0)\n(for p q.points (def s-$p (apply + p)))").unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(num(&d, "s-3-4"), 7.0);
+        // One meaning per file: the built-in read before the file's own, or
+        // an import's def of the name, is an error naming both.
+        let e = load("(def a (len (vec 1)))\n(fn len (v) 0)").err().unwrap();
+        assert!(e.message.contains("the built-in len") && e.message.contains("line 3"), "{e:?}");
+        std::fs::write(dir.join("label.ink"), "(fn tag (w) w)").unwrap();
+        let e = load("(import \"label.ink\")\n(def a (tag 1))").err().unwrap();
+        assert!(e.message.contains("the built-in tag and ") && e.message.contains("label.ink's def at line 1") && e.hint.as_deref().unwrap_or("").contains("namespace"), "{e:?}");
+        let d = load("(import \"label.ink\" as g)\n(def a (g.tag 3))").unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(num(&d, "a"), 3.0);
+        // The built-in called where the file's own is no such function.
+        for src in ["(def tag \"gift\")\n(body b (shape (tag \"lid\" (box 1 1 1))))", "(fn tag (w) (box w w w))\n(def a (tag \"lid\" (box 1 1 1)))"] {
+            let e = load(src).err().unwrap();
+            assert!(e.hint.as_deref().unwrap_or("").contains("not the built-in tag: rename it"), "{src}: {e:?}");
+        }
+        // The constants are read, not called: no file renames them.
+        assert!(load("(def x 3)").err().unwrap().message.contains("'x' is a built-in name"));
+    }
+
+    #[test]
+    fn a_built_ins_name_means_one_thing_where_each_read_is_written() {
+        // A read means what is visible where it is written: a function or
+        // lambda written before the file's own len reads the built-in, so
+        // calling it after is an error, as reading it before is; a `for`'s
+        // own len after the built-in was read is one too. A user's own
+        // name never reaches the head ink writes for a built-in.
+        let load = |src: &str| Doc::load_str_in(&CORE, &format!("(import \"std\")\n{src}"), "t", Path::new("."), &[]);
+        for (src, says) in [
+            ("(fn count-items (v) (len v))\n(fn len (v) 99)\n(def n (count-items (vec 1 2)))", "the built-in len, but this file defines its own 'len' at line 3"),
+            ("(def count-items (lambda (v) (len v)))\n(fn len (v) 99)\n(def n (count-items (vec 1 2)))", "the built-in len, but this file defines its own 'len' at line 3"),
+            ("(fn count-items (v) (len v))\n(def before (count-items (vec 1 2)))\n(for k (vec 1) (fn len (v) 99))", "read 'len' as the built-in len at line 2, before its own"),
+        ] {
+            let e = load(src).err().unwrap_or_else(|| panic!("{src}: loaded"));
+            assert!(e.message.contains(says), "{src}: {e:?}");
+        }
+        let d = load("(fn builtin:len (v) 5)\n(def a (builtin:len 0))").unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(matches!(d.def("a"), Some(Value::Field(f, _)) if d.g.as_const(*f) == Some(5.0)));
+    }
+
+    #[test]
+    fn no_text_spells_the_head_ink_writes_for_a_built_in() {
+        // A name a `for` makes from text (a string, a text param) is a
+        // name like any other, whatever it spells: the head ink writes for
+        // a built-in is no name, so none reaches it.
+        let models = [
+            "(fn len (v) 99)\n(for k (vec \"built-in;len\") (def a ($k (vec 1 2))))\n(def n (+ (* 100 a) (len 0)))",
+            "(for k (vec \"built-in;len\") (def a ($k (vec 1 2))))\n(fn len (v) 99)\n(def n (+ (* 100 a) (len 0)))",
+            "(param head \"built-in;len\")\n(fn len (v) 99)\n(for k (vec head) (def a ($k (vec 1 2))))\n(def n (+ (* 100 a) (len 0)))",
+            "(param head \"built-in;len\" (cases \"built-in;len\"))\n(for k (vec head) (def a ($k (vec 1 2))))\n(for k (vec 1) (fn len (v) 99))\n(def n (+ a (len 0)))",
+        ];
+        for src in models {
+            let e = Doc::load_str_in(&CORE, &format!("(import \"std\")\n{src}"), "t", Path::new("."), &[]).err().unwrap_or_else(|| panic!("{src}: loaded"));
+            assert!(e.message.contains("unknown function 'built-in;len'"), "{src}: {e:?}");
+        }
+    }
+
+    #[test]
     fn a_turn_keeps_its_axis_exact() {
         // A turn about z leaves z alone: its matrix's z row and column are
         // the constants 0 and 1, so a frame on a spinning part reads t only
@@ -6147,6 +6905,29 @@ mod tests {
         std::fs::write(dir.join("part3.ink"), "(import \"family.ink\") (def k 1)").unwrap();
         let e = Doc::load_str_in(&CORE, r#"(import "part1.ink" as p) (import "part3.ink" as r)"#, "t", &dir, &[]).err().expect("k defined twice");
         assert!(e.message.contains("already defined"), "{e:?}");
+    }
+
+    #[test]
+    fn a_family_shape_is_named_under_each_part_that_imports_it() {
+        // A family's spatial def names its surface under the namespace it
+        // is read in: each part's own name, not the first part's.
+        let dir = Scratch::new("family-names");
+        std::fs::write(dir.join("family.ink"), "(def orb (- x 2)) (fn make () orb)").unwrap();
+        for p in ["a", "b"] {
+            std::fs::write(dir.join(format!("{p}.ink")), "(import \"family.ink\") (def part (make))").unwrap();
+        }
+        let d = Doc::load_str_in(&CORE, r#"(import "a.ink" as a) (import "b.ink" as b)"#, "t", &dir, &[]).unwrap_or_else(|e| panic!("{e:?}"));
+        // The names over each part's surface, outermost first.
+        let named = |n: &str| {
+            let Some(&Value::Field(mut f, _)) = d.def(n) else { panic!("{n}") };
+            let mut out = Vec::new();
+            while let ink_core::graph::Node::Tag(t, a) = d.g.nodes[f as usize] {
+                out.push(d.g.tag_names[t as usize].as_str());
+                f = a;
+            }
+            out
+        };
+        assert_eq!((named("a.part"), named("b.part")), (vec!["a.part", "a.orb"], vec!["b.part", "b.orb"]));
     }
 
     #[test]
@@ -6327,13 +7108,25 @@ mod tests {
         let d = load("(def mark (lambda (z) (move (cylinder-z 1 1) 0 0 z)))\n(def marks (min (mark 10) (mark 20)))").unwrap_or_else(|e| panic!("{e:?}"));
         assert!(matches!(d.def("marks"), Some(Value::Field(..))));
         assert!(load("(def w 5)\n(def a (w 3))").err().unwrap().message.contains("'w' is a def holding a field, not a function"));
-        // A reserved name lists them all.
-        for n in ["t", "len", "ln", "floor", "fold", "at"] {
+        // A constant's name lists the built-in names.
+        for n in ["t", "x", "pi"] {
             let h = hint(&format!("(param {n} 3)"));
             assert!(h.starts_with("the built-in names: x y z t pi inf;") && h.split([' ', ';']).any(|w| w == n), "{n}: {h}");
         }
+        // Another language's comment: the error it makes says what one
+        // is; the same words as data (a path, a glob) are no error.
+        for src in ["// a bracket\n(def a 1)", "(def a 1) /* a */", "(def a (+ 1 //2\n 3))", "(def a (sphere 1 // r\n))"] {
+            assert_eq!(hint(src), "a comment runs from ';' to the line's end", "{src}");
+        }
+        load("(def source (data (path //server/share/part.step)))\n(def stls (data (glob /*.stl)))").unwrap_or_else(|e| panic!("{e:?}"));
         // A name quoted or in parentheses.
         assert_eq!(hint("(body \"pen-cup\" (shape (box 1 1 1)))"), "a name is a bare word: pen-cup");
+        assert_eq!(hint("(body \"Pill Box\" (shape (box 1 1 1)))"), "a name is a bare word: Pill-Box");
+        // Words from other languages: a list is a vec; a loop in an
+        // expression maps over one.
+        assert!(hint("(def a (list 1 2))").contains("'vec'"));
+        let h = hint("(def a (min (for i (range 3) (move (sphere 1) i 0 0))))");
+        assert!(h.contains("'map'") && h.contains("(reduce min (map (lambda (i)"), "{h}");
         assert_eq!(hint("(body b (shape (box 1 1 1)))\n(assembly root (for i (range 2) (instance (motor-$i) b)))"), "a name is a bare word: motor-0");
         // A placement step written as a shape's turn.
         assert!(hint("(def b (rot-y 90 (cylinder-z 8 55)))").contains("(rotate-y f deg)"));
@@ -6359,6 +7152,11 @@ mod tests {
         }
         // A shape written bare in a body.
         assert_eq!(hint("(body b (box 1 1 1))"), "write (shape (box ...))");
+        // A claim of equality says how to write one.
+        assert!(hint("(param a 1)\n(assert one (value a == 1))").contains("(value (abs (- a b)) <= tol)"));
+        // A CAD word as a value is named as one called is.
+        assert!(hint("(def s (reduce union (vec 1 2)))").contains("a union is the min of its shapes"));
+        assert!(hint("(def c (or (> 1 0) (< 1 0)))").contains("(max a b) is a or b"));
         // A one-letter name undeclared is no typo of t.
         assert_eq!(hint("(body plate (shape (box w 40 3)))"), "declare it: (param w VALUE) or (def w EXPR)");
         // A name declared as a body or an assembly further on, or an
@@ -6390,6 +7188,11 @@ mod tests {
         // bend 2 runs across bend 1's zone; its midpoint lies outside it
         let cross = format!("{l} (sheet-bend (vec 20 35) (vec 60 35) 90 2)");
         assert!(says(&sheet("2", "0.4", &cross)).contains("crosses another bend's zone"));
+        // walls on +x and +y, their lines written past the outline, crossing
+        // in the notched corner's air: built
+        let corner = "(def S (sheet (polygon (vec (vec 0 0) (vec 70 0) (vec 70 45) (vec 45 45) (vec 45 70) (vec 0 70))) (vec) 2 0.4 \
+                      (vec (sheet-bend (vec 50 60) (vec 50 -5) 90 2) (sheet-bend (vec -5 50) (vec 60 50) 90 2))))\n(def f (sheet-folded S))";
+        assert!(load(corner).is_ok(), "{:?}", load(corner).err());
         // a lip on the upright written b -> a: its left faces the base
         let lip = format!("{l} (sheet-bend (vec 50 0) (vec 50 40) 90 2)");
         assert!(says(&sheet("2", "0.4", &lip)).contains("swap a and b"));

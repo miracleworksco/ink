@@ -11,7 +11,8 @@ cd "$(dirname "$0")/.."
 # 16 GB (a run over it is killed, not the machine's other work), inside the
 # systemd slice INK_SLICE when given (the catalog watch's,
 # scripts/catalog-watch.sh, where no cap is no run), and where flock is, runs
-# that share the lock file go one at a time.
+# that share the lock file (INK_HEAVY_LOCK, as scripts/catalog-test.sh's)
+# go one at a time.
 run=()
 cap=(systemd-run --user --scope -q ${INK_SLICE:+--slice=$INK_SLICE} -p MemoryMax=16G -p MemorySwapMax=0)
 if command -v systemd-run >/dev/null && "${cap[@]}" true 2>/dev/null; then
@@ -19,13 +20,14 @@ if command -v systemd-run >/dev/null && "${cap[@]}" true 2>/dev/null; then
 elif [ -n "${INK_SLICE:-}" ]; then
   echo "benchmarks/run.sh: FAILED: no memory-capped scope in $INK_SLICE" >&2; exit 1
 fi
-lock="${XDG_CACHE_HOME:-$HOME/.cache}/ink-heavy.lock"
+lock="${INK_HEAVY_LOCK:-${XDG_CACHE_HOME:-$HOME/.cache}/ink-heavy.lock}"
 if command -v flock >/dev/null && mkdir -p "$(dirname "$lock")" 2>/dev/null; then
   run=(flock "$lock" "${run[@]}")
 fi
+failed=0
 cli() { ${run[@]+"${run[@]}"} cargo test -p ink-cli --test cli --profile fast "$@"; }
 if [ $# -eq 0 ]; then
-  cli -- --ignored benchmarks::
+  cli -- --ignored benchmarks:: || failed=1
   models=slow  # SLOW in crates/ink-cli/tests/cli/models.rs, as the test reads it
 else
   tests=(); files=()
@@ -37,7 +39,8 @@ else
     fi
     tests+=("benchmarks::b$n"); files+=("${match[@]}")
   done
-  cli -- --include-ignored "${tests[@]}"
+  cli -- --include-ignored "${tests[@]}" || failed=1
   models="${files[*]}"
 fi
-INK_MODELS="$models" cli -- models::
+INK_MODELS="$models" cli -- models:: || failed=1
+exit $failed  # both parts run, so every failure is reported

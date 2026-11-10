@@ -792,10 +792,19 @@ pub fn d_bin<const N: usize>(op: BinOp, a: I, b: I, v: I, choice: u8, da: [I; N]
             }
             return d_atan2(a, b, da, db);
         }
-        // A combination w_a da + w_b db with weights in [0, 1].
+        // A combination w_a da + w_b db with weights in [0, 1]: where both
+        // sides are above 0 it is their hypot, the weights a / v and b / v
+        // (their bounds' quotients hold them, as v's bounds hold the hypot
+        // of any a and b in theirs). Elsewhere it may be either side's, as
+        // max is.
         BinOp::Emax => match choice {
             FIRST => da,
             SECOND => db,
+            _ if a.lo > 0.0 && b.lo > 0.0 && v.lo > 0.0 => {
+                let unit = I::new(0.0, 1.0);
+                let (wa, wb) = (meet(div_o(a, v), unit), meet(div_o(b, v), unit));
+                std::array::from_fn(|k| add_o(mul_o(wa, da[k]), mul_o(wb, db[k])))
+            }
             _ => {
                 let w = I::new(0.0, 1.0);
                 std::array::from_fn(|k| add_o(mul_o(w, da[k]), mul_o(w, db[k])))
@@ -1102,7 +1111,7 @@ pub fn sub_o(a: I, b: I) -> I {
 pub fn mul_o(a: I, b: I) -> I {
     bin(BinOp::Mul, a, b).0
 }
-fn div_o(a: I, b: I) -> I {
+pub fn div_o(a: I, b: I) -> I {
     bin(BinOp::Div, a, b).0
 }
 fn dot_o(x: &[I; 3], y: &[I; 3]) -> I {

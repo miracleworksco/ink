@@ -149,6 +149,13 @@ pub enum Node {
     /// params (Graph::rebuild): `x - y` along x = y is 0, and 1e16 plus it
     /// plus 0.5 still means 1e16 + 0.5, not its float.
     Real(NodeId),
+    /// `Within(lo, hi, v)`: a number known only to lie within the constants
+    /// lo..hi (a circle's radius, say, made from its data with a certified
+    /// bound on the rounding): ranges bound what reads it over all of
+    /// lo..hi, so an answer holds for whichever value it is, and a point's
+    /// value is the constant v, a float within them. Never fixed. The u64
+    /// is its identity (Graph::within): one number for one identity.
+    Within(NodeId, NodeId, NodeId, u64),
 }
 
 impl Node {
@@ -157,7 +164,7 @@ impl Node {
             Node::Const(_) | Node::Var(_) => ([0; 3], 0),
             Node::Un(_, a) => ([a, 0, 0], 1),
             Node::Bin(_, a, b) => ([a, b, 0], 2),
-            Node::Select(c, a, b) | Node::Lipschitz(c, a, b) => ([c, a, b], 3),
+            Node::Select(c, a, b) | Node::Lipschitz(c, a, b) | Node::Within(c, a, b, _) => ([c, a, b], 3),
             Node::Tag(_, a) | Node::Real(a) => ([a, 0, 0], 1),
             Node::Read(_, _, a, at) => ([a, at, 0], 2),
             Node::Deriv(a, f, _) => ([a, f, 0], 2),
@@ -180,6 +187,8 @@ enum Key {
     Frame([NodeId; 3]),
     Deriv(NodeId, NodeId, u8),
     Real(NodeId),
+    /// By its identity alone (see Graph::within).
+    Within(u64),
 }
 
 #[derive(Default)]
@@ -197,6 +206,11 @@ pub struct Graph {
     /// in floats.
     fixed: Vec<bool>,
     pub tag_names: Vec<String>,
+    /// Each param's name, by number (the model names them: `name_param`):
+    /// what orders operands alike but for the params they read
+    /// (Tape::new), which their numbers, where the model declared them,
+    /// cannot.
+    pub param_names: Vec<String>,
     /// Names provenance stops at (a fillet: its surface is the fillet's,
     /// not that of the faces it blends).
     pub opaque: Vec<u32>,
@@ -249,6 +263,7 @@ impl Graph {
             Node::Frame(c) => Key::Frame(c),
             Node::Deriv(a, f, k) => Key::Deriv(a, f, k),
             Node::Real(a) => Key::Real(a),
+            Node::Within(.., id) => Key::Within(id),
         };
         if let Some(&id) = self.index.get(&key) {
             return id;
@@ -305,6 +320,7 @@ impl Graph {
             Node::Frame(c) => f.word(10).key(h(c[0])).key(h(c[1])).key(h(c[2])),
             Node::Deriv(a, fd, k) => f.word(12).word(k as u64).key(h(a)).key(h(fd)),
             Node::Real(a) => f.word(13).key(h(a)),
+            Node::Within(l, hi, v, id) => f.word(14).word(id).key(h(l)).key(h(hi)).key(h(v)),
         };
         f.value()
     }
@@ -363,6 +379,20 @@ impl Graph {
     /// params value; anything else already is one.
     pub fn real(&mut self, a: NodeId) -> NodeId {
         if self.fixed[a as usize] { self.intern(Node::Real(a)) } else { a }
+    }
+
+    /// A number known only within lo..hi, its point value v (Node::Within);
+    /// v itself where they are equal. `id` is its identity: a hash of what
+    /// defines the exact number (its construction's exact inputs and which
+    /// of its numbers it is), never of its bounds (two exact numbers can
+    /// round to the same ones) nor of when it was made. One identity is one
+    /// number: one node, so x - x folds to 0, c c is a square, and keys
+    /// and structural comparisons read the identity; two identities are
+    /// two numbers, whatever their bounds.
+    pub fn within(&mut self, lo: f64, hi: f64, v: f64, id: u64) -> NodeId {
+        assert!(lo <= v && v <= hi, "within: {lo} <= {v} <= {hi}");
+        let (l, h, c) = (self.constant(lo), self.constant(hi), self.constant(v));
+        if lo == hi { c } else { self.intern(Node::Within(l, h, c, id)) }
     }
 
     /// An operation that read a spatial value, now on constants and params
@@ -486,10 +516,17 @@ impl Graph {
             Atan2 | Emax => {}
         }
         // Commutative: operands in the order of their expressions' hashes
-        // (which read no param's number), then of their nodes.
+        // (which read no param's number), then of their nodes (`tied`).
         let order = |n: NodeId| (self.shapes[n as usize], n);
         let (a, b) = if matches!(op, Add | Mul | Min | Max | Emax) && order(b) < order(a) { (b, a) } else { (a, b) };
         self.intern(Node::Bin(op, a, b))
+    }
+
+    /// Whether `n` is a commutative operation whose operands' expressions
+    /// are alike up to the names in them (params, tags), so ordered by
+    /// node: Tape::new orders them by those names in the question.
+    pub(crate) fn tied(&self, n: NodeId) -> bool {
+        matches!(self.nodes[n as usize], Node::Bin(BinOp::Add | BinOp::Mul | BinOp::Min | BinOp::Max | BinOp::Emax, a, b) if a != b && self.shapes[a as usize] == self.shapes[b as usize])
     }
 
     pub fn select(&mut self, c: NodeId, a: NodeId, b: NodeId) -> NodeId {
@@ -512,6 +549,20 @@ impl Graph {
             }
         };
         self.intern(Node::Tag(t, a))
+    }
+
+    /// The hash of n's expression (`shapes`).
+    pub(crate) fn shape(&self, n: NodeId) -> u128 {
+        self.shapes[n as usize]
+    }
+
+    /// Name param k (`param_names`).
+    pub fn name_param(&mut self, k: u32, name: &str) {
+        let k = k as usize;
+        if self.param_names.len() <= k {
+            self.param_names.resize(k + 1, String::new());
+        }
+        self.param_names[k] = name.to_string();
     }
 
     /// A name that provenance stops at: points under it report this name
@@ -728,7 +779,7 @@ impl Graph {
     /// for a reader of values alone, which then sees one field however it
     /// was named (a package's solve that reads no face region's provenance).
     pub fn untagged(&mut self, root: NodeId) -> NodeId {
-        self.rebuild_as(root, &HashMap::default(), true)
+        self.rebuild_as(root, &HashMap::default(), true, None)
     }
 
     /// `root` with `map`'s nodes replaced. A promise holds in its frame's
@@ -741,7 +792,16 @@ impl Graph {
     /// written, not of one with a part swapped: x (cos^2 p + sin^2 p) is
     /// 1-Lipschitz, x (1000 + sin^2 p) is not).
     fn rebuild<S: std::hash::BuildHasher>(&mut self, root: NodeId, map: &std::collections::HashMap<NodeId, NodeId, S>) -> NodeId {
-        self.rebuild_as(root, map, false)
+        self.rebuild_as(root, map, false, None)
+    }
+
+    /// `root` with each of `maxes` (`max` nodes, with the operands under
+    /// them grouped) written as the `emax` of each group's max: the same
+    /// sign, another value where groups are positive (distance::exact,
+    /// which groups operands over square directions). A promise above one
+    /// is dropped: it held of the max.
+    pub fn with_emax(&mut self, root: NodeId, maxes: &HashMap<NodeId, Vec<Vec<NodeId>>>) -> NodeId {
+        self.rebuild_as(root, &HashMap::default(), false, Some(maxes))
     }
 
     /// `rebuild`, and with `untag` each name replaced by what it names
@@ -749,7 +809,13 @@ impl Graph {
     /// arithmetic real where its operands became constants (an untagged
     /// p - tag(p) is 0, and 1e16 + 0.5 above it still its real value).
     /// Untagging changes no value, so a derivative's mark stays.
-    fn rebuild_as<S: std::hash::BuildHasher>(&mut self, root: NodeId, map: &std::collections::HashMap<NodeId, NodeId, S>, untag: bool) -> NodeId {
+    fn rebuild_as<S: std::hash::BuildHasher>(
+        &mut self,
+        root: NodeId,
+        map: &std::collections::HashMap<NodeId, NodeId, S>,
+        untag: bool,
+        emax: Option<&HashMap<NodeId, Vec<Vec<NodeId>>>>,
+    ) -> NodeId {
         let ids = self.reach(&[root], false);
         let mut memo: HashMap<NodeId, NodeId> = HashMap::with_capacity_and_hasher(ids.len(), Default::default());
         // The nodes reading a replacement that breaks promises.
@@ -789,6 +855,11 @@ impl Graph {
                     let a = memo[&a];
                     if !self.fixed[id as usize] && self.fixed[a as usize] { self.un_real(op, a) } else { self.un(op, a) }
                 }
+                Node::Bin(..) if let Some(groups) = emax.and_then(|m| m.get(&id)) => {
+                    breaks.insert(id);
+                    let maxes: Vec<NodeId> = groups.iter().map(|grp| grp[1..].iter().fold(memo[&grp[0]], |acc, o| self.bin(BinOp::Max, acc, memo[o]))).collect();
+                    maxes[1..].iter().fold(maxes[0], |acc, &m| self.bin(BinOp::Emax, acc, m))
+                }
                 Node::Bin(op, a, b) => {
                     let (a, b) = (memo[&a], memo[&b]);
                     if !self.fixed[id as usize] && self.fixed[a as usize] && self.fixed[b as usize] { self.bin_real(op, a, b) } else { self.bin(op, a, b) }
@@ -797,6 +868,7 @@ impl Graph {
                     let a = memo[&a];
                     self.real(a)
                 }
+                Node::Within(..) => id,
                 Node::Select(c, a, b) => {
                     let (c, a, b) = (memo[&c], memo[&a], memo[&b]);
                     self.select(c, a, b)
@@ -980,10 +1052,12 @@ impl Graph {
                         BinOp::Min | BinOp::Max => self.d_branch(op, a, b, da, db),
                         BinOp::Emax => {
                             // Both positive: (a / emax) da + (b / emax) db (dividing
-                            // first, as the evaluators do: a da can overflow); else
-                            // as max.
+                            // first, as the evaluators do: a da can overflow), each
+                            // weight at most 1, as it is in real numbers (so bounds
+                            // of a slope through it see that); else as max.
                             let e = self.bin(BinOp::Emax, a, b);
                             let (ae, be) = (self.bin(BinOp::Div, a, e), self.bin(BinOp::Div, b, e));
+                            let (ae, be) = (self.min(ae, one), self.min(be, one));
                             let x = self.mul(ae, da);
                             let y = self.mul(be, db);
                             let round = self.add(x, y);
@@ -1046,7 +1120,7 @@ impl Graph {
                     self.select(c, da, db)
                 }
                 Node::Tag(_, a) | Node::Lipschitz(a, _, _) | Node::Deriv(a, _, _) | Node::Real(a) => d[&a],
-                Node::Frame(_) => zero,
+                Node::Frame(_) | Node::Within(..) => zero,
                 // The interpolant: chain rule through the coordinates, with
                 // the component with one more axis (0 along an axis it
                 // already has, inside a cell).
@@ -1183,6 +1257,7 @@ impl Graph {
                 Node::Frame(c) => f.word(10).key(h[&c[0]]).key(h[&c[1]]).key(h[&c[2]]),
                 Node::Deriv(a, fd, k) => f.word(12).word(k as u64).key(h[&a]).key(h[&fd]),
                 Node::Real(a) => f.word(13).key(h[&a]),
+                Node::Within(l, hi, v, id) => f.word(14).word(id).key(h[&l]).key(h[&hi]).key(h[&v]),
             };
             h.insert(id, f.value());
         }
@@ -1513,8 +1588,9 @@ pub fn dbin(op: BinOp, a: f64, b: f64) -> (f64, f64, f64) {
         }
         BinOp::Emax => {
             if a > 0.0 && b > 0.0 {
+                // Each weight at most 1 (hypot may round below a or b).
                 let e = libm::hypot(a, b);
-                (e, defined(a / e), defined(b / e))
+                (e, defined(a / e).min(1.0), defined(b / e).min(1.0))
             } else {
                 dbin(BinOp::Max, a, b)
             }
@@ -1525,6 +1601,49 @@ pub fn dbin(op: BinOp, a: f64, b: f64) -> (f64, f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_number_known_within_bounds_is_read_over_them() {
+        // Ranges read all of its bounds, through arithmetic on constants
+        // too (never folded to its value); a point reads its value; it is
+        // constant in space.
+        use crate::eval::{Ctx, eval_interval, eval_point};
+        use crate::interval::I;
+        let mut g = Graph::new();
+        let x = g.var(Var::X);
+        let k = g.within(1.0, 2.0, 1.5, 1);
+        let two = g.constant(2.0);
+        let k2 = g.mul(k, two);
+        let f = g.sub(x, k2);
+        let t = crate::tape::Tape::new(&g, f);
+        let ctx = Ctx::new(0.0, vec![]);
+        let p = I::point(0.0);
+        assert_eq!(eval_interval(&t, &ctx, [p, p, p], None), I::new(-4.0, -2.0));
+        assert_eq!(eval_point(&t, &ctx, [0.0; 3]), -3.0);
+        let d = g.diff(f, Var::X);
+        assert_eq!(g.as_const(d), Some(1.0));
+        assert_eq!(g.within(1.0, 1.0, 1.0, 2), g.constant(1.0));
+    }
+
+    #[test]
+    fn numbers_known_within_the_same_bounds_are_two_numbers() {
+        // Two exact numbers can round to the same bounds: two identities,
+        // their difference bounded, never folded to 0; one identity is one
+        // number, less itself 0.
+        use crate::eval::{Ctx, eval_interval};
+        use crate::interval::I;
+        let mut g = Graph::new();
+        let (a, b) = (g.within(1.0, 2.0, 1.5, 1), g.within(1.0, 2.0, 1.5, 2));
+        assert_eq!(g.within(1.0, 2.0, 1.5, 1), a);
+        assert_ne!(a, b);
+        let d = g.sub(a, b);
+        assert_eq!(g.as_const(d), None);
+        let t = crate::tape::Tape::new(&g, d);
+        let p = I::point(0.0);
+        assert_eq!(eval_interval(&t, &Ctx::new(0.0, vec![]), [p, p, p], None), I::new(-1.0, 1.0));
+        let z = g.sub(a, a);
+        assert_eq!(g.as_const(z), Some(0.0));
+    }
 
     #[test]
     fn sealed_names_change_the_fingerprint() {
@@ -1540,6 +1659,112 @@ mod tests {
             fp.value()
         };
         assert_ne!(print(true), print(false));
+    }
+
+    /// Two operands of a sum that differ only in which param they read
+    /// are ordered by where the question first reads each, not by where
+    /// the graph made them: a model that declares or imports its params in
+    /// another order asks the same question.
+    #[test]
+    fn a_sum_of_two_params_has_one_key_whatever_their_order() {
+        let key = |q_first: bool| {
+            let mut g = Graph::new();
+            let (p, q) = if q_first {
+                let q = g.var(Var::Param(1));
+                (g.var(Var::Param(0)), q)
+            } else {
+                let p = g.var(Var::Param(0));
+                (p, g.var(Var::Param(1)))
+            };
+            let (sp, sq) = if q_first {
+                let sq = g.un(UnOp::Sin, q);
+                (g.un(UnOp::Sin, p), sq)
+            } else {
+                let sp = g.un(UnOp::Sin, p);
+                (sp, g.un(UnOp::Sin, q))
+            };
+            let sum = g.add(sp, sq);
+            let root = g.sub(p, sum);
+            let tape = crate::tape::Tape::new(&g, root);
+            let ctx = crate::eval::Ctx::new(0.0, vec![0.25, 0.5]);
+            let names = crate::tape::Names::of(&[&tape], &ctx);
+            let mut fp = Fingerprint::default();
+            tape.fingerprint(&mut fp, &names);
+            fp.value()
+        };
+        assert_eq!(key(false), key(true));
+    }
+
+    /// Neither read before, two params' terms are ordered by the params'
+    /// names, not by which the model declared or the graph made first: the
+    /// question, its values included, has one key.
+    #[test]
+    fn a_sum_of_two_unread_params_has_one_key_whatever_their_order() {
+        let key = |q_first: bool| {
+            let mut g = Graph::new();
+            // q_first: q is param 0, declared and built first.
+            let (kp, kq) = if q_first { (1, 0) } else { (0, 1) };
+            g.name_param(kp, "p");
+            g.name_param(kq, "q");
+            let (sp, sq) = if q_first {
+                let q = g.var(Var::Param(kq));
+                let sq = g.un(UnOp::Sin, q);
+                let p = g.var(Var::Param(kp));
+                (g.un(UnOp::Sin, p), sq)
+            } else {
+                let p = g.var(Var::Param(kp));
+                let sp = g.un(UnOp::Sin, p);
+                let q = g.var(Var::Param(kq));
+                (sp, g.un(UnOp::Sin, q))
+            };
+            let root = g.add(sp, sq);
+            let tape = crate::tape::Tape::new(&g, root);
+            let mut values = vec![0.0; 2];
+            (values[kp as usize], values[kq as usize]) = (0.25, 0.5);
+            let ctx = crate::eval::Ctx::new(0.0, values);
+            let names = crate::tape::Names::of(&[&tape], &ctx);
+            let mut fp = Fingerprint::default();
+            tape.fingerprint(&mut fp, &names);
+            assert!(ctx.fingerprint(&mut fp, &names));
+            fp.value()
+        };
+        assert_eq!(key(false), key(true));
+    }
+
+    /// Terms alike but for their params are ordered by their own terms in
+    /// order, inner ties first: x - (sin (p + zz) + sin (q + r)) has one
+    /// key whichever of p and zz the graph made first (an unrelated
+    /// `(def unused zz)` makes zz first).
+    #[test]
+    fn nested_ties_are_ordered_from_the_inside_out() {
+        let key = |zz_first: bool| {
+            let mut g = Graph::new();
+            for (k, n) in ["p", "zz", "q", "r"].iter().enumerate() {
+                g.name_param(k as u32, n);
+            }
+            let (p, zz) = if zz_first {
+                let zz = g.var(Var::Param(1));
+                (g.var(Var::Param(0)), zz)
+            } else {
+                let p = g.var(Var::Param(0));
+                (p, g.var(Var::Param(1)))
+            };
+            let (q, r) = (g.var(Var::Param(2)), g.var(Var::Param(3)));
+            let pz = g.add(p, zz);
+            let qr = g.add(q, r);
+            let (a, b) = (g.un(UnOp::Sin, pz), g.un(UnOp::Sin, qr));
+            let sum = g.add(a, b);
+            let x = g.var(Var::X);
+            let root = g.sub(x, sum);
+            let tape = crate::tape::Tape::new(&g, root);
+            let ctx = crate::eval::Ctx::new(0.0, vec![0.1, 0.2, 0.3, 0.4]);
+            let names = crate::tape::Names::of(&[&tape], &ctx);
+            let mut fp = Fingerprint::default();
+            tape.fingerprint(&mut fp, &names);
+            assert!(ctx.fingerprint(&mut fp, &names));
+            fp.value()
+        };
+        assert_eq!(key(false), key(true));
     }
 
     /// Library functions give musl's bits, which no CPU dispatch changes.

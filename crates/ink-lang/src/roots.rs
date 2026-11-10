@@ -105,6 +105,8 @@ pub struct Roots {
     /// Enclosures and values found, by the spans, starting box and values
     /// they were derived from (searches derive one piece several times).
     cache: Mutex<HashMap<Vec<u64>, (Vec<I>, Vec<f64>)>>,
+    /// Rate bounds found (Derive::rate_bounds), by the spans and box.
+    rated: Mutex<HashMap<Vec<u64>, Option<Vec<(I, Vec<I>)>>>>,
     /// Params read that move along t over ctx's span, at bounded rates.
     moving: Vec<Moving>,
 }
@@ -137,7 +139,18 @@ impl Roots {
         mid.params = params;
         let c0: Vec<f64> = unknowns.iter().map(|&k| mid.params[k as usize]).collect();
         mid.p_spans = mid.p_spans.with_derived(&unknowns.iter().zip(&c0).map(|(&k, &c)| (k, (c, c))).collect::<Vec<_>>());
-        let mut r = Roots { unknowns, reads, tapes, t: uses_t.then_some(ctx.t), over, band: Vec::new(), y0: Vec::new(), cache: Mutex::new(HashMap::new()), moving: Vec::new() };
+        let mut r = Roots {
+            unknowns,
+            reads,
+            tapes,
+            t: uses_t.then_some(ctx.t),
+            over,
+            band: Vec::new(),
+            y0: Vec::new(),
+            cache: Mutex::new(HashMap::new()),
+            rated: Mutex::new(HashMap::new()),
+            moving: Vec::new(),
+        };
         let (c, y) = r.newton(&mid, c0);
         let Some(y) = y else {
             return Err("its Jacobian is singular at the solution at the middle of the ranges".into());
@@ -383,6 +396,7 @@ impl Roots {
             band: Vec::new(),
             y0: Vec::new(),
             cache: Mutex::new(HashMap::new()),
+            rated: Mutex::new(HashMap::new()),
             moving: moving.to_vec(),
         }
     }
@@ -540,9 +554,78 @@ fn linear(a: &[Vec<I>], b: &[I]) -> Option<Vec<I>> {
     Some(z)
 }
 
+impl Roots {
+    /// Derive::rate_bounds over the spans `p` of the params it reads, the
+    /// root in `x` over them.
+    fn rates_over(&self, ctx: &Ctx, p: &[(f64, f64)], x: Vec<I>) -> Option<Vec<(I, Vec<I>)>> {
+        let c: Vec<f64> = self.unknowns.iter().zip(&x).map(|(&u, &xi)| clamp(ctx.params[u as usize], xi)).collect();
+        let over = self.at(ctx, &x, &c);
+        let along: Vec<u32> = self.unknowns.iter().chain(&self.reads).copied().collect();
+        let n = self.unknowns.len();
+        let mut rows: Vec<Vec<I>> = Vec::with_capacity(self.tapes.len());
+        for tape in &self.tapes {
+            let mut d = Vec::with_capacity(along.len());
+            for chunk in along.chunks(MAX_INPUTS) {
+                d.extend(eval::eval_interval_rates(tape, &over, B0, &Inputs { t: false, params: chunk.to_vec() }).1);
+            }
+            rows.push(d);
+        }
+        let ju: Vec<Vec<I>> = rows.iter().map(|r| r[..n].to_vec()).collect();
+        let mut rates = vec![Vec::with_capacity(self.reads.len()); n];
+        for j in 0..self.reads.len() {
+            let rhs: Vec<I> = rows.iter().map(|r| I::new(-r[n + j].hi, -r[n + j].lo)).collect();
+            for (i, z) in linear(&ju, &rhs)?.into_iter().enumerate() {
+                rates[i].push(z);
+            }
+        }
+        // The root at the middle of the spans.
+        let mut mid = ctx.clone();
+        for (&k, s) in self.reads.iter().zip(p) {
+            let m = span_mid(*s);
+            mid.p_spans.set_span(k, (m, m));
+            mid.params[k as usize] = m;
+        }
+        self.derive(&mut mid);
+        let at: Vec<I> = self.unknowns.iter().map(|&u| mid.param(u)).collect();
+        Some(at.into_iter().zip(rates).collect())
+    }
+}
+
 impl Derive for Roots {
     fn owns(&self) -> &[u32] {
         &self.unknowns
+    }
+
+    fn tapes(&self) -> &[Tape] {
+        &self.tapes
+    }
+
+    /// Its certificate: the unknowns and the params read, the moment and
+    /// the box it is certified over, the root's band and Y; the rest it
+    /// derives from is its equations and the context. Its own caches hold
+    /// what it derived, keyed by what it derived it from: they change no
+    /// answer. Certified at a moment its equations do not read (t is then
+    /// not in a question's key), it is not data.
+    fn fingerprint(&self, fp: &mut ink_core::graph::Fingerprint, names: &ink_core::tape::Names) -> bool {
+        // Every field, named: one added must be hashed too.
+        let Roots { unknowns, reads, tapes: _, t, over, band, y0, cache: _, rated: _, moving } = self;
+        if t.is_some() && !names.reads_t {
+            return false;
+        }
+        for list in [unknowns, reads] {
+            fp.word(list.len() as u64);
+            list.iter().for_each(|&k| _ = fp.word(names.param(k) as u64));
+        }
+        fp.word(t.is_some() as u64).f64(t.unwrap_or(0.0));
+        fp.word(over.len() as u64);
+        over.iter().for_each(|s| _ = fp.f64(s.0).f64(s.1));
+        fp.word(band.len() as u64);
+        band.iter().for_each(|b| _ = fp.f64(b.lo).f64(b.hi));
+        fp.word(y0.len() as u64);
+        y0.iter().for_each(|row| _ = row.iter().fold(fp.word(row.len() as u64), |fp, &v| fp.f64(v)));
+        fp.word(moving.len() as u64);
+        moving.iter().for_each(|&(k, x, r)| _ = fp.word(names.param(k) as u64).f64(x.lo).f64(x.hi).f64(r.lo).f64(r.hi));
+        true
     }
 
     /// -J_u^-1 J_p at ctx's values (the implicit function theorem).
@@ -563,7 +646,62 @@ impl Derive for Roots {
         &self.reads
     }
 
+    /// Its unknowns are read through the params it reads (rate_bounds).
+    fn chains(&self) -> bool {
+        true
+    }
+
+    /// Over ctx's spans of the params it reads: the root's enclosure at
+    /// their middle (derived there), and its rates along them, -J_u^-1 J_p
+    /// for every J_u and J_p over the root's enclosure and the spans (the
+    /// implicit function theorem; `linear`). None: not certified there, or
+    /// J_u not shown regular.
+    fn rate_bounds(&self, ctx: &Ctx) -> Option<Vec<(I, Vec<I>)>> {
+        // Inside a solve's own evaluations (its narrowing, these rates) its
+        // unknowns are what it solves for: read as ranged.
+        if SOLVING.with(|s| s.get()) {
+            return None;
+        }
+        let p: Vec<(f64, f64)> = self.reads.iter().map(|&k| ctx.p_spans.get(k).unwrap_or((ctx.params[k as usize], ctx.params[k as usize]))).collect();
+        let certified = p.iter().zip(&self.over).all(|(s, o)| o.0 <= s.0 && s.1 <= o.1) && self.t.is_none_or(|t| t == ctx.t && ctx.t_span.is_none());
+        if !certified {
+            return None;
+        }
+        let x: Vec<I> = self.unknowns.iter().zip(&self.band).map(|(&u, &b)| ctx.p_spans.get(u).and_then(|(lo, hi)| meet(I { lo, hi }, b)).unwrap_or(b)).collect();
+        let key: Vec<u64> = p.iter().flat_map(|s| [s.0, s.1]).chain(x.iter().flat_map(|i| [i.lo, i.hi])).map(f64::to_bits).collect();
+        if let Some(hit) = self.rated.lock().unwrap().get(&key) {
+            return hit.clone();
+        }
+        let r = solving(|| self.rates_over(ctx, &p, x));
+        let mut rated = self.rated.lock().unwrap();
+        if rated.len() > 1 << 16 {
+            rated.clear();
+        }
+        rated.insert(key, r.clone());
+        r
+    }
+
     fn derive(&self, ctx: &mut Ctx) {
+        solving(|| self.derive_in(ctx))
+    }
+}
+
+thread_local! {
+    /// A solve's own evaluations are running on this thread (rate_bounds).
+    static SOLVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f` with SOLVING set, as it was after.
+fn solving<T>(f: impl FnOnce() -> T) -> T {
+    let was = SOLVING.with(|s| s.replace(true));
+    let r = f();
+    SOLVING.with(|s| s.set(was));
+    r
+}
+
+impl Roots {
+    /// Derive::derive.
+    fn derive_in(&self, ctx: &mut Ctx) {
         let p: Vec<(f64, f64)> = self.reads.iter().map(|&k| ctx.p_spans.get(k).unwrap_or((ctx.params[k as usize], ctx.params[k as usize]))).collect();
         // Outside the box certified (or at another moment), no root is
         // known: every value.

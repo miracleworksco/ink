@@ -89,7 +89,7 @@ pub(crate) fn read(g: &mut Graph, key: &str, v: Value) -> Result<Value, String> 
             for (c, name) in rgb.iter().zip(["red", "green", "blue"]) {
                 unit(g, *c, &format!("color's {name}"))?;
             }
-            Ok(Value::Vec(rgb.iter().map(|&c| Value::Field(c, None)).collect()))
+            Ok(Value::list(rgb.iter().map(|&c| Value::Field(c, None)).collect()))
         }
         "metallic" | "roughness" | "transmission" => match v {
             Value::Field(f, _) => unit(g, f, key).map(|_| v),

@@ -3,7 +3,7 @@
 ; leaves a two-part mould along z: the cavity pulls up, the core down. A USB
 ; opening in a side wall is undercut: no line of sight from its air runs
 ; out along +z or -z. A side action pulling along +x reaches it, so the
-; part moulds with one: its region is checked along +x, the rest along z.
+; part moulds with one: every point of the air sees out along +z, -z or +x.
 ;
 ; The band checked is the mould's air 1 mm clear of the part. So an
 ; undercut shallower than about 1.1 mm passes here, such as a snap bead:
@@ -28,5 +28,4 @@
 (assert pulls (empty (hidden plain mould (clear-air plain mould 1) (vec up down))))
 ; expect-status: usb-pulls fails
 (assert usb-pulls (empty (hidden ported mould (clear-air ported mould 1) (vec up down))))
-(assert usb-pulls-elsewhere (empty (hidden ported mould (max (clear-air ported mould 1) (neg usb)) (vec up down))))
-(assert side-action-reaches-usb (empty (hidden ported mould (max (clear-air ported mould 1) usb) (vec side))))
+(assert pulls-with-side-action (empty (hidden ported mould (clear-air ported mould 1) (vec up down side))))

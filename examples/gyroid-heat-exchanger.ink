@@ -29,7 +29,7 @@
              (+ (* x (cos turn)) (* y (sin turn)))
              (- (* y (cos turn)) (* x (sin turn)))
              z))
-(def core (max bore (shell g wall)))
+(def core (lattice-fill bore g wall))
 (def skin-wall (revolve-z (max (- (abs (- x (- radius (* 0.5 skin)))) (* 0.5 skin)) ends)))
 (def body-field (fillet-union skin-wall core 1.5 90))
 

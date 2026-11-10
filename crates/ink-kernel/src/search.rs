@@ -20,10 +20,13 @@
 //! Kearfott); ties go to the smaller box, nearer being settled, then to the
 //! first made. A box is halved on its axis of largest smear, with every
 //! space axis the next halving would choose anyway, and its halves start
-//! from its state (its tapes simplified over it). A box no axis halves
-//! (every side no wider than `finest`, the accuracy asked, or reaching
-//! infinity, tested whole; every param halved `splits` times, or spreading
-//! them less than space does; t at adjacent floats; no axis spreading them)
+//! from its state (its tapes simplified over it). A box is never halved
+//! on a space axis along which its question is the same all through it
+//! (`Smear::still`: an extrusion's span, where the walls read no z). A box
+//! no axis halves (every side no wider than `finest`, the accuracy asked,
+//! still, or reaching infinity, tested whole; every param halved `splits`
+//! times, or spreading them less than space does; t at adjacent floats; no
+//! axis spreading them)
 //! is stuck: the claim is not decided there at that accuracy. Asked
 //! whether a claim holds, the proof then ends unknown, the rest not
 //! refined; the claim cannot be proven, but can still be disproven, and the
@@ -83,12 +86,14 @@ pub struct Node<S> {
 
 /// How far each axis spreads a test's bounds over a box, in one unit for
 /// all of them (a clearance's: length): its rate there times its
-/// half-width.
+/// half-width; and the space axes along which the question is the same all
+/// through the box (`still`: its field there reads them not), never halved.
 #[derive(Clone, Debug, Default)]
 pub struct Smear {
     pub space: [f64; 3],
     pub params: Vec<(u32, f64)>,
     pub t: f64,
+    pub still: [bool; 3],
 }
 
 /// A box tested.
@@ -638,7 +643,7 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
             Axis::Space(k) => {
                 let x = n.b[k];
                 let m = x.mid();
-                x.lo.is_finite() && x.hi.is_finite() && x.hi - x.lo > finest && x.lo < m && m < x.hi
+                !s.still[k] && x.lo.is_finite() && x.hi.is_finite() && x.hi - x.lo > finest && x.lo < m && m < x.hi
             }
             Axis::Param(p) => n.ctx.p_spans.iter().any(|s| s.k == p && !s.derived && scope::can_halve(s.span, s.band, self.p.splits)),
             Axis::T => n.ctx.t_span.is_some_and(|s| s.0 < span_mid(s) && span_mid(s) < s.1),
@@ -672,7 +677,15 @@ impl<S: Clone + Send + Sync, W: Send + Sync> Search<S, W> {
         let Some(Axis::Space(k)) = axis else { return [false; 3] };
         std::array::from_fn(|j| {
             let x = n.b[j];
-            j != k && s.space[j] > 0.0 && s.space[j] >= 0.5 * s.space[k] && x.lo.is_finite() && x.hi.is_finite() && x.hi - x.lo > self.p.finest && x.lo < x.mid() && x.mid() < x.hi
+            j != k
+                && !s.still[j]
+                && s.space[j] > 0.0
+                && s.space[j] >= 0.5 * s.space[k]
+                && x.lo.is_finite()
+                && x.hi.is_finite()
+                && x.hi - x.lo > self.p.finest
+                && x.lo < x.mid()
+                && x.mid() < x.hi
         })
     }
 

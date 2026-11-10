@@ -676,6 +676,27 @@ impl Follow {
         Ok((r, hull(&a, &b)))
     }
 
+    /// What solve `i`, on t, sets over `span` of t, as it moves along it:
+    /// for each param, an enclosure at the span's middle moment and bounds
+    /// on its rate along t over the span (Follow::sets; either side of 0,
+    /// the two sides' rates' hull). Err: why not.
+    pub fn moving_over_t(&self, i: usize, params: &[f64], span: (f64, f64)) -> Result<Vec<(I, I)>, String> {
+        let m = span_mid(span);
+        let (_, at, _) = self.sets(i, params, (m, m), false)?;
+        let sides: Vec<(f64, f64)> = if span.0 < 0.0 && 0.0 < span.1 { vec![(span.0, 0.0), (0.0, span.1)] } else { vec![span] };
+        let mut rates: Option<Vec<I>> = None;
+        for side in sides {
+            let (_, _, moving) = self.sets(i, params, side, true)?;
+            let r: Vec<I> = moving.iter().map(|m| m.2).collect();
+            rates = Some(rates.map_or(r.clone(), |h| hull(&h, &r)));
+        }
+        let rates = rates.expect("a side");
+        if rates.len() != at.len() {
+            return Err("its rates along t are not bounded".into());
+        }
+        Ok(at.into_iter().zip(rates).collect())
+    }
+
     /// The params solve `i`'s path rests on that no solve on t sets.
     pub fn rests_on(&self, i: usize) -> &[usize] {
         &self.solves[i].fixed
@@ -859,13 +880,15 @@ pub struct OverT {
     whole: (f64, f64),
     all: Vec<I>,
     cache: Mutex<HashMap<(u64, u64), (Vec<f64>, Vec<I>)>>,
+    /// Rate bounds found (`rate_bounds`), by span.
+    moving: Mutex<HashMap<(u64, u64), Option<Vec<(I, Vec<I>)>>>>,
 }
 
 impl OverT {
     pub fn new(follow: Arc<Follow>, i: usize, k: u32, params: &[f64], whole: (f64, f64)) -> Result<OverT, String> {
         let (_, all) = follow.over_t(i, params, whole)?;
         let owns = follow.solves[i].p.owns().iter().map(|&u| u as u32).collect();
-        Ok(OverT { follow, i, k: [k], owns, params: params.to_vec(), whole, all, cache: Mutex::new(HashMap::new()) })
+        Ok(OverT { follow, i, k: [k], owns, params: params.to_vec(), whole, all, cache: Mutex::new(HashMap::new()), moving: Mutex::new(HashMap::new()) })
     }
 
     /// Its params' enclosures over the whole span.
@@ -901,6 +924,21 @@ impl ink_core::eval::Derive for OverT {
         &self.owns
     }
 
+    /// Its solve's key on disk (Follow::key: its equations and what its
+    /// root rests on, which the steps it reads are kept by), t's param, and
+    /// the span it is made over with the enclosure there. Its own caches
+    /// hold what it derived, by the span: they change no answer.
+    fn fingerprint(&self, fp: &mut Fingerprint, names: &ink_core::tape::Names) -> bool {
+        // Every field, named: one added must be hashed too.
+        let OverT { follow, i, k, owns, params, whole, all, cache: _, moving: _ } = self;
+        let Some(key) = follow.key(*i, params) else { return false };
+        fp.key(key).word(names.param(k[0]) as u64).word(owns.len() as u64);
+        owns.iter().for_each(|&u| _ = fp.word(names.param(u) as u64));
+        fp.f64(whole.0).f64(whole.1).word(all.len() as u64);
+        all.iter().for_each(|x| _ = fp.f64(x.lo).f64(x.hi));
+        true
+    }
+
     fn reads(&self) -> &[u32] {
         &self.k
     }
@@ -916,6 +954,33 @@ impl ink_core::eval::Derive for OverT {
             ctx.p_spans.set_span(u, (x.lo, x.hi));
             ctx.params[u as usize] = c.clamp(x.lo, x.hi);
         }
+    }
+
+    /// Its params read through t's param: their rates along t are bounded
+    /// over a span (Follow::moving_over_t).
+    fn chains(&self) -> bool {
+        true
+    }
+
+    /// Over param k's span in ctx (inside the whole span): each param's
+    /// enclosure at its middle moment and its rate along t over it, kept
+    /// by the span.
+    fn rate_bounds(&self, ctx: &Ctx) -> Option<Vec<(I, Vec<I>)>> {
+        let span = ctx.p_spans.get(self.k[0])?;
+        if !(self.whole.0 <= span.0 && span.1 <= self.whole.1 && span.0 < span.1) {
+            return None;
+        }
+        let key = (span.0.to_bits(), span.1.to_bits());
+        if let Some(hit) = self.moving.lock().unwrap().get(&key) {
+            return hit.clone();
+        }
+        let r = self.follow.moving_over_t(self.i, &self.params, span).ok().map(|m| m.into_iter().map(|(x, d)| (x, vec![d])).collect());
+        let mut cache = self.moving.lock().unwrap();
+        if cache.len() > 1 << 16 {
+            cache.clear();
+        }
+        cache.insert(key, r.clone());
+        r
     }
 
     /// Along t, by the roots a little either side (floats: for witness

@@ -287,7 +287,7 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
             sampled_fields(&mut r, sampled.as_ref(), names);
             r["res"] = n(*res);
         }
-        Evidence::Metric { measured: v, head, form, undecided, .. } => {
+        Evidence::Metric { measured: v, head, form, undecided, stopped, estimate, grid_error, .. } => {
             match &v.value {
                 Ok(x) => r["value"] = n(*x),
                 Err(why) => {
@@ -303,6 +303,20 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
             }
             if let Some(h) = v.res {
                 r["res"] = n(h);
+            }
+            // Stopped before the cells asked: those cells, and the grid
+            // error of the coarser ones it answers on.
+            if let Some(s) = stopped {
+                r["stopped_before_res"] = n(s.res);
+                if let Some(e) = s.error {
+                    r["grid_error"] = n(e);
+                }
+            }
+            if let Some(e) = estimate {
+                r["estimate"] = json!(e);
+            }
+            if let Some((e, _)) = grid_error {
+                r["grid_error"] = n(*e);
             }
             // What it leaves out: each with its value counted (null:
             // unbounded) and where.

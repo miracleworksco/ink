@@ -396,7 +396,7 @@ impl Analysis<'_> {
             Node::Var(Var::X) => return if self.centre[0] == 0.0 { form(0) } else { Class::Raw },
             Node::Var(Var::Y) => return if self.centre[1] == 0.0 { form(1) } else { Class::Raw },
             Node::Var(v) if Some(v) == self.drive => return Class::Drive,
-            Node::Const(_) | Node::Var(_) | Node::Frame(_) => return Class::Inv(Order::Every),
+            Node::Const(_) | Node::Var(_) | Node::Frame(_) | Node::Within(..) => return Class::Inv(Order::Every),
             Node::Tag(..) | Node::Lipschitz(..) | Node::Deriv(..) | Node::Read(..) | Node::Real(..) => {
                 return self.class[&value_children(node).0[0]].clone();
             }

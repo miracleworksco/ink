@@ -64,7 +64,9 @@ A positive clearance is exact on its distance: a gap under it never
 holds. A claim that shapes are apart, that one contains another or lies
 within a box, or that they touch, allows a violation no deeper than the
 accuracy. A claim is asked once, to its accuracy, so a piece no thicker
-than twice the accuracy can pass as absent.
+than twice the accuracy can pass as absent. A claim stating no accuracy
+is asked to the finest tolerance of the parts it is about, a part
+declaring none counting at the default.
 
 A param can take a range: a tolerance band, or values to search. Over a
 range, a claim holds only where it is shown for every value. An overlap or
@@ -83,8 +85,15 @@ ink-core's interval arithmetic widens them by
 (crates/ink-core/src/interval.rs).
 
 Answers are about each shape as ink builds it: exactly its formula, except
-a `polygon` with arcs, rounds or drafts (one of straight edges is exactly
-its corners). Each simplification in building one (merging nearly straight
+a `polygon` with drafted arcs, or degenerating within its allowance of a
+drafted span's end, or with an arc or round it cannot build exactly. Its
+edges, arcs, rounds and drafted walls are otherwise exact, a circle read
+within bounds on its exact centre and radius (their rounding: near 1e-14
+of the circle, more at a sharp corner), a drafted corner's speed within
+bounds of its rounding, and the height where a drafted profile's
+construction changes within a float step or so: an answer holds for the
+drawn shape, and is unknown where those bounds decide it. Each
+simplification in building one of the exceptions (merging nearly straight
 corners, say) stays within a ten-millionth of its size of the drawn
 corners (10 nm on a 100 mm part), but merges add up.
 
@@ -173,6 +182,10 @@ Every operation defines:
 - a value: an f64, made total (`x / 0` is 0, anything undefined is 0);
 - a range, rounded outward so proofs are sound;
 - a derivative along x, y, z, t and every parameter.
+
+Growing a shape by d (`offset-shape`, std's `shell`) means everything within d
+of it. ink builds that exactly where it shows the field is the distance
+there, and warns elsewhere, saying what bound holds.
 
 `lipschitz` is the one promise, and makes clearance proofs fast. A false
 promise makes proofs wrong, so the language drops any promise a warp or a

@@ -12,9 +12,11 @@
 //! where the field rises along an axis (its partial's bound has one sign):
 //! there every air point slides along that axis, staying in air, to the
 //! cell's face, into the cell across it. Air cells joined by a face share
-//! their air; a sloped cell's air joins the air of the cell its slope leads
-//! to (one at least its size, so its whole face lies in it), and has none
-//! where that chain ends in a cell with none. Each void holds such a group,
+//! their air; a sloped cell's air joins the air of the cells its slope
+//! leads to (the one at least its size its whole face lies in, else the
+//! smaller ones tiling its face, where all land in one group: none lands
+//! in a cell with no air), and has none where those chains end in cells
+//! with none. Each void holds such a group,
 //! so the groups that do not reach the box's edge bound the voids from
 //! above, but for a group whose every cell is thin, which holds no point
 //! deeper than e.
@@ -25,7 +27,7 @@
 //! (an emptiness claim's witness).
 //!
 //! Where the two differ, the cells that keep them apart are halved: a cell
-//! whose slope leads nowhere (round a loop, into smaller cells), one with
+//! whose slope leads nowhere (round a loop, into cells that land apart), one with
 //! no slope, two of different groups that a face joins (more halving finds
 //! the air that joins them, or the airless wall between). A thin cell is
 //! not halved, unless the bounds stay apart with nothing else to halve
@@ -99,7 +101,7 @@ impl Voids {
         }
         let (a, b) = self.undecided.unwrap_or((self.finest, self.finest));
         let sides = if a == b { format!("{a} mm across") } else { format!("{a} to {b} mm across") };
-        let stuck = "flush mouths neither square to an axis nor one face read by both pieces stay undecided at any res: move them apart or overlap them";
+        let stuck = "flush mouths whose pieces read no value in common there (two formulas for one face) stay undecided at any res: write the face once, or move them apart or overlap them";
         let thin = match self.accuracy > 0.0 {
             true => format!(", air no deeper than the accuracy ({} mm) that may lead out of a void, a void about as deep as it", self.accuracy),
             false => String::new(),
@@ -218,7 +220,7 @@ struct Ask {
 impl Ask {
     fn new(whole: &Arc<Tape>, e: f64) -> Ask {
         let all = [I::new(f64::NEG_INFINITY, f64::INFINITY); 3];
-        Ask { whole: whole.clone(), cover: Cover { tol: e, region: all, asked: all, sign: -1.0 } }
+        Ask { whole: whole.clone(), cover: Cover { tol: e, region: all, asked: all, sign: -1.0, read: [true; 3], still: [false; 3] } }
     }
 
     /// Whether every point of box `b` (`t` the field over it) lies within
@@ -244,7 +246,7 @@ impl Ask {
                 self.whole.simplify(&ch)
             })
         };
-        self.cover.covered(t, &grown, &|r: I, _: &Ctx, _: V3| r.all_inside(), ctx, b, side, &pts, &v)
+        self.cover.covered(t, &grown, &|r: I, _: &Ctx, _: [I; 3]| r.all_inside(), ctx, b, side, &pts, &v)
     }
 
     /// Whether air cell `b` holds a point deeper than the accuracy, as an
@@ -448,50 +450,98 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
         p[k] = if s > 0 { p[k] + c.size } else { p[k] - 1 };
         p
     };
-    let next: Vec<Option<usize>> = leaves
+    // The leaves a slope cell's air passes into across the face it rises
+    // toward: the one holding the cell of its size beside it, or the
+    // smaller ones tiling that cell's side on the face (each point of the
+    // face is in one of them); OUTSIDE past the root. None where no leaf
+    // holds part of it.
+    let next: Vec<Option<Vec<usize>>> = leaves
         .par_iter()
-        .map(|l| match l.kind {
-            Kind::Slope(k, s) => match across(l.cell, k, s) {
-                p if p.iter().any(|&x| x < 0 || x >= root.size) => Some(OUTSIDE),
-                p => at_least(p, l.cell.size),
-            },
-            _ => None,
+        .map(|l| {
+            let Kind::Slope(k, s) = l.kind else { return None };
+            let p = across(l.cell, k, s);
+            if p.iter().any(|&x| x < 0 || x >= root.size) {
+                return Some(vec![OUTSIDE]);
+            }
+            if let Some(i) = at_least(p, l.cell.size) {
+                return Some(vec![i]);
+            }
+            let mut beside = l.cell;
+            beside.i[k] += s * l.cell.size;
+            let (mut out, mut cells) = (Vec::new(), vec![beside]);
+            while let Some(c) = cells.pop() {
+                if let Some(&i) = index.get(&(c.i, c.size)) {
+                    out.push(i);
+                    continue;
+                }
+                if c.size == 1 {
+                    return None;
+                }
+                let half = c.size / 2;
+                for o in 0..8i64 {
+                    // The halves on the face: the near side along k.
+                    if (o >> k & 1) != (s < 0) as i64 {
+                        continue;
+                    }
+                    cells.push(Cell { i: std::array::from_fn(|a| c.i[a] + half * (o >> a & 1)), size: half });
+                }
+            }
+            Some(out)
         })
         .collect();
+    // Where each leaf's air lands, following slopes. A slope cell's air,
+    // rising across its face, lands where every leaf it passes into does:
+    // none in an airless one; past a thin one, or into two air cells, it
+    // is open (unknown).
     let mut lands: Vec<Option<Lands>> = leaves.iter().map(|l| (l.kind == Kind::Thin).then_some(Lands::Thin)).collect();
-    let mut path: Vec<usize> = Vec::new();
     let mut on_path = vec![false; n];
+    let join = |acc: Lands, e: Lands| match (acc, e) {
+        (a, Lands::None) => a,
+        (Lands::None, e) => e,
+        (Lands::Group(a), Lands::Group(b)) if a == b => acc,
+        _ => Lands::Open,
+    };
     for i in 0..n {
-        let mut j = i;
-        let end = loop {
-            if let Some(e) = lands[j] {
-                // Air sliding into a thin cell: where it goes is unknown.
-                break if e == Lands::Thin { Lands::Open } else { e };
-            }
-            if on_path[j] {
-                break Lands::Open;
-            }
-            match leaves[j].kind {
-                Kind::Air => break Lands::Group(j),
-                Kind::Airless => break Lands::None,
-                Kind::Open | Kind::Thin => break Lands::Open,
-                Kind::Slope(..) => match next[j] {
-                    Some(OUTSIDE) => break Lands::Group(n),
-                    Some(t) => {
-                        on_path[j] = true;
-                        path.push(j);
-                        j = t;
-                    }
-                    None => break Lands::Open,
-                },
-            }
-        };
-        if lands[j].is_none() && !on_path[j] {
-            lands[j] = Some(end);
+        if lands[i].is_some() {
+            continue;
         }
-        for p in path.drain(..) {
-            on_path[p] = false;
-            lands[p] = Some(end);
+        // Depth first: each cell on the path with the next of its leaves
+        // to follow, and where those followed land so far.
+        let mut path: Vec<(usize, usize, Lands)> = vec![(i, 0, Lands::None)];
+        on_path[i] = true;
+        let mut done: Option<Lands> = None;
+        while let Some(&(j, at, acc)) = path.last() {
+            // The leaf it followed last has landed: joined in, and the
+            // next one is followed.
+            let (at, acc) = match done.take() {
+                Some(e) => (at + 1, join(acc, if e == Lands::Thin { Lands::Open } else { e })),
+                None => (at, acc),
+            };
+            *path.last_mut().unwrap() = (j, at, acc);
+            let end = match (leaves[j].kind, &next[j]) {
+                (Kind::Air, _) => Some(Lands::Group(j)),
+                (Kind::Airless, _) => Some(Lands::None),
+                (Kind::Open | Kind::Thin, _) | (Kind::Slope(..), None) => Some(Lands::Open),
+                (Kind::Slope(..), Some(v)) if acc == Lands::Open || at == v.len() => Some(acc),
+                (Kind::Slope(..), Some(_)) => None,
+            };
+            if let Some(e) = end {
+                path.pop();
+                on_path[j] = false;
+                lands[j] = Some(e);
+                done = Some(e);
+                continue;
+            }
+            let t = next[j].as_ref().unwrap()[at];
+            done = match t {
+                OUTSIDE => Some(Lands::Group(n)),
+                t if on_path[t] => Some(Lands::Open),
+                t => lands[t],
+            };
+            if done.is_none() {
+                path.push((t, 0, Lands::None));
+                on_path[t] = true;
+            }
         }
     }
     // A cell whose air's group is unknown holds no void's deep point where it is

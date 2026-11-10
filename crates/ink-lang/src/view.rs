@@ -117,6 +117,8 @@ pub struct ModelView {
     /// Searches that may replace answers given already, for their caller
     /// to run once every answer is given (motion::Upgrade: interfere).
     pub upgrades: Vec<crate::motion::Upgrade>,
+    /// Fields that read no z are looked at in the plane (`in_plane`).
+    plane: bool,
 }
 
 impl ModelView {
@@ -139,6 +141,7 @@ impl ModelView {
             timeless: HashMap::new(),
             t_param: None,
             upgrades: Vec::new(),
+            plane: false,
         }
     }
 
@@ -149,6 +152,15 @@ impl ModelView {
     /// no length at t (Doc::check_conditions).
     pub fn load_in(registry: &'static Registry, path: &Path, overrides: &[(String, Given)], t: f64) -> Result<ModelView, InkError> {
         let doc = Doc::load_file_in(registry, path, overrides)?;
+        // Stopped at a declared case a text param refuses (Doc::refused):
+        // a view of what was read, for its caller to set aside.
+        if !doc.refused.is_empty() {
+            let overrides = doc.overrides.clone();
+            return Ok(ModelView { path: Some(path.to_path_buf()), overrides, ..ModelView::new(doc, Ctx::new(t, Vec::new())) });
+        }
+        // The values each declared case took (Given::case), as the load
+        // read them.
+        let overrides = &doc.overrides.clone();
         let (ctx, unsolved) = doc.ctx_at(overrides, t)?;
         doc.check_conditions(&ctx, None, &unsolved.iter().map(|u| u.0).collect::<Vec<_>>(), false, None)?;
         zones_bounded(&doc, &ctx)?;
@@ -166,8 +178,8 @@ impl ModelView {
         let mut overrides = self.overrides.clone();
         for (k, g) in changes {
             match overrides.iter_mut().find(|(n, _)| n == k) {
-                Some((_, was)) => *was = Given { value: g.value, unit: g.unit.or(was.unit) },
-                None => overrides.push((k.clone(), *g)),
+                Some((_, was)) => *was = Given { unit: g.unit.or(was.unit), ..g.clone() },
+                None => overrides.push((k.clone(), g.clone())),
             }
         }
         let v = ModelView::load_in(self.doc.registry, path, &overrides, self.ctx.t)?;
@@ -327,6 +339,7 @@ impl ModelView {
         {
             return Err(InkError::msg("a time span needs finite a < b"));
         }
+        self.doc.covers_t(self.ctx.t, span)?;
         if let Some((a, b)) = span
             && !(a <= self.ctx.t && self.ctx.t <= b)
         {
@@ -348,7 +361,7 @@ impl ModelView {
         if let Some(k) = self.t_param {
             return k;
         }
-        self.doc.params.push(crate::Param { name: "t".into(), default: self.ctx.t, tol: None });
+        self.doc.add_param(crate::Param { name: "t".into(), default: self.ctx.t, tol: None });
         let k = self.doc.params.len() - 1;
         if self.ctx.params.len() <= k {
             self.ctx.params.resize(k + 1, f64::NAN);
@@ -366,6 +379,7 @@ impl ModelView {
         if self.ctx.t == t {
             return Ok(());
         }
+        self.doc.covers_t(t, None)?;
         // A solve on t is provided again here, where it is provided at all
         // (one on demand, while something reads it).
         if (0..self.doc.solves.len()).any(|i| self.doc.solves[i].on_t && self.doc.provided_always(i)) {
@@ -516,6 +530,14 @@ impl ModelView {
             }
             if let Some(e) = self.cannot_range(k) {
                 return Err(e);
+            }
+            if let Some(((a, b), site)) = self.doc.covered(k)
+                && !(a <= lo && hi <= b)
+            {
+                return Err(InkError {
+                    hint: Some(format!("range it within {a}..{b}, or widen its band where it is declared")),
+                    ..InkError::msg(format!("'{}' is ranged over {lo}..{hi}, beyond {a}..{b}, the band a box found at load at {site} holds over", self.doc.params[k].name))
+                });
             }
         }
         let mut ctx = Ctx { p_spans: ink_core::eval::ParamSpans::new(spans.iter().map(|&(k, s)| (k as u32, s))), ..self.ctx.clone() };
@@ -674,6 +696,14 @@ impl ModelView {
         Ok(measured)
     }
 
+    /// The cells shape metric `m` is measured on at `res`, where it is a
+    /// grid's estimate (Package::shape_res), nothing measured.
+    pub fn shape_res(&mut self, m: &FormMetric, res: Option<f64>) -> Option<f64> {
+        let f = m.shape?;
+        let p = self.doc.registry.packages.iter().find(|p| p.name() == m.package).expect("a metric's package");
+        p.shape_res(self, m.metric, f, res)
+    }
+
     /// Where analysis of field `f` looks: a box holding all of its
     /// material, or the window (see Doc::reach).
     pub fn reach(&mut self, f: u32) -> Reach {
@@ -681,9 +711,48 @@ impl ModelView {
         if let Some(r) = self.reaches.get(&key) {
             return *r;
         }
-        let r = self.doc.reach(f, &self.ctx);
+        let r = match self.slab(f) {
+            Some(s) => crate::plane_reach(&self.doc.g, self.doc.domain(), s, &self.ctx),
+            None => self.doc.reach(f, &self.ctx),
+        };
         self.reaches.insert(key, r);
         r
+    }
+
+    /// Whether field `f` is looked at in the plane: it reads no z, and the
+    /// view asks in the plane (`in_plane`).
+    fn flat(&self, f: u32) -> bool {
+        self.plane && !self.doc.g.value_depends_on(f, |v| v == Var::Z)
+    }
+
+    /// Where `f` is looked at in the plane (`flat`), f between z = -1 and
+    /// 1, whose extent in x and y is f's.
+    fn slab(&mut self, f: u32) -> Option<u32> {
+        if !self.flat(f) {
+            return None;
+        }
+        let g = &mut self.doc.g;
+        let (z, one) = (g.var(Var::Z), g.constant(1.0));
+        let z = g.un(ink_core::graph::UnOp::Abs, z);
+        let z = g.sub(z, one);
+        Some(g.max(f, z))
+    }
+
+    /// `run` with each field that reads no z (a 2D profile, the same at
+    /// every height) looked at in the plane: its reach its extent in x and
+    /// y, every z (crate::plane_reach), whole where that extent is. What
+    /// `run` finds is forgotten after, the view's caches back as they were.
+    /// For a question asked the same at every height, of such fields alone.
+    pub fn in_plane<R>(&mut self, run: impl FnOnce(&mut Self) -> R) -> R {
+        let take = |v: &mut Self| {
+            (std::mem::take(&mut v.reaches), std::mem::take(&mut v.boxes), std::mem::take(&mut v.tapes), std::mem::take(&mut v.found), std::mem::take(&mut v.outcomes))
+        };
+        let kept = take(self);
+        self.plane = true;
+        let out = run(self);
+        self.plane = false;
+        (self.reaches, self.boxes, self.tapes, self.found, self.outcomes) = kept;
+        out
     }
 
     /// `reach` of each of `fs`, found at once, in parallel.
@@ -693,8 +762,16 @@ impl ModelView {
         let mut todo: Vec<(u32, Scope)> = keys.into_iter().filter(|k| !self.reaches.contains_key(k)).collect();
         todo.sort_unstable_by_key(|k| k.0);
         todo.dedup_by_key(|k| k.0);
+        let slabs: Vec<Option<u32>> = todo.iter().map(|k| self.slab(k.0)).collect();
         let (g, window, ctx) = (&self.doc.g, self.doc.domain(), &self.ctx);
-        let found: Vec<Reach> = todo.par_iter().map(|k| crate::reach_in(g, window, k.0, ctx)).collect();
+        let found: Vec<Reach> = todo
+            .par_iter()
+            .zip(slabs)
+            .map(|(k, slab)| match slab {
+                Some(s) => crate::plane_reach(g, window, s, ctx),
+                None => crate::reach_in(g, window, k.0, ctx),
+            })
+            .collect();
         self.reaches.extend(todo.into_iter().zip(found));
     }
 
@@ -786,10 +863,17 @@ impl ModelView {
             return t.clone();
         }
         let r = self.reach(f);
-        let c = self.doc.clip(f, r.lo, r.hi);
+        let c = self.clip_to(f, r);
         let t = Arc::new(Tape::new(&self.doc.g, c));
         self.tapes.insert(key, t.clone());
         t
+    }
+
+    /// `f` clipped to reach `r`: in x and y alone where it is looked at in
+    /// the plane (crate::plane_reach).
+    fn clip_to(&mut self, f: u32, r: Reach) -> u32 {
+        let z = if self.flat(f) { (f64::NEG_INFINITY, f64::INFINITY) } else { (r.lo[2], r.hi[2]) };
+        self.doc.clip(f, [r.lo[0], r.lo[1], z.0], [r.hi[0], r.hi[1], z.1])
     }
 
     /// Proven bounds of a field (None: empty); of the part in the window if
@@ -835,8 +919,9 @@ impl ModelView {
         let opts = self.proof_options(res, tol);
         let Some(except) = except else { return self.prove_with(f, &opts) };
         let (a, b) = except;
-        let Reach { lo, hi, whole } = self.reach(crate::claims::subset_reach(a, b));
-        let clip = self.doc.clip(f, lo, hi);
+        let r = self.reach(crate::claims::subset_reach(a, b));
+        let clip = self.clip_to(f, r);
+        let Reach { lo, hi, whole } = r;
         let tape = Arc::new(Tape::new(&self.doc.g, clip));
         let e = ink_kernel::query::Except { a: self.clipped(a), b: Arc::new(Tape::new(&self.doc.g, b)) };
         (ranged::prove_except(&tape, Some(&e), &self.ctx, lo, hi, &opts), whole)
@@ -976,25 +1061,52 @@ impl ModelView {
         (det.lo > 0.0 && self.whole(shape)).then_some(Local { shape, at, det, slack, err })
     }
 
-    /// Wall thickness of a field by rays at surface samples (see
-    /// feature::thickness: point, normal, area, thickness; at least one),
-    /// and their spacing. None: the field is empty. Err(spacing): no sample
-    /// fell on its surface (UNSAMPLED), so nothing was measured.
-    pub fn thickness(&mut self, f: u32, res: Option<f64>) -> Option<Result<(Vec<(V3, V3, f64, f64)>, f64), f64>> {
-        let (lo, hi, _) = self.bounds(f)?;
+    /// The thinnest wall of a field by rays at surface samples
+    /// (feature::thickness): where it is and how thick, and the samples'
+    /// spacing; a kernel answer, cached. None: the field is empty.
+    /// Err(spacing, why): nothing was measured, as no sample fell on its
+    /// surface (UNSAMPLED) or the call's time limit stopped its rays
+    /// (STOPPED). Looked at in the plane (`in_plane`), its walls are
+    /// sampled at z = 0, as at every height.
+    pub fn thickness(&mut self, f: u32, res: Option<f64>) -> Option<Result<(V3, f64, f64), (f64, &'static str)>> {
+        let (lo, hi, cells) = self.thickness_grid(f, res)?;
         let tape = self.clipped(f);
-        let cells = res.map_or(128.0, |h| max_extent(lo, hi) / h);
-        let (samples, h) = (ink_kernel::feature::thickness(&tape, &self.ctx, lo, hi, cells), max_extent(lo, hi) / cells);
-        // Not cached: the claim reading it is computed.
-        ink_kernel::cache::computed();
-        Some(if samples.is_empty() { Err(h) } else { Ok((samples, h)) })
+        let thinnest: Result<Option<(V3, f64)>, ink_kernel::stop::Stopped> =
+            ink_kernel::cache::memo_region("thickness", &[&tape], &self.ctx, (lo, hi), |fp| _ = fp.f64(cells), |c| ink_kernel::feature::thickness(&tape, c, lo, hi, cells));
+        let h = max_extent(lo, hi) / cells;
+        Some(match thinnest {
+            Ok(Some((at, t))) => Ok((at, t, h)),
+            Ok(None) => Err((h, UNSAMPLED)),
+            Err(_) => Err((h, STOPPED)),
+        })
+    }
+
+    /// The spacing of `thickness`'s samples at `res`, nothing measured.
+    /// None: the field is empty.
+    pub fn thickness_res(&mut self, f: u32, res: Option<f64>) -> Option<f64> {
+        let (lo, hi, cells) = self.thickness_grid(f, res)?;
+        Some(max_extent(lo, hi) / cells)
+    }
+
+    /// Where `thickness` samples and how many cells across.
+    fn thickness_grid(&mut self, f: u32, res: Option<f64>) -> Option<(V3, V3, f64)> {
+        let (mut lo, mut hi, _) = self.bounds(f)?;
+        if self.flat(f) {
+            (lo[2], hi[2]) = (0.0, 0.0);
+        }
+        Some((lo, hi, res.map_or(128.0, |h| max_extent(lo, hi) / h)))
     }
 
     /// A field's enclosed voids, by proof (voids::voids), to `accuracy` (a
     /// void holds a point deeper than it): its cells halved down to `res`, else to
     /// its box's longest side / COMPONENT_CELLS. None: the field is empty.
     /// More than COMPONENT_CELLS across at `res` is an error.
+    /// Looked at in the plane (`in_plane`), a field has none: its air goes
+    /// on along z.
     pub fn voids(&mut self, f: u32, res: Option<f64>, accuracy: f64) -> Result<Option<ink_kernel::voids::Voids>, InkError> {
+        if self.flat(f) {
+            return Ok(None);
+        }
         let Some((lo, hi, _)) = self.bounds(f) else { return Ok(None) };
         let ext = max_extent(lo, hi);
         if let Some(h) = res
@@ -1031,7 +1143,7 @@ impl ModelView {
         let checked = |h: f64| {
             let (mut at, mut limit) = (h, limit);
             loop {
-                if let Some((m, mut u)) = ink_kernel::mesh::mesh_checked(&tape, &self.ctx, lo, hi, at, limit) {
+                if let Some((m, mut u)) = ink_kernel::mesh::mesh_checked(&tape, &self.ctx, lo, hi, at, limit, 0.0) {
                     if at > h {
                         u.refused = h;
                     }
@@ -1062,7 +1174,8 @@ impl ModelView {
         let found = self.per_body("mass", shape, rho.as_slice(), res, |v| {
             let (lo, hi, _) = v.bounds(shape)?;
             let rho = rho.map(|f| Tape::new(&v.doc.g, f));
-            Some(ink_kernel::query::measured(&v.clipped(shape), &[rho.as_ref(), None], true, &v.ctx, lo, hi, res))
+            let until = res.map_or(ink_kernel::query::Until::Accuracy(ink_kernel::query::ACCURACY), ink_kernel::query::Until::Res);
+            Some(ink_kernel::query::measured(&v.clipped(shape), &[rho.as_ref(), None], true, &v.ctx, lo, hi, until))
         });
         (*found).clone()
     }
@@ -1136,6 +1249,10 @@ pub const RIGID: f64 = 1e-9;
 /// on it (`ModelView::thickness`).
 pub const UNSAMPLED: &str =
     "no surface sample fell on it at this spacing. Its walls or pieces are thinner than about the spacing, so nothing was measured. A finer res samples them";
+
+/// Why a value was not measured where the call's time limit stopped it
+/// (ink_kernel::stop).
+pub const STOPPED: &str = "the call's time limit passed before it was measured";
 
 /// Bound on |(R^T R)^-1 - I| for a placement's numbers R (as
 /// TurnBounds::slack bounds it for its entries in real numbers), in floats:
