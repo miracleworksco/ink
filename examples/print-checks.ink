@@ -8,8 +8,7 @@
 ; out 5 mm on a 40-degree chamfer. Nothing needs support or a bridge. Each
 ; failing control changes one thing: a round hole (its crown faces straight
 ; down), a shelf with a flat underside, a 0.5 mm fin, and a print-in-place
-; hinge pin 0.3 mm from its knuckle. Bridges are not checked: a bridge
-; reads as an overhang.
+; hinge pin 0.3 mm from its knuckle. Bridges are checked apart, below.
 ;
 ; By hand: each roof is two planes 50 degrees from horizontal, tangent to
 ; the hole or rising from the window's corners, so 40 degrees past
@@ -85,3 +84,78 @@
 (def bar (max (extrude-x (- (segment-distance-at here2 (vec 0 -5) (vec -20 30)) 3) -20 20) (neg z)))
 (body bar (shape bar) (attr material "petg"))
 (assert bar-overhangs (empty (overhangs bar 0 limit step)))
+
+; A cable tunnel: a block with a channel through it along y, 8 mm wide,
+; its flat roof a bridge from wall to wall. FDM bridges 10 mm (docs/IR.md,
+; Manufacturing checks); walls under 0.8 mm fail the walls check, so the
+; bridge check reads the run for walls at steps of 0.8. The roof fails as
+; an overhang and holds as a bridge. Each failing control changes one
+; thing: a channel 14 mm wide; the roof cut back 4 mm from one wall, a
+; cantilever with walls 8 mm apart either side; the roof split by a 0.3 mm
+; slit, two cantilevers that nearly meet; and the guide's flat shelf, with
+; a wall on one side only.
+(param span 10)            ; the longest bridge, mm
+(fn tunnel (w) (subtract (move (box (+ w 8) 12 8) 0 0 4) (move (box w 20 5) 0 0 2.5)))
+(def bridged (tunnel 8))
+(def wide (tunnel 14))
+(def cut-back (subtract bridged (move (box 4 20 4) 2 0 7)))
+(def split (subtract bridged (move (box 0.3 20 4) 1 0 7)))
+(body tunnel (shape bridged) (attr material "petg"))
+(body tunnel-wide (shape wide) (attr material "petg"))
+(body tunnel-cut-back (shape cut-back) (attr material "petg"))
+(body tunnel-split (shape split) (attr material "petg"))
+; expect-status: tunnel-overhangs fails
+(assert tunnel-overhangs (empty (overhangs bridged 0 limit step)))
+(assert tunnel-bridged (empty (unbridged bridged 0 limit step span 0.8)))
+; expect-status: wide-tunnel-bridged fails
+(assert wide-tunnel-bridged (empty (unbridged wide 0 limit step span 0.8)))
+; expect-status: cut-back-tunnel-bridged fails
+(assert cut-back-tunnel-bridged (empty (unbridged cut-back 0 limit step span 0.8)))
+; expect-status: split-tunnel-bridged fails
+(assert split-tunnel-bridged (empty (unbridged split 0 limit step span 0.8)))
+; The roof cut by a slit 2 mm wide where the field reads 0, not above it:
+; air all the same (a shape is where its field is below 0), so it fails.
+(def zero-slit (max bridged (min 0 (- 1 (abs x)))))
+(body tunnel-zero-slit (shape zero-slit) (attr material "petg"))
+; expect-status: zero-slit-tunnel-bridged fails
+(assert zero-slit-tunnel-bridged (empty (unbridged zero-slit 0 limit step span 0.8)))
+; expect-status: flat-shelf-bridged fails
+(assert flat-shelf-bridged (empty (unbridged flat 0 limit step span 0.8)))
+(assert guide-bridged (empty (unbridged ok 0 limit step span 0.8)))
+
+; Posts 2 mm thick and 8 mm apart under 0.8 mm roofs. A roof split by a
+; 0.4 mm slit under a sound roof 0.2 mm above it fails: the lower roof's
+; own bridge is broken. The sound roof alone holds. A roof on posts
+; stopping 0.2 mm under it fails: no post touches it.
+(def posts (min (move (box 2 12 7) -5 0 3.5) (move (box 2 12 7) 5 0 3.5)))
+(def slit-roof (subtract (move (box 12 12 0.8) 0 0 5.4) (move (box 0.4 20 2) 0 0 5.4)))
+(def top-roof (move (box 12 12 0.8) 0 0 6.4))
+(def covered (min posts slit-roof top-roof))
+(def roofed (min posts top-roof))
+(def floating (min (move (box 2 12 4.8) -5 0 2.4) (move (box 2 12 4.8) 5 0 2.4) (move (box 12 12 0.8) 0 0 5.4)))
+(body covered-slit (shape covered) (attr material "petg"))
+(body roofed (shape roofed) (attr material "petg"))
+(body floating-roof (shape floating) (attr material "petg"))
+; expect-status: covered-slit-bridged fails
+(assert covered-slit-bridged (empty (unbridged covered 0 limit step span 0.8)))
+(assert roofed-bridged (empty (unbridged roofed 0 limit step span 0.8)))
+; expect-status: floating-roof-bridged fails
+(assert floating-roof-bridged (empty (unbridged floating 0 limit step span 0.8)))
+
+; A ceiling over a gap is a bridge however close what is under it, once
+; the gap is wider than 0.3 mm, where a support's two points stop reading
+; it as contact: a slot 20 mm wide and 0.4 mm tall through a block, a 30
+; mm plate 0.5 mm over a base (a print-in-place lid), and a recess 20 mm
+; wide and 0.5 mm deep in an underside on the bed all fail at 10 mm.
+(def slot (subtract (move (box 28 12 8) 0 0 4) (move (box 20 20 0.4) 0 0 4)))
+(def lid (subtract (move (box 40 10 6) 0 0 3) (move (box 30 20 0.5) 0 0 3.25)))
+(def recess (subtract (move (box 28 12 6) 0 0 3) (move (box 20 20 1) 0 0 0)))
+(body slot (shape slot) (attr material "petg"))
+(body lid (shape lid) (attr material "petg"))
+(body recess (shape recess) (attr material "petg"))
+; expect-status: slot-bridged fails
+(assert slot-bridged (empty (unbridged slot 0 limit step span 0.8)))
+; expect-status: lid-bridged fails
+(assert lid-bridged (empty (unbridged lid 0 limit step span 0.8)))
+; expect-status: recess-bridged fails
+(assert recess-bridged (empty (unbridged recess 0 limit step span 0.8)))

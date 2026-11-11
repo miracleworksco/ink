@@ -505,7 +505,8 @@ mod tests {
     /// An unknown clearance's attained accuracy as it is printed: over all
     /// of the shapes, `accuracy_attained`; examined only in the window,
     /// `accuracy_attained_in_window`; on inexact inputs (a solved value),
-    /// none.
+    /// none. Two tiny cubes turned 45 degrees about z, corner to corner
+    /// 3.52 apart, each field reading 2.5 at the other: 3.5 is unknown.
     #[test]
     fn an_attained_accuracy_is_printed_with_its_scope() {
         for (unbounded, inexact) in [(false, false), (true, false), (false, true)] {
@@ -513,10 +514,10 @@ mod tests {
             let solve = if inexact { "(solve s (unknowns (u 1)) (== (* 1e-13 u) 0))" } else { "(param u 1)" };
             let src = format!(
                 "{solve}
-(fn tiny (cx cy) (max (- (abs (- x cx)) .005) (- (abs (- y cy)) .005) (- (abs (- z .345)) .005)))
+(fn tiny (cx cy) (max (- (abs (* (+ (- x cx) (- y cy)) .7071067811865476)) .005) (- (abs (* (- (- x cx) (- y cy)) .7071067811865476)) .005) (- (abs (- z .345)) .005)))
 (fn ball (cx) (- (sqrt (+ (square (- x cx)) (square y) (square z))) 1))
 (def a (min (tiny .123 .234) (ball 50) {tail}))
-(def b (min (tiny 3.133 3.244) (ball (+ 59 (* 1e-6 u))) {tail}))"
+(def b (min (tiny 3.657 .234) (ball (+ 59 (* 1e-6 u))) {tail}))"
             );
             let doc = ink::load_str(&src, "attained", Path::new(".")).unwrap();
             let field = |name: &str| match doc.def(name).unwrap() {

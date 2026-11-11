@@ -233,7 +233,9 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
                     let holds = attained_fields(&mut r, c.attained(), "no pair of points is closer than the clearance less that") + &hunt_fields(&mut r, *hunt);
                     let near = "the gap is too close to the clearance to decide, or the shapes' bounds cannot separate them";
                     let smaller = "If the fit allows, claim a slightly smaller clearance: coarser cells decide it";
-                    let finest = up((*cell).map_or(*res, |[lo, hi]| ink_kernel::query::max_extent(lo, hi)));
+                    // The stuck cell's narrowest side: a cell of an
+                    // extrusion is never halved along its span.
+                    let finest = up((*cell).map_or(*res, |[lo, hi]| (0..3).map(|k| hi[k] - lo[k]).fold(f64::INFINITY, f64::min)));
                     r["hint"] = json!(match ended {
                         Ended::Limit => format!(
                             "The proof stopped at the search's limit of {} boxes, or would have passed four times that at its rate. On the cells it reached, {near}{holds}. {smaller}{}",
@@ -297,6 +299,10 @@ pub fn check_json(c: &Check, all: &[String]) -> J {
             }
             if let Some(at) = v.at {
                 r["at"] = v3(at);
+            }
+            if let Some(b) = &v.band {
+                r["band"] = json!({"low": n(b.low), "high": n(b.high), "dominant": b.dominant(),
+                    "half_widths": b.parts.iter().map(|(k, w)| (k.clone(), n(*w))).collect::<serde_json::Map<_, _>>(), "basis": b.basis});
             }
             if !form.is_empty() {
                 r[*head] = json!(form);

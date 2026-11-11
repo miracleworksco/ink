@@ -75,4 +75,42 @@ impl B {
         let (a, b, d) = (self.slab(x, c[0], h[0]), self.slab(y, c[1], h[1]), self.slab(z, c[2], h[2]));
         self.max3(a, b, d)
     }
+    /// std's (thread-iso d p) about the frame `at` (x', y', z'), as std
+    /// writes it: an ISO thread, right-hand about z', in its phase.
+    pub fn thread_iso(&mut self, at: [NodeId; 3], d: f64, p: f64) -> NodeId {
+        let (xx, yy) = (self.un(UnOp::Square, at[0]), self.un(UnOp::Square, at[1]));
+        let rr = self.bin(BinOp::Add, xx, yy);
+        let r = self.un(UnOp::Sqrt, rr);
+        let (major, minor) = (self.c(0.5 * d), self.c(0.5 * d - 0.5412659 * p));
+        let a = self.bin(BinOp::Atan2, at[1], at[0]);
+        let deg = self.un(UnOp::Deg, a);
+        let c360 = self.c(360.0);
+        let turns = self.bin(BinOp::Div, deg, c360);
+        let pc = self.c(p);
+        let along = self.bin(BinOp::Div, at[2], pc);
+        let q = self.bin(BinOp::Sub, turns, along);
+        let fl = self.un(UnOp::Floor, q);
+        let fr = self.bin(BinOp::Sub, q, fl);
+        let half = self.c(0.5);
+        let off = self.bin(BinOp::Sub, fr, half);
+        let off = self.un(UnOp::Abs, off);
+        let crest = self.bin(BinOp::Mul, pc, off);
+        let nr = self.un(UnOp::Neg, r);
+        let zero = self.c(0.0);
+        let w = self.0.select(nr, crest, zero);
+        let (to_minor, to_major) = (self.bin(BinOp::Sub, r, minor), self.bin(BinOp::Sub, r, major));
+        let flank = {
+            let h = self.bin(BinOp::Mul, half, to_minor);
+            let k = self.c(0.375 * p);
+            let wk = self.bin(BinOp::Sub, w, k);
+            let s = self.c(0.8660254);
+            let sw = self.bin(BinOp::Mul, s, wk);
+            self.bin(BinOp::Add, h, sw)
+        };
+        let outer = self.bin(BinOp::Max, to_major, flank);
+        let f = self.bin(BinOp::Min, outer, to_minor);
+        let flank_r = 0.5 * d - 0.5412659 * p - 0.65 * p;
+        let k = self.c((1.0 + 0.75 * (p / (2.0 * std::f64::consts::PI * flank_r)).powi(2)).sqrt());
+        self.0.lipschitz(f, k)
+    }
 }

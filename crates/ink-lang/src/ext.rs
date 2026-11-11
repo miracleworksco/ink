@@ -350,6 +350,14 @@ pub trait Outcome {
     fn samples(&self, _result: &str) -> Option<Samples> {
         None
     }
+    /// Why no claim is decided on one of its results, if none is: the
+    /// form measures its answers' error as a band (over placements of its
+    /// grid, say) and has not measured one for this result. A claim that
+    /// reads it is unknown, saying this, as a claim on a metric whose band
+    /// is not measured is (`grid::Source::undecided`).
+    fn undecided(&self, _result: &str) -> Option<String> {
+        None
+    }
     /// One of its results as a field's data (`study-field`): by default its
     /// samples carried a few cells past where they end, 0 beyond
     /// (`sampled_result`).
@@ -445,6 +453,31 @@ pub struct Measured {
     /// How a proven value held to its accuracy (a void count: outright,
     /// or with the thin air it set aside). None: not to one.
     pub held: Option<crate::claims::Held>,
+    /// Where the value may lie, as the package measured it (`Band`), if it
+    /// measured that: a claim on it holds only where it holds at both ends,
+    /// and fails only where it fails at both.
+    pub band: Option<Band>,
+}
+
+/// A measured value's band: where the package measured it may lie (an
+/// estimate, never a bound: a flow run at several placements of its cells
+/// and at twice their size), and the parts it is made of, each a
+/// half-width, the largest the one that dominates.
+#[derive(Clone, Debug)]
+pub struct Band {
+    pub low: f64,
+    pub high: f64,
+    /// (part, half-width): what it rests on ("placement", "grid").
+    pub parts: Vec<(String, f64)>,
+    /// How it was measured, in words.
+    pub basis: String,
+}
+
+impl Band {
+    /// The part with the largest half-width.
+    pub fn dominant(&self) -> Option<&str> {
+        self.parts.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|p| p.0.as_str())
+    }
 }
 
 /// A value a metric leaves out (`Measured::excluded`).
@@ -461,6 +494,11 @@ pub struct Excluded {
     pub what: String,
     /// How to decide a claim it leaves undecided.
     pub decide: String,
+    /// Whether its value grows without bound as the cells shrink (the
+    /// stress where a rigid hold ends): it has no grid error to carry, and
+    /// is counted as read. Else it is counted with its grid error on the
+    /// value's grids (`claims::Ladder::excluded_error`).
+    pub singular: bool,
 }
 
 /// A metric's exact derivative through the shape (Hadamard's formula):

@@ -9,14 +9,16 @@
 //!
 //! An octree of interval bounds sorts space into cells with no air (f < 0
 //! over the cell), cells all air (f >= 0), and cells the surface crosses
-//! where the field rises along an axis (its partial's bound has one sign):
-//! there every air point slides along that axis, staying in air, to the
-//! cell's face, into the cell across it. Air cells joined by a face share
-//! their air; a sloped cell's air joins the air of the cells its slope
-//! leads to (the one at least its size its whole face lies in, else the
-//! smaller ones tiling its face, where all land in one group: none lands
-//! in a cell with no air), and has none where those chains end in cells
-//! with none. Each void holds such a group,
+//! whose air slides, staying air, out through faces (`slope`): along an
+//! axis the field rises along (its partial's bound has one sign), else,
+//! where the field is a max of terms (a cut, an intersection), each term's
+//! air along a direction that term keeps it along, shown by the bounds of
+//! the terms under it (a min's and a max's each), not their hull. Air cells
+//! joined by a face share their air; a sloped cell's air lands where the
+//! cells it slides into land (the one at least its size each face lies in,
+//! else the smaller ones tiling it): none in a cell with no air, each point
+//! in one of their groups where they land in several (the cell is in
+//! theirs once they come to be one). Each void holds such a group,
 //! so the groups that do not reach the box's edge bound the voids from
 //! above, but for a group whose every cell is thin, which holds no point
 //! deeper than e.
@@ -27,12 +29,15 @@
 //! (an emptiness claim's witness).
 //!
 //! Where the two differ, the cells that keep them apart are halved: a cell
-//! whose slope leads nowhere (round a loop, into cells that land apart), one with
-//! no slope, two of different groups that a face joins (more halving finds
-//! the air that joins them, or the airless wall between). A thin cell is
-//! not halved, unless the bounds stay apart with nothing else to halve
-//! (thin air that may lead out of a void, or join two): then to the finest
-//! cells. A wall thinner than the cells is found where halving reaches it:
+//! whose slope leads nowhere (round a loop, past a thin cell), one with
+//! no slope, one landing in several groups, two of different groups that a
+//! face joins (more halving finds the air that joins them, or the airless
+//! wall between). A thin cell is not halved, unless the bounds stay apart
+//! with nothing else to halve (thin air that may lead out of a void, or
+//! join two): then those on a shortest way from each group that may be a
+//! void to another group or the outside (one way out decides it), else
+//! every thin cell, to the finest cells. A wall thinner than the cells is
+//! found where halving reaches it:
 //! no sample decides. The halving is the one search's (crate::search):
 //! each pass searches the cells to halve, settling a cell its bounds sort
 //! and setting aside one at the finest cells, under one budget of cells
@@ -44,9 +49,10 @@ use crate::octree::{Cell, Grid};
 use crate::query::{Cover, Ended, box_samples};
 use crate::search::{BATCH, Node, Outcome, Precision, Search, Smear, Test};
 use ink_core::V3;
-use ink_core::eval::{Ctx, eval_interval, eval_interval_grad, eval_points};
-use ink_core::interval::{I, norm};
-use ink_core::tape::{BOTH, Tape};
+use ink_core::eval::{Ctx, eval_interval, eval_interval_grad, eval_interval_grad_every, eval_points};
+use ink_core::graph::{BinOp, UnOp};
+use ink_core::interval::{self, I, norm};
+use ink_core::tape::{BOTH, Op, Tape};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -132,8 +138,9 @@ enum Kind {
     Airless,
     /// All air: f >= 0.
     Air,
-    /// f does not fall along axis .0 in direction .1 (+1 or -1).
-    Slope(usize, i64),
+    /// Its air slides, staying air, along the directions set: bit 2k + 1
+    /// along axis k upward, 2k downward (`slope`).
+    Slope(u8),
     /// None of these, every point within the accuracy of a point shown not
     /// air (Ask::thin).
     Thin,
@@ -197,12 +204,14 @@ impl Leaf {
 /// settles (not under a thin cell halved).
 type State = (Arc<Tape>, bool);
 
-/// Where a cell's air is: in the group of air cell .0, none, unknown,
-/// unknown but no deeper than the accuracy, or, where deeper, in the groups
-/// of the cells beside it (`count`).
+/// Where a cell's air is: in the group of air cell .0, each point in one
+/// of the groups of a set of air cells (`count`'s sets, by index), none,
+/// unknown, unknown but no deeper than the accuracy, or, where deeper, in
+/// the groups of the cells beside it (`count`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Lands {
     Group(usize),
+    Groups(usize),
     None,
     Open,
     Thin,
@@ -367,7 +376,7 @@ fn sort(n: &Node<State>, grid: &Grid, ask: &Ask) -> (Test<State, ()>, Option<Lea
     if r.none_inside() {
         return leaf(Kind::Air);
     }
-    let sub = if ch.iter().any(|&x| x != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
+    let sub = tape.narrowed(&ch);
     if let Some(k) = by_signs(&sub, &n.ctx, b) {
         return leaf(k);
     }
@@ -390,17 +399,102 @@ fn by_signs(tape: &Tape, ctx: &ink_core::eval::Ctx, b: [I; 3]) -> Option<Kind> {
     ink_core::sign::holds_by_cuts(tape, ctx, b, &|r: I| r.none_inside()).then_some(Kind::Air)
 }
 
-/// The axis and direction the field surely does not fall along over box
-/// `b`: its steepest such, at least somewhere (not along an edge it is
-/// flat along), then the one rising, so two cells flat along an axis do
-/// not lead into each other.
+/// The faces the field's air slides out through over box `b`, staying air
+/// (bits as Kind::Slope's): along the axis the field surely does not fall
+/// along, else, where the field is a max of terms (a cut, an intersection:
+/// its air is theirs together), along a direction for each term with air
+/// in the box (`keeps`), out through the faces it points to.
 fn slope(t: &Tape, ctx: &Ctx, b: [I; 3]) -> Option<Kind> {
-    let g = eval_interval_grad(t, ctx, b);
+    // An axis the field rises along somewhere and falls along nowhere, else
+    // a direction for each term that rises along it somewhere, else an axis
+    // the field is flat along, else a direction for each term.
+    let flat = match rising(&eval_interval_grad(t, ctx, b)) {
+        Some((d, true)) => return Some(Kind::Slope(d)),
+        d => d.map(|d| d.0),
+    };
+    let every = eval_interval_grad_every(t, ctx, b);
+    let (mut ways, mut rises, mut terms) = (0u8, true, vec![(t.ssa.len() - 1, 1.0)]);
+    while let Some((i, s)) = terms.pop() {
+        let ins = t.ssa[i];
+        match ins.op {
+            Op::Bin(BinOp::Max | BinOp::Emax) if s > 0.0 => terms.extend([(ins.a as usize, s), (ins.b as usize, s)]),
+            Op::Bin(BinOp::Min) if s < 0.0 => terms.extend([(ins.a as usize, s), (ins.b as usize, s)]),
+            Op::Un(UnOp::Neg) => terms.push((ins.a as usize, -s)),
+            Op::Tag(_) => terms.push((ins.a as usize, s)),
+            // No air from this term in the box.
+            _ if (if s > 0.0 { every[i].v.hi < 0.0 } else { every[i].v.lo > 0.0 }) => {}
+            _ => {
+                // The axes, steepest by the term's bounds first, as `rising`
+                // orders them (one face to slide out through), then its own
+                // mean gradient.
+                let g = &every[i];
+                let mid: V3 = std::array::from_fn(|k| s * 0.5 * (g.d[k].lo + g.d[k].hi));
+                let len = norm(mid);
+                let axes = (0..6).map(|w| std::array::from_fn(|k| if k == w / 2 { if w % 2 == 1 { 1.0 } else { -1.0 } } else { 0.0 }));
+                let mut along: Vec<(I, V3)> =
+                    axes.chain((len.is_finite() && len > 0.0).then(|| mid.map(|x| x / len))).map(|d: V3| (falls(g, s, d), d)).filter(|x| x.0.lo >= 0.0).collect();
+                let axis = |d: &V3| d.iter().filter(|&&x| x != 0.0).count() == 1;
+                along.sort_by(|a, b| {
+                    axis(&b.1).cmp(&axis(&a.1)).then(b.0.lo.total_cmp(&a.0.lo)).then(b.0.hi.total_cmp(&a.0.hi)).then(b.1.iter().sum::<f64>().total_cmp(&a.1.iter().sum::<f64>()))
+                });
+                let Some(&(r, d)) = along.iter().find(|&&(_, d)| keeps(t, &every, i, s, d)) else {
+                    return flat.map(Kind::Slope);
+                };
+                rises &= r.lo > 0.0;
+                (0..3).filter(|&k| d[k] != 0.0).for_each(|k| ways |= 1 << (2 * k + (d[k] > 0.0) as usize));
+            }
+        }
+    }
+    match flat {
+        Some(d) if !rises || ways == 0 => Some(Kind::Slope(d)),
+        _ => (ways != 0).then_some(Kind::Slope(ways)),
+    }
+}
+
+/// Bounds on how value `g` read with sign `s` changes along `d`.
+fn falls(g: &ink_core::interval::G, s: f64, d: V3) -> I {
+    (0..3).fold(I::point(0.0), |acc, k| interval::bin(BinOp::Add, acc, interval::bin(BinOp::Mul, I::point(s * d[k]), g.d[k]).0).0)
+}
+
+/// Whether, over the box, every point where value `i` of `t` read with
+/// sign `s` (-1: negated) is at least 0 stays so moved along `d` within
+/// it: each term of a min or max (an emax's as its max's) keeps its own
+/// such points, as then their max or min does; any other value is of one
+/// sign over the box, or does not fall along d (its gradient bounds, in
+/// `every`).
+fn keeps(t: &Tape, every: &[ink_core::interval::G], i: usize, s: f64, d: V3) -> bool {
+    let mut stack = vec![(i, s)];
+    while let Some((i, s)) = stack.pop() {
+        let ins = t.ssa[i];
+        match ins.op {
+            Op::Bin(BinOp::Max | BinOp::Min | BinOp::Emax) => stack.extend([(ins.a as usize, s), (ins.b as usize, s)]),
+            Op::Un(UnOp::Neg) => stack.push((ins.a as usize, -s)),
+            Op::Tag(_) => stack.push((ins.a as usize, s)),
+            _ => {
+                let g = &every[i];
+                let kept = if s > 0.0 { g.v.lo >= 0.0 } else { g.v.hi <= 0.0 };
+                if kept {
+                    continue;
+                }
+                if !(falls(g, s, d).lo >= 0.0) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The direction (a bit of Kind::Slope's) a value with bounds `g` surely
+/// does not fall along: its steepest such, at least somewhere (not along
+/// an edge it is flat along), then the one rising, so two cells flat along
+/// an axis do not lead into each other; and whether it surely rises.
+fn rising(g: &ink_core::interval::G) -> Option<(u8, bool)> {
     (0..3)
         .flat_map(|k| [(k, -1, -g.d[k].hi, -g.d[k].lo), (k, 1, g.d[k].lo, g.d[k].hi)])
         .filter(|s| s.2 >= 0.0)
         .max_by(|a, b| a.2.partial_cmp(&b.2).expect("not NaN").then(a.3.total_cmp(&b.3)).then(a.1.cmp(&b.1)))
-        .map(|(k, s, ..)| Kind::Slope(k, s))
+        .map(|(k, s, lo, _)| (1 << (2 * k + (s > 0) as usize), lo > 0.0))
 }
 
 fn find(p: &mut [usize], mut x: usize) -> usize {
@@ -414,6 +508,72 @@ fn find(p: &mut [usize], mut x: usize) -> usize {
 fn union(p: &mut [usize], a: usize, b: usize) {
     let (a, b) = (find(p, a), find(p, b));
     p[a] = b;
+}
+
+/// The cells on a shortest way across `faces` (pairs of leaves air may pass
+/// between) from each group in `from` to another owner (a group, the
+/// outside), through cells `passes` (owned by none): the cells a pass
+/// halves to show one leads out. Searched from all the groups at once,
+/// each cell reached first from the nearest; where two groups' searches
+/// meet, the way joins them.
+fn ways(n: usize, faces: &[(usize, usize, bool)], owner: &[Option<usize>], passes: &dyn Fn(usize) -> bool, from: &[usize]) -> Vec<usize> {
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(i, j, _) in faces {
+        adj[i].push(j);
+        adj[j].push(i);
+    }
+    const NONE: usize = usize::MAX;
+    // Each reached cell's group and the cell it was reached from.
+    let mut by: Vec<usize> = vec![NONE; n];
+    let mut prev: Vec<usize> = vec![NONE; n];
+    let mut queue = std::collections::VecDeque::new();
+    for i in 0..n {
+        if let Some(g) = owner[i].filter(|g| from.contains(g)) {
+            by[i] = g;
+            queue.push_back(i);
+        }
+    }
+    let mut done: Vec<usize> = Vec::new();
+    let mut out: Vec<usize> = Vec::new();
+    fn back(mut i: usize, prev: &[usize], owner: &[Option<usize>], out: &mut Vec<usize>) {
+        while i != usize::MAX && owner[i].is_none() {
+            out.push(i);
+            i = prev[i];
+        }
+    }
+    while let Some(i) = queue.pop_front() {
+        let g = by[i];
+        if done.contains(&g) {
+            continue;
+        }
+        for &j in &adj[i] {
+            if done.contains(&g) {
+                break;
+            }
+            match owner[j] {
+                Some(o) if o != g => {
+                    back(i, &prev, owner, &mut out);
+                    done.push(g);
+                }
+                Some(_) => {}
+                None if !passes(j) => {}
+                None if by[j] == NONE => {
+                    by[j] = g;
+                    prev[j] = i;
+                    queue.push_back(j);
+                }
+                None if by[j] != g => {
+                    back(i, &prev, owner, &mut out);
+                    back(j, &prev, owner, &mut out);
+                    done.extend([g, by[j]]);
+                }
+                None => {}
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 fn centre(grid: &Grid, c: Cell) -> V3 {
@@ -450,7 +610,7 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
         p[k] = if s > 0 { p[k] + c.size } else { p[k] - 1 };
         p
     };
-    // The leaves a slope cell's air passes into across the face it rises
+    // The leaves a slope cell's air passes into across each face it slides
     // toward: the one holding the cell of its size beside it, or the
     // smaller ones tiling that cell's side on the face (each point of the
     // face is in one of them); OUTSIDE past the root. None where no leaf
@@ -458,48 +618,72 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
     let next: Vec<Option<Vec<usize>>> = leaves
         .par_iter()
         .map(|l| {
-            let Kind::Slope(k, s) = l.kind else { return None };
-            let p = across(l.cell, k, s);
-            if p.iter().any(|&x| x < 0 || x >= root.size) {
-                return Some(vec![OUTSIDE]);
-            }
-            if let Some(i) = at_least(p, l.cell.size) {
-                return Some(vec![i]);
-            }
-            let mut beside = l.cell;
-            beside.i[k] += s * l.cell.size;
-            let (mut out, mut cells) = (Vec::new(), vec![beside]);
-            while let Some(c) = cells.pop() {
-                if let Some(&i) = index.get(&(c.i, c.size)) {
+            let Kind::Slope(ways) = l.kind else { return None };
+            let mut out = Vec::new();
+            for (k, s) in (0..6).filter(|w| ways >> w & 1 == 1).map(|w| (w / 2, if w % 2 == 1 { 1 } else { -1 })) {
+                let p = across(l.cell, k, s);
+                if p.iter().any(|&x| x < 0 || x >= root.size) {
+                    out.push(OUTSIDE);
+                    continue;
+                }
+                if let Some(i) = at_least(p, l.cell.size) {
                     out.push(i);
                     continue;
                 }
-                if c.size == 1 {
-                    return None;
-                }
-                let half = c.size / 2;
-                for o in 0..8i64 {
-                    // The halves on the face: the near side along k.
-                    if (o >> k & 1) != (s < 0) as i64 {
+                let mut beside = l.cell;
+                beside.i[k] += s * l.cell.size;
+                let mut cells = vec![beside];
+                while let Some(c) = cells.pop() {
+                    if let Some(&i) = index.get(&(c.i, c.size)) {
+                        out.push(i);
                         continue;
                     }
-                    cells.push(Cell { i: std::array::from_fn(|a| c.i[a] + half * (o >> a & 1)), size: half });
+                    if c.size == 1 {
+                        return None;
+                    }
+                    let half = c.size / 2;
+                    for o in 0..8i64 {
+                        // The halves on the face: the near side along k.
+                        if (o >> k & 1) != (s < 0) as i64 {
+                            continue;
+                        }
+                        cells.push(Cell { i: std::array::from_fn(|a| c.i[a] + half * (o >> a & 1)), size: half });
+                    }
                 }
             }
+            let mut seen = std::collections::HashSet::new();
+            out.retain(|&i| seen.insert(i));
             Some(out)
         })
         .collect();
     // Where each leaf's air lands, following slopes. A slope cell's air,
-    // rising across its face, lands where every leaf it passes into does:
-    // none in an airless one; past a thin one, or into two air cells, it
-    // is open (unknown).
+    // sliding across its faces, lands where the leaves it passes into do:
+    // none in an airless one; past a thin one it is open (unknown); into
+    // air cells, each point in one of their groups.
     let mut lands: Vec<Option<Lands>> = leaves.iter().map(|l| (l.kind == Kind::Thin).then_some(Lands::Thin)).collect();
     let mut on_path = vec![false; n];
-    let join = |acc: Lands, e: Lands| match (acc, e) {
-        (a, Lands::None) => a,
-        (Lands::None, e) => e,
-        (Lands::Group(a), Lands::Group(b)) if a == b => acc,
-        _ => Lands::Open,
+    let mut sets: Vec<Vec<usize>> = Vec::new();
+    let mut join = |acc: Lands, e: Lands| {
+        let cells = |l: Lands, sets: &Vec<Vec<usize>>| match l {
+            Lands::Group(a) => Some(vec![a]),
+            Lands::Groups(s) => Some(sets[s].clone()),
+            _ => None,
+        };
+        match (acc, e) {
+            (a, Lands::None) => a,
+            (Lands::None, e) => e,
+            (Lands::Group(a), Lands::Group(b)) if a == b => acc,
+            _ => match (cells(acc, &sets), cells(e, &sets)) {
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    a.sort_unstable();
+                    a.dedup();
+                    sets.push(a);
+                    Lands::Groups(sets.len() - 1)
+                }
+                _ => Lands::Open,
+            },
+        }
     };
     for i in 0..n {
         if lands[i].is_some() {
@@ -577,7 +761,8 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
     }
     // Faces between leaves where air may pass: from the smaller of each
     // two (its whole face in the other), each once.
-    let carries = |i: usize| lands[i] != Lands::None;
+    let carry: Vec<bool> = lands.iter().map(|&l| l != Lands::None).collect();
+    let carries = |i: usize| carry[i];
     let faces: Vec<(usize, usize, bool)> = (0..n)
         .into_par_iter()
         .flat_map_iter(|i| {
@@ -607,22 +792,42 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
     let mut joined: Vec<usize> = (0..=n).collect();
     let edge = |c: Cell| (0..3).any(|k| c.i[k] == 0 || c.i[k] + c.size == root.size);
     for (i, l) in leaves.iter().enumerate() {
-        if edge(l.cell) {
-            if let Lands::Group(g) = lands[i] {
+        if edge(l.cell) && carries(i) {
+            union(&mut joined, i, n);
+        }
+    }
+    for &(i, j, _) in &faces {
+        union(&mut joined, i, j);
+    }
+    // A cell landing in several groups that come to be one lands in it.
+    let mut several: Vec<usize> = (0..n).filter(|&i| matches!(lands[i], Lands::Groups(_))).collect();
+    loop {
+        for (i, l) in leaves.iter().enumerate() {
+            if let (true, Lands::Group(g)) = (edge(l.cell), lands[i]) {
                 union(&mut group, g, n);
             }
-            if carries(i) {
-                union(&mut joined, i, n);
+        }
+        for &(i, j, air) in &faces {
+            if let (true, Lands::Group(a), Lands::Group(b)) = (air, lands[i], lands[j]) {
+                union(&mut group, a, b);
             }
         }
-    }
-    for &(i, j, air) in &faces {
-        union(&mut joined, i, j);
-        if let (true, Lands::Group(a), Lands::Group(b)) = (air, lands[i], lands[j]) {
-            union(&mut group, a, b);
+        let before = several.len();
+        several.retain(|&i| {
+            let Lands::Groups(s) = lands[i] else { unreachable!() };
+            let r = find(&mut group, sets[s][0]);
+            let one = sets[s].iter().all(|&a| find(&mut group, a) == r);
+            if one {
+                lands[i] = Lands::Group(r);
+            }
+            !one
+        });
+        if several.len() == before {
+            break;
         }
     }
-    let mut apart: Vec<usize> = Vec::new();
+    // Those still in several: more halving may show where their air is.
+    let mut apart: Vec<usize> = several.clone();
     for &(i, j, _) in &faces {
         if let (Lands::Group(a), Lands::Group(b)) = (lands[i], lands[j])
             && find(&mut group, a) != find(&mut group, b)
@@ -651,6 +856,14 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
         if let Some(g) = root_of[i].filter(|&g| !wide[g]) {
             members.entry(g).or_default().push(i);
         }
+    }
+    // A cell in several groups may hold a deep point of any of theirs.
+    for &i in &several {
+        let Lands::Groups(s) = lands[i] else { unreachable!() };
+        let mut roots: Vec<usize> = sets[s].iter().map(|&a| find(&mut group, a)).filter(|&g| g != outside && !wide[g]).collect();
+        roots.sort_unstable();
+        roots.dedup();
+        roots.into_iter().for_each(|g| members.entry(g).or_default().push(i));
     }
     let mut members: Vec<(usize, Vec<usize>)> = members.into_iter().collect();
     members.par_iter_mut().for_each(|(_, m)| m.sort_by_key(|&i| (std::cmp::Reverse(leaves[i].cell.size), i)));
@@ -685,6 +898,7 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
     let open: Vec<usize> = (0..n).filter(|&i| lands[i] == Lands::Open).collect();
     let mut thin: Vec<usize> = (0..n).filter(|&i| lands[i] == Lands::Thin).chain(thin_groups).collect();
     thin.sort_unstable();
+    thin.dedup();
     let at_most = open.is_empty().then_some(groups.len());
     let decided = at_most == Some(at_least);
     let mut halve: Vec<usize> = apart.iter().chain(&open).copied().filter(|&i| leaves[i].cell.size > 1).collect();
@@ -692,7 +906,21 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
     // join a void to the outside, or two voids.
     let settles = !halve.is_empty() || decided || !open.is_empty();
     if !settles {
-        halve = (0..n).filter(|&i| lands[i] == Lands::Thin && leaves[i].cell.size > 1).collect();
+        // Those on the shortest way from each group that may be a void to
+        // another group or the outside, where one leads: one way out decides
+        // it, and the thin air elsewhere (along every outer face) does not.
+        let owner: Vec<Option<usize>> = (0..n)
+            .map(|i| match lands[i] {
+                _ if edge(leaves[i].cell) && carries(i) => Some(outside),
+                Lands::Group(a) => Some(find(&mut group, a)).filter(|&g| wide[g] || g == outside),
+                _ => None,
+            })
+            .collect();
+        let passes = |i: usize| owner[i].is_none() && carries(i);
+        halve = ways(n, &faces, &owner, &passes, &groups).into_iter().filter(|&i| leaves[i].cell.size > 1).collect();
+        if halve.is_empty() {
+            halve = (0..n).filter(|&i| lands[i] == Lands::Thin && leaves[i].cell.size > 1).collect();
+        }
     }
     halve.sort_unstable();
     halve.dedup();

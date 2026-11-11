@@ -230,7 +230,7 @@ impl Integrals<'_> {
         // Each sample weighted by the material in its eighth of the box,
         // the field taken as linear there.
         // Each sample's material, and where in its eighth it lies.
-        let fill = |t: &Tape| -> (Vec<f64>, Vec<V3>, Vec<V3>) {
+        let fill = |t: &Arc<Tape>| -> (Vec<f64>, Vec<V3>, Vec<V3>) {
             let (mut w, mut at, mut var) = (Vec::new(), Vec::new(), Vec::new());
             for ((f, d, v), p) in shares(t, self.ctx, &pts, sides, 3).into_iter().zip(&pts) {
                 w.push(f * wv);
@@ -331,7 +331,7 @@ impl Integrals<'_> {
             let (share, settled, smear) = self.share(tape, b, true, vol);
             return Some(Tested { share, settled, smear, tape: tape.clone() });
         }
-        let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
+        let sub = tape.narrowed(&ch);
         let d = eval_interval_grad(&sub, self.ctx, b).d;
         let c = b.map(|x| x.mid());
         let fc = eval_interval(&sub, self.ctx, c.map(I::point), None);
@@ -353,7 +353,7 @@ impl Integrals<'_> {
 /// condition its bounds leave undecided between branches that are not one
 /// field. Its condition, and the integrand with the select on each branch.
 struct Jump {
-    cond: Tape,
+    cond: Arc<Tape>,
     a: Tape,
     b: Tape,
 }
@@ -375,7 +375,7 @@ fn jump(g: &Tape, ctx: &Ctx, b: [I; 3]) -> Option<Jump> {
     pick[i] = FIRST;
     let a = g.simplify(&pick);
     pick[i] = SECOND;
-    Some(Jump { cond: g.cone(g.ssa[i].a as usize), a, b: g.simplify(&pick) })
+    Some(Jump { cond: Arc::new(g.cone(g.ssa[i].a as usize)), a, b: g.simplify(&pick) })
 }
 
 /// Bounds of the integral of `g` over a box full of material (volume
@@ -522,7 +522,7 @@ fn uniform_sum_below(c: [f64; 3], s: f64, upper: bool) -> f64 {
 /// box's edge, a hole's rim), its branches' combined (`combined`), to
 /// `depth` levels of choices: one plane's cut misreads a box's edge at
 /// every size.
-fn shares(t: &Tape, ctx: &Ctx, pts: &[V3], s: V3, depth: u32) -> Vec<(f64, V3, V3)> {
+fn shares(t: &Arc<Tape>, ctx: &Ctx, pts: &[V3], s: V3, depth: u32) -> Vec<(f64, V3, V3)> {
     // Through names and slope promises, which keep the value.
     let strip = |mut j: usize| {
         while let Op::Tag(_) | Op::Lipschitz = t.ssa[j].op {
@@ -546,7 +546,7 @@ fn shares(t: &Tape, ctx: &Ctx, pts: &[V3], s: V3, depth: u32) -> Vec<(f64, V3, V
         Op::Bin(BinOp::Min) if depth > 0 => false,
         _ => return leaf(),
     };
-    let (a, b) = (t.cone(ins.a as usize), t.cone(ins.b as usize));
+    let (a, b) = (t.kept_cone(ins.a as usize), t.kept_cone(ins.b as usize));
     let (ga, gb) = (eval_grads(&a, ctx, pts), eval_grads(&b, ctx, pts));
     let (fa, fb) = (shares(&a, ctx, pts, s, depth - 1), shares(&b, ctx, pts, s, depth - 1));
     (0..pts.len()).map(|i| combined(fa[i], fb[i], &ga[i], &gb[i], intersection)).collect()

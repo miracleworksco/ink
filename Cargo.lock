@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "ink"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "ink-core",
  "ink-design",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "ink-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "ink",
  "libc",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "ink-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "libm",
  "rayon",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "ink-design"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "ink-core",
  "ink-kernel",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "ink-io"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "crc32fast",
  "ink-core",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "ink-kernel"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "ink-core",
  "libm",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "ink-lang"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "harfrust",
  "ink-core",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "ink-mma"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "itoa"

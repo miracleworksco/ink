@@ -19,18 +19,22 @@ const EMPTY_CAUSE: &str = "(max a b) is the intersection of a and b, (min a b) t
 /// half that vanished, a hole outside the part). Then fields interval
 /// arithmetic cannot bound tightly, and undefined cases (feature::survey).
 /// `named`: the body's named parts.
-fn survey_warnings(s: &Session, body: &str, mut named: Vec<u32>, survey: &ink::feature::Survey) -> Vec<String> {
+fn survey_warnings(s: &Session, body: &str, mut named: Vec<u32>, survey: &ink::feature::Survey, moments: usize) -> Vec<String> {
     named.retain(|t| !survey.formed.contains(t));
+    let when = if moments > 1 { format!(" at the {moments} moments of its motion it was sought at") } else { String::new() };
     let mut out: Vec<String> = named
         .into_iter()
         .map(|t| {
             let name = &s.doc.g.tag_names[t as usize];
             if let Some(&(_, n, finer)) = survey.unseen.iter().find(|u| u.0 == t) {
+                let cells = match n {
+                    0 => " (on the field's path in no cell at those, but not proven off it at every moment)".to_string(),
+                    _ => format!(": in the {n} cells it is on the field's path in, finer in {finer} of them"),
+                };
                 format!(
-                    "body '{body}': '{name}' was not seen forming any of its surface where it was sought: in the {n} cells it is on the \
-                     field's path in, finer in {} of them. It may form only an edge (where it ties with what covers it) or a blend's \
-                     covered side, or a face the search missed. Undecided, not proven",
-                    finer
+                    "body '{body}': '{name}' was not seen forming any of its surface{} where it was sought{cells}. It may form only an edge \
+                     (where it ties with what covers it) or a blend's covered side, or a face the search missed. Undecided, not proven",
+                    when
                 )
             } else {
                 format!(
@@ -60,6 +64,38 @@ fn survey_warnings(s: &Session, body: &str, mut named: Vec<u32>, survey: &ink::f
     }
     out.extend(undefined_warnings(s, body, &survey.undefined, survey.points));
     out
+}
+
+/// A moving body's names judged over its motion, where its survey (at the
+/// session's moment) did not see one of `named` forming surface
+/// (feature::surface_names_over): at moments of the file's t-span, each
+/// with its own context and bounds, and proven hidden at every moment over
+/// the span at once where the body reads no solve on t (one is then solved
+/// moment by moment, so no one context ranges over it). The moments looked
+/// at: 1 for a body that does not move.
+fn over_motion(s: &mut Session, shape: u32, named: &[u32], survey: &mut ink::feature::Survey) -> usize {
+    let Some(span) = s.doc.t_span.filter(|sp| sp.0 < sp.1) else { return 1 };
+    let solved_on_t = s.doc.solves_read(&[shape]).iter().any(|&i| s.doc.solves[i].on_t);
+    if !(solved_on_t || s.doc.g.depends_on(shape, |v| v == Var::T)) || named.iter().all(|t| survey.formed.contains(t)) {
+        return 1;
+    }
+    let tape = Arc::new(Tape::new(&s.doc.g, shape));
+    let over = match solved_on_t {
+        true => None,
+        false => {
+            let c = ink::eval::Ctx { t_span: Some(span), ..s.ctx.clone() };
+            s.at_point(c.clone(), |s| s.bounds(shape)).map(|(lo, hi, _)| (c, lo, hi))
+        }
+    };
+    let at = |t: f64| {
+        let c = s.doc.ctx(&s.overrides, t).ok()?;
+        let (lo, hi, _) = s.at_point(c.clone(), |s| s.bounds(shape))?;
+        Some((c, lo, hi))
+    };
+    let first = (std::mem::take(&mut survey.formed), std::mem::take(&mut survey.unseen));
+    let (formed, unseen, moments) = ink::feature::surface_names_over(&tape, 128.0, span, named, first, at, over.as_ref().map(|(c, lo, hi)| (c, *lo, *hi)));
+    (survey.formed, survey.unseen) = (formed, unseen);
+    moments
 }
 
 /// Undefined cases (division by zero, ln of a negative, ...) the body's
@@ -179,8 +215,9 @@ pub(crate) fn cmd_check(s: &mut Session, a: &Args) -> Result<J, InkError> {
         }
         match found {
             None if whole => warnings.push(format!("body '{name}' is empty: its field is never negative. {EMPTY_CAUSE}")),
-            Some(Ok(survey)) => {
-                warnings.extend(survey_warnings(s, &name, named, &survey));
+            Some(Ok(mut survey)) => {
+                let moments = over_motion(s, shape, &named, &mut survey);
+                warnings.extend(survey_warnings(s, &name, named, &survey, moments));
                 surveyed.push((shape, survey.sketch));
             }
             Some(Err((cases, points))) => warnings.extend(undefined_warnings(s, &name, &cases, points)),
@@ -1131,6 +1168,7 @@ pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Resu
         parts,
         floor,
         boxes: boxes.clone(),
+        spent,
     });
     let made: Vec<(Arc<Mesh>, Arc<Vec<[f32; 3]>>, Arc<Vec<[f32; 3]>>, Arc<Vec<V3>>, Arc<Quality>)> = made
         .into_iter()
@@ -1164,7 +1202,8 @@ pub fn make_meshes(s: &mut Session, a: &Args, plan: Plan, how: &MeshHow) -> Resu
 /// `cost_warnings`: each target's mesh, each mesh's first target, its res
 /// and the triangles it sampled (all its meshes: a client's frames counted
 /// as its first until it makes them and says what they sampled),
-/// `view_floor`'s parts and floor, and each mesh's box and planned res.
+/// `view_floor`'s parts and floor, each mesh's box and planned res, and
+/// what the meshes made cost the budget (`work`).
 pub struct Budget {
     pub jobs: HashMap<String, usize>,
     pub names: Vec<String>,
@@ -1172,6 +1211,7 @@ pub struct Budget {
     pub parts: Vec<(f64, f64, f64)>,
     pub floor: f64,
     pub boxes: Vec<(V3, V3, f64, Option<f64>)>,
+    pub spent: f64,
 }
 
 impl Budget {
@@ -1190,21 +1230,18 @@ pub fn drawn(tape: &Arc<Tape>, paint: &[Arc<Tape>], ctx: &ink::eval::Ctx, lo: V3
     v
 }
 
-/// What making a view mesh costs, in triangles sampled: its own, or what
-/// its sampling cost where more (mesh::Unresolved::cost: a grid of bricks
-/// its field's bounds did not rule out, its search; and the instructions
-/// its field ran, `ran`), and the instructions reading its paint ran at
-/// PAINT_PER_TRIANGLE a triangle.
+/// What making a view mesh costs, in triangles sampled: TRIANGLE_WORK
+/// machine instructions each, its triangles' own and its reading its field
+/// and paint (READ_WORK an instruction Tape::work counts): its grid's,
+/// crossings' and search's samples and its proofs over boxes
+/// (mesh::Unresolved::sampled and read), splitting, simplifying and
+/// shading it (`field_work`), and its paint (`paint_work`). Counted, each
+/// ratio holds to within WORK_TOLERANCE on one core
+/// (the_view_budget_charges_what_meshes_count).
 fn work(v: &ink::seen::Viewed) -> f64 {
-    (v.uniform_triangles as f64).max(v.unresolved.cost).max(ran(&v.unresolved)) + v.paint_work as f64 / PAINT_PER_TRIANGLE
-}
-
-/// The triangles a mesh's evaluations of its field cost: its samples'
-/// instructions (mesh::Unresolved::sampled), and its proofs' and search's
-/// over boxes (`read`) at BOX_PER_POINT each, at RAN_PER_TRIANGLE a
-/// triangle.
-fn ran(u: &mesh::Unresolved) -> f64 {
-    (u.sampled as f64 + BOX_PER_POINT * u.read as f64) / RAN_PER_TRIANGLE
+    let u = &v.unresolved;
+    let read = (u.sampled + u.read + v.field_work + v.paint_work) as f64;
+    v.uniform_triangles as f64 + READ_WORK * read / TRIANGLE_WORK
 }
 
 /// A viewing mesh as `mesh_tape` gives one.
@@ -1317,7 +1354,7 @@ fn missed_accuracy(meshed: &[Meshed], asked: Option<f64>) -> Vec<String> {
 /// What a mesh at res `h` leaves out (mesh::Unresolved), `at` a point of
 /// it in the world.
 pub fn left_out(u: &mesh::Unresolved, h: f64, at: V3) -> String {
-    let found = u.cells - u.undecided;
+    let found = u.cells - u.undecided - u.untried;
     let mut what = Vec::new();
     if u.refused > 0.0 {
         what.push(format!("made at res {}, not {}: its field's bounds left more of its box to sample there than the budget pays for", measured(h), measured(u.refused)));
@@ -1332,7 +1369,8 @@ pub fn left_out(u: &mesh::Unresolved, h: f64, at: V3) -> String {
     }
     if u.undecided > 0 {
         what.push(format!(
-            "in {} cells the field's bounds could not rule out material or a gap the mesh leaves out, thinner than {} (unresolved.regions each say how thin)",
+            "in {}{} cells the field's bounds could not rule out material or a gap the mesh leaves out, thinner than {} (unresolved.regions each say how thin)",
+            if u.untried > 0 { "at least " } else { "" },
             u.undecided,
             measured(u.thinner_than)
         ));
@@ -1341,7 +1379,11 @@ pub fn left_out(u: &mesh::Unresolved, h: f64, at: V3) -> String {
         what.push(format!("{} of them away from its drawn surface", u.away));
     }
     if u.seams > 0 {
-        what.push(format!("{} where a select switches between two fields (a seam, as at a sweep's mitres), which bounds cannot show continuous", u.seams));
+        what.push(format!(
+            "{}{} where a select switches between two fields (a seam, as at a sweep's mitres), which bounds cannot show continuous",
+            if u.untried > 0 { "at least " } else { "" },
+            u.seams
+        ));
     }
     let advice = if found > 0 { "it has holes or misses features there; use a smaller --res" } else { "it may miss features there; a smaller --res searches finer" };
     format!("its mesh at res {}: {} (e.g. at [{}, {}, {}]); {advice}", measured(h), what.join("; "), measured(at[0]), measured(at[1]), measured(at[2]))
@@ -1356,7 +1398,8 @@ fn unresolved_json(m: &Meshed) -> J {
 
 /// A mesh's `Unresolved` at res `h` as JSON, its regions' boxes and points
 /// placed by `place` (a box turned: the box round it), and how near what it
-/// shows drawn lies to its vertices (mesh: 2 sqrt 3 h).
+/// shows drawn lies to its vertices (mesh: 2 sqrt 3 h, or more where a
+/// region drawn whole may stray farther).
 fn regions_json(u: &mesh::Unresolved, place: Option<&Rigid>, h: f64) -> J {
     let pt = |p: V3| v3(place.map_or(p, |r| r.apply(p)));
     let regions: Vec<J> = u
@@ -1364,12 +1407,12 @@ fn regions_json(u: &mesh::Unresolved, place: Option<&Rigid>, h: f64) -> J {
         .iter()
         .map(|r| {
             let (lo, hi) = place.map_or((r.lo, r.hi), |p| p.aabb(r.lo, r.hi));
-            json!({"lo": v3(lo), "hi": v3(hi), "cells": r.cells, "material": r.material, "gaps": r.gaps, "undecided": r.undecided, "beside": r.beside, "seams": r.seams, "thinner_than": n(r.thinner_than),
+            json!({"lo": v3(lo), "hi": v3(hi), "cells": r.cells, "material": r.material, "gaps": r.gaps, "undecided_at_least": r.undecided, "untried": r.untried, "beside": r.beside, "seams_at_least": r.seams, "thinner_than": n(r.thinner_than),
                    "searched": n(r.searched), "thinnest": n(r.thinnest), "at": pt(r.at), "found": r.found, "groups": r.groups})
         })
         .collect();
-    json!({"cells": u.cells, "material": u.material, "thinnest": n(u.thinnest), "undecided": u.undecided, "beside": u.beside, "away": u.away, "seams": u.seams, "thinner_than": n(u.thinner_than), "searched": n(u.searched), "refused": n(u.refused),
-           "drawn_within": n(2.0 * 3f64.sqrt() * h), "at": u.at.map(pt), "regions": regions})
+    json!({"cells": u.cells, "material": u.material, "thinnest": n(u.thinnest), "undecided_at_least": u.undecided, "untried": u.untried, "beside": u.beside, "away": u.away, "seams_at_least": u.seams, "thinner_than": n(u.thinner_than), "searched": n(u.searched), "refused": n(u.refused),
+           "drawn_within": n((2.0 * 3f64.sqrt() * h).max(u.whole_within)), "drawn_whole": {"regions": u.whole, "within": n(u.whole_within)}, "at": u.at.map(pt), "regions": regions})
 }
 
 fn mesh_report(m: &Meshed, cache: &mut HashMap<usize, Arc<mesh::Analysis>>) -> J {
@@ -1494,35 +1537,29 @@ pub fn reported(what: &str, cached: bool, t: Instant) {
 }
 
 /// GLB's meshes, for seeing at a screen's resolution: coarser than for
-/// printing, and simplified to a quarter of res. Their budget is about 65
-/// CPU s on 6 vCPU of a Ryzen AI Max+ 395 at corexy's 14 µs a triangle: its first
-/// meshes cost 2.5 M and the 7 it makes again 1.9 M more as predicted;
-/// A large assembly's first meshes 8.3 M, so none is made again.
-pub const SEEN: MeshHow = MeshHow { div: 128.0, tol_per_res: 0.25, measure: false, budget: 4.6e6, by_area: true, finest: 0.0, errors: false, seen: true };
+/// printing, and simplified to a quarter of res, within VIEW_WORK (in
+/// triangles, as `work` counts them).
+pub const SEEN: MeshHow = MeshHow { div: 128.0, tol_per_res: 0.25, measure: false, budget: VIEW_WORK / TRIANGLE_WORK, by_area: true, finest: 0.0, errors: false, seen: true };
+
+/// The machine instructions a model's view meshes may retire (`work`):
+/// 30 to 70 CPU s of a Zen 5 core, which retires 0.7 to 1.5e10 of them a
+/// second meshing (more where its field is most of the work).
+const VIEW_WORK: f64 = 4.4e11;
 
 /// The triangles a model's GLB meshes are planned to sample when first
 /// made, as their surfaces' areas predict them (`view_floor`): the rest of
 /// SEEN's budget is for meshes made again.
 const VIEW_TRIANGLES: f64 = 2.5e6;
 
-/// The paint instructions that cost what sampling and simplifying a
-/// triangle does (`work`): on 6 vCPU of a Ryzen AI Max+ 395 a paint instruction
-/// costs 3.0 CPU ns (2.5 to 5.6 over six boards, each with and without its
-/// paint), corexy 13.4 CPU µs a triangle besides its paint.
-const PAINT_PER_TRIANGLE: f64 = 4.4e3;
+/// The machine instructions a view mesh retires a triangle it samples,
+/// besides reading its field and paint (`work`): marching its cells,
+/// simplifying and shading it.
+const TRIANGLE_WORK: f64 = 8.0e4;
 
-/// An instruction over a box costs what this many at a point do: on one
-/// thread of spark1 a sample's instruction took 0.7 to 1.1 ns (a helix
-/// sweep's 8,114 instructions, a box with holes', a cylinder's), a
-/// proof's 25 to 38 ns.
-const BOX_PER_POINT: f64 = 30.0;
-
-/// The instructions (as `ran` counts them) that cost what a triangle does
-/// (corexy's 13.4 µs, PAINT_PER_TRIANGLE), a sample's about 1 ns: a box
-/// with holes, a holed cylinder and a thin-walled cup ran 900 to 4,400 a
-/// triangle at res 0.5 and 0.3, so their triangles count; a helix sweep
-/// 180,000 to 330,000, its CPU a triangle about 290 µs.
-const RAN_PER_TRIANGLE: f64 = 13_000.0;
+/// The machine instructions reading a field or paint retires for each
+/// instruction Tape::work counts of it: the reading's own bookkeeping, and
+/// the descent's passes and tapes it does not count.
+const READ_WORK: f64 = 1.8;
 
 /// The triangles a surface samples per cell of it, as predicted: a flat
 /// face's two (a folded surface samples more).
@@ -2402,25 +2439,55 @@ mod tests {
         assert!(answer["overlapping"].is_null() && answer["solved_inputs"] == json!(["u"]), "the solve stopped at 4; the exact root is 0, where the spheres overlap: {answer}");
     }
 
-    /// A view mesh costs the budget what its field's evaluations run: a bar
-    /// swept along a helix (60 segments, each cell's sample reading
-    /// thousands of instructions) far more than its triangles, a box with
-    /// holes about its triangles.
+    /// How far, as a factor either way, the instructions a view mesh
+    /// retired when last counted may be from TRIANGLE_WORK times its
+    /// `work`.
+    const WORK_TOLERANCE: f64 = 1.4;
+
+    /// Shapes the budget's ratios are held to, each with its res and the
+    /// machine instructions making its view mesh retired, as
+    /// `calibrate_view_work` printed them (one thread of a Zen 5, the test
+    /// build): a block with a hole (most of it its triangles), a bar swept
+    /// along a helix (its field's samples and proofs), a gyroid sheet (its
+    /// many triangles and transcendental field), a threaded rod and a ball
+    /// painted across (its paint).
+    const VIEW_CORPUS: [(&str, &str, &str, f64, f64); 5] = [
+        ("block", "(subtract (box 40 30 20) (cylinder-z 5 30))", "", 0.5, 4.3324e9),
+        ("sweep", "(sweep (rounded-rect-2d 6 3 0.8) (helix-points 15 10 1 30) (vec 0 0 1))", "", 0.5, 3.4740e10),
+        ("gyroid", "(lattice-fill (box 20 20 20) (gyroid 10) 1)", "", 0.5, 1.3449e10),
+        ("thread", "(max (thread-iso 8 1.25) (box 10 10 16))", "", 0.1, 2.0380e10),
+        ("painted", "(sphere 15)", "(attr color (vec (clamp (/ (+ x 15) 30) 0 1) 0.5 0.5))", 0.3, 9.2696e9),
+    ];
+
+    /// A view mesh of a corpus shape, made (not from the cache), and the
+    /// instructions making it retired, counted where `count` and the
+    /// system allow.
+    fn corpus_mesh(shape: &str, attr: &str, h: f64, count: bool) -> (ink::seen::Viewed, Option<counted::Cost>) {
+        let doc = ink::load_str(&format!("(import \"std\")\n(body b (shape {shape}) {attr})"), "work", Path::new(".")).unwrap();
+        let ctx = doc.ctx(&[], 0.0).unwrap();
+        let mut s = ModelView::new(doc, ctx);
+        let it = s.doc.items("b").unwrap().remove(0);
+        let (lo, hi, _) = s.item_bounds(&it).unwrap();
+        let (tape, paint) = (tape_of(&mut s, &it, lo, hi, h), paint_tapes(&s, &it.attrs));
+        let how = ink::seen::How { res: h, limit: mesh::Limit { bricks: usize::MAX, search: mesh::Limit::samples_for(1e6) }, tol: None, tol_per_res: SEEN.tol_per_res, bend: None };
+        let make = || ink::seen::make(&tape, &paint, &s.ctx, lo, hi, how);
+        match count {
+            true => counted::instructions(make).map_or_else(|| (make(), None), |(v, c)| (v, Some(c))),
+            false => (make(), None),
+        }
+    }
+
+    /// The budget's ratios (`work`, from what the kernel counts of a mesh)
+    /// hold against the instructions view meshes of VIEW_CORPUS retired when
+    /// last counted, each within WORK_TOLERANCE. Counted by the kernel, so
+    /// it checks the same on any machine: a mesher or evaluator that comes
+    /// to cost otherwise than counted is caught only by counting again
+    /// (scripts/view-budget-calibrate.sh).
     #[test]
-    fn a_view_mesh_costs_what_its_field_runs() {
-        let cost = |shape: &str| {
-            let mut doc = ink::load_str(&format!("(import \"std\")\n(body b (shape {shape}))"), "work", Path::new(".")).unwrap();
-            let ctx = doc.ctx(&[], 0.0).unwrap();
-            let it = doc.items("b").unwrap().remove(0);
-            let f = doc.placed_field(&it);
-            let tape = Arc::new(Tape::new(&doc.g, f));
-            let how = ink::seen::How { res: 0.5, limit: mesh::Limit { bricks: usize::MAX, search: 0.0 }, tol: None, tol_per_res: 0.25, bend: None };
-            let v = ink::seen::mesh(&tape, &[], &ctx, [-35.0, -35.0, -6.0], [35.0, 35.0, 36.0], how);
-            work(&v) / v.uniform_triangles as f64
-        };
-        let sweep = cost("(sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 60) (vec 0 0 1))");
-        let block = cost("(subtract (box 40 30 20) (cylinder-z 5 30))");
-        assert!(sweep > 5.0 && block < 1.5, "a triangle of the sweep costs {sweep}, of the block {block}");
+    fn the_view_budget_charges_what_meshes_count() {
+        let off: Vec<(&str, f64)> =
+            VIEW_CORPUS.par_iter().map(|&(name, shape, attr, h, counted)| (name, counted / (TRIANGLE_WORK * work(&corpus_mesh(shape, attr, h, false).0)))).collect();
+        assert!(off.iter().all(|o| o.1 < WORK_TOLERANCE && o.1 > 1.0 / WORK_TOLERANCE), "counted over charged: {off:?}");
     }
 
     /// A body with no inside (move's arguments swapped: its field is 0
@@ -2494,5 +2561,104 @@ mod tests {
         }
         assert_eq!(ladder(ladder(0.3)), ladder(0.3), "a rung is its own");
         assert_eq!(ladder(ladder(0.3) / 2.0), ladder(0.3) / 2.0, "half a rung is a rung");
+    }
+
+    use crate::cli::counted;
+
+    /// What a view mesh counted of its work, and the instructions it took.
+    fn counted_json(v: &ink::seen::Viewed, c: counted::Cost) -> J {
+        let u = &v.unresolved;
+        json!({"instructions": c.instructions, "cycles": c.cycles, "seconds": c.seconds, "work": work(v), "uniform_triangles": v.uniform_triangles, "triangles": v.tris.len(),
+            "sampled": u.sampled, "read": u.read, "field_work": v.field_work, "paint_work": v.paint_work})
+    }
+
+    /// The budget's ratios, calibrated: on one thread, with the processor
+    /// counting instructions, VIEW_CORPUS's meshes (printed as its rows),
+    /// and for each model in INK_WORK_MODELS (paths, ':' between; INK_PATH
+    /// at the checkout) a line of JSON: the instructions its view meshes
+    /// (as `ink mesh M.glb` makes them, made again finer included) retire
+    /// and what the budget charged them (`Budget::spent`), then each first
+    /// mesh's own with what it counted. Last, TRIANGLE_WORK and READ_WORK
+    /// fitted to them all (least squares of the ratio of predicted to
+    /// counted), and each mesh's ratio at the fit. Run with INK_NO_CACHE
+    /// set (scripts/view-budget-calibrate.sh).
+    #[test]
+    #[ignore = "a calibration's, run by hand"]
+    fn calibrate_view_work() {
+        assert!(std::env::var_os("INK_NO_CACHE").is_some(), "meshes from the cache cost nothing");
+        let none = "this system does not let a process count its instructions";
+        // Each mesh's name, triangles, instructions counted by the kernel
+        // (as `work` reads them), and by the processor.
+        let mut fit: Vec<(String, f64, f64, f64)> = Vec::new();
+        let mut row = |name: String, v: &ink::seen::Viewed, c: counted::Cost| {
+            let u = &v.unresolved;
+            fit.push((name, v.uniform_triangles as f64, (u.sampled + u.read + v.field_work + v.paint_work) as f64, c.instructions as f64));
+        };
+        for (name, shape, attr, h, _) in VIEW_CORPUS {
+            let (v, c) = counted::on_one_thread(|| corpus_mesh(shape, attr, h, true));
+            let c = c.expect(none);
+            println!("        ({name:?}, {shape:?}, {attr:?}, {h:?}, {:.4e}),", c.instructions as f64);
+            row(name.to_string(), &v, c);
+        }
+        let models = std::env::var("INK_WORK_MODELS").unwrap_or_default();
+        for path in models.split(':').filter(|p| !p.is_empty()) {
+            let meshes: Vec<(String, ink::seen::Viewed, counted::Cost)> = counted::on_one_thread(|| {
+                let doc = ink::load_file(Path::new(path)).unwrap();
+                let ctx = doc.ctx(&[], 0.0).unwrap();
+                let mut s = ModelView::new(doc, ctx);
+                s.path = Some(path.into());
+                let a = Args::parse(&["mesh", path].map(str::to_string));
+                let items = s.items(&a).unwrap();
+                let plan = plan_meshes(&mut s, &a, &items, &SEEN).unwrap();
+                // The surfaces' areas make_meshes finds first, to leave out.
+                let fields: Vec<Arc<Tape>> = plan.jobs.iter().map(|(it, _)| Arc::new(Tape::new(&s.doc.g, it.shape))).collect();
+                let boxes = plan.boxes.clone();
+                let (_, surfaces) = counted::instructions(|| fields.iter().zip(&boxes).map(|(t, b)| ink::seen::surface(t, &s.ctx, b.0, b.1)).sum::<f64>()).expect(none);
+                let ((_, budget), all) = counted::instructions(|| make_meshes(&mut s, &a, plan, &SEEN).unwrap()).unwrap();
+                let budget = budget.unwrap();
+                let instructions = all.instructions - surfaces.instructions;
+                println!(
+                    "{}",
+                    json!({"model": path, "instructions": instructions, "spent": budget.spent, "per_triangle": instructions as f64 / budget.spent, "meshes": budget.boxes.len()})
+                );
+                let plan = plan_meshes(&mut s, &a, &items, &SEEN).unwrap();
+                let mut meshes = Vec::new();
+                for (j, (it, _)) in plan.jobs.iter().enumerate() {
+                    let (lo, hi, h, bend) = budget.boxes[j];
+                    let planned = budget.parts[j].0 / (h * h);
+                    let limit = mesh::Limit { bricks: mesh::Limit::bricks_for(SEEN.budget), search: mesh::Limit::samples_for(planned.min(SEEN.budget)) };
+                    let how = ink::seen::How { res: h, limit, tol: None, tol_per_res: SEEN.tol_per_res, bend };
+                    let (tape, paint) = (tape_of(&mut s, it, lo, hi, h), paint_tapes(&s, &it.attrs));
+                    let (v, c) = counted::instructions(|| ink::seen::make(&tape, &paint, &s.ctx, lo, hi, how)).unwrap();
+                    let mut line = counted_json(&v, c);
+                    line["model"] = json!(path);
+                    line["mesh"] = json!(it.label);
+                    println!("{line}");
+                    meshes.push((format!("{path} {}", it.label), v, c));
+                }
+                meshes
+            });
+            for (name, v, c) in meshes {
+                row(name, &v, c);
+            }
+        }
+        // Least squares of (a t + b r) / i - 1 over the meshes: a is
+        // TRIANGLE_WORK, b READ_WORK.
+        let (mut m, mut y) = ([[0.0; 2]; 2], [0.0; 2]);
+        for &(_, t, r, i) in &fit {
+            let x = [t / i, r / i];
+            for j in 0..2 {
+                y[j] += x[j];
+                for k in 0..2 {
+                    m[j][k] += x[j] * x[k];
+                }
+            }
+        }
+        let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+        let (a, b) = ((y[0] * m[1][1] - y[1] * m[0][1]) / det, (m[0][0] * y[1] - m[1][0] * y[0]) / det);
+        println!("fitted: TRIANGLE_WORK {a:.4e}, READ_WORK {b:.3} (in use: {TRIANGLE_WORK:.4e}, {READ_WORK})");
+        for (name, t, r, i) in &fit {
+            println!("counted over predicted at the fit {:.3}, as in use {:.3}: {name}", i / (a * t + b * r), i / (TRIANGLE_WORK * t + READ_WORK * r));
+        }
     }
 }

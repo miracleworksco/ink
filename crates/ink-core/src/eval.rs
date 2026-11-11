@@ -474,8 +474,13 @@ impl ParamSpans {
 pub const L: usize = 64;
 
 pub fn eval_points(tape: &Tape, ctx: &Ctx, pts: &[V3], out: &mut Vec<f64>) {
-    // A few points (a cell's samples) in narrow lanes, as eval_grads.
-    if pts.len() <= 8 { points_in::<8>(tape, ctx, pts, out) } else { points_in::<L>(tape, ctx, pts, out) }
+    // A lone point in one lane, a few (a cell's samples) in narrow
+    // lanes, as eval_grads.
+    match pts.len() {
+        1 => points_in::<1>(tape, ctx, pts, out),
+        ..=8 => points_in::<8>(tape, ctx, pts, out),
+        _ => points_in::<L>(tape, ctx, pts, out),
+    }
 }
 
 /// `eval_points` in chunks of N points.
@@ -527,38 +532,29 @@ fn run_lanes<const N: usize>(tape: &Tape, ctx: &Ctx, x: &[f64; N], y: &[f64; N],
             Op::Var(Var::T) => s[o] = [ctx.t; N],
             Op::Var(Var::Param(p)) => s[o] = [ctx.params[p as usize]; N],
             Op::Un(op) => {
-                let a = s[ins.a as usize];
-                let r = &mut s[o];
+                let a = ins.a as usize;
                 match op {
-                    UnOp::Neg => (0..N).for_each(|k| r[k] = -a[k]),
-                    UnOp::Abs => (0..N).for_each(|k| r[k] = a[k].abs()),
-                    UnOp::Sqrt => (0..N).for_each(|k| r[k] = a[k].max(0.0).sqrt()),
-                    UnOp::Square => (0..N).for_each(|k| r[k] = a[k] * a[k]),
-                    UnOp::Floor => (0..N).for_each(|k| r[k] = a[k].floor()),
-                    _ => (0..N).for_each(|k| r[k] = un_f64(op, a[k])),
+                    UnOp::Neg => lanes(s, o, [a; 3], |x| -x[0]),
+                    UnOp::Abs => lanes(s, o, [a; 3], |x| x[0].abs()),
+                    UnOp::Sqrt => lanes(s, o, [a; 3], |x| x[0].max(0.0).sqrt()),
+                    UnOp::Square => lanes(s, o, [a; 3], |x| x[0] * x[0]),
+                    UnOp::Floor => lanes(s, o, [a; 3], |x| x[0].floor()),
+                    _ => lanes(s, o, [a; 3], |x| un_f64(op, x[0])),
                 }
             }
             Op::Bin(op) => {
-                let a = s[ins.a as usize];
-                let b = s[ins.b as usize];
-                let r = &mut s[o];
+                let ab = [ins.a as usize, ins.b as usize, ins.b as usize];
                 match op {
-                    BinOp::Add => (0..N).for_each(|k| r[k] = defined(a[k] + b[k])),
-                    BinOp::Sub => (0..N).for_each(|k| r[k] = defined(a[k] - b[k])),
-                    BinOp::Mul => (0..N).for_each(|k| r[k] = defined(a[k] * b[k])),
-                    BinOp::Div => (0..N).for_each(|k| r[k] = div_f64(a[k], b[k])),
-                    BinOp::Min => (0..N).for_each(|k| r[k] = a[k].min(b[k])),
-                    BinOp::Max => (0..N).for_each(|k| r[k] = a[k].max(b[k])),
-                    _ => (0..N).for_each(|k| r[k] = bin_f64(op, a[k], b[k])),
+                    BinOp::Add => lanes(s, o, ab, |x| defined(x[0] + x[1])),
+                    BinOp::Sub => lanes(s, o, ab, |x| defined(x[0] - x[1])),
+                    BinOp::Mul => lanes(s, o, ab, |x| defined(x[0] * x[1])),
+                    BinOp::Div => lanes(s, o, ab, |x| div_f64(x[0], x[1])),
+                    BinOp::Min => lanes(s, o, ab, |x| x[0].min(x[1])),
+                    BinOp::Max => lanes(s, o, ab, |x| x[0].max(x[1])),
+                    _ => lanes(s, o, ab, |x| bin_f64(op, x[0], x[1])),
                 }
             }
-            Op::Select => {
-                let c = s[ins.a as usize];
-                let a = s[ins.b as usize];
-                let b = s[ins.c as usize];
-                let r = &mut s[o];
-                (0..N).for_each(|k| r[k] = if c[k] < 0.0 { a[k] } else { b[k] });
-            }
+            Op::Select => lanes(s, o, [ins.a as usize, ins.b as usize, ins.c as usize], |x| if x[0] < 0.0 { x[1] } else { x[2] }),
             Op::Tag(_) | Op::Lipschitz | Op::Read | Op::Deriv(_) | Op::Real => s[o] = s[ins.a as usize],
             Op::Within(_) => s[o] = s[ins.c as usize],
             Op::Frame => s[o] = [0.0; N],
@@ -569,6 +565,27 @@ fn run_lanes<const N: usize>(tape: &Tape, ctx: &Ctx, x: &[f64; N], y: &[f64; N],
                 (0..N).for_each(|k| r[k] = g.component([x[k], y[k], z[k]], m));
             }
         }
+    }
+}
+
+/// Slot `o` of each lane as `f` of slots `args` there, read where they are:
+/// copying a slot of L lanes per operand cost more than the arithmetic. An
+/// output that reuses an operand's slot is written lane by lane, each read
+/// first.
+#[inline(always)]
+fn lanes<const N: usize>(s: &mut [[f64; N]], o: usize, args: [usize; 3], f: impl Fn([f64; 3]) -> f64) {
+    if args.contains(&o) {
+        for k in 0..N {
+            s[o][k] = f(args.map(|a| s[a][k]));
+        }
+        return;
+    }
+    let (below, rest) = s.split_at_mut(o);
+    let (r, above) = rest.split_first_mut().unwrap();
+    let at = |a: usize| if a < o { &below[a] } else { &above[a - o - 1] };
+    let x = args.map(at);
+    for k in 0..N {
+        r[k] = f([x[0][k], x[1][k], x[2][k]]);
     }
 }
 
@@ -986,13 +1003,22 @@ impl Fork for Plain<'_> {
 /// of two integers, each; atan2 across its cut away from the origin (x < 0
 /// throughout), near -pi where y < 0 and near pi where y >= 0 (atan2 is odd
 /// in y). None for any other instruction or box.
+///
+/// A floor's integers are its bound's ends rounded inward: a bound met with
+/// another (a first-order one, rounded outward) may end between integers,
+/// [-5e-324, 1] for a floor of 0 or 1, and a side at -5e-324 bounds what
+/// reads it at a value the floor never takes (atan2 of it near -pi, not pi).
 #[inline(never)]
 fn jump_sides(tape: &Tape, ctx: &Ctx, i: usize, ins: &crate::tape::Ins, y: I, x: I, v: I) -> Option<[I; 2]> {
     if fixed(tape, ctx, i) {
         return None;
     }
     match ins.op {
-        Op::Un(UnOp::Floor) if v.hi - v.lo == 1.0 => Some([I::point(v.lo), I::point(v.hi)]),
+        Op::Un(UnOp::Floor) => {
+            // + 0.0: one zero (the ceiling of -5e-324 is -0).
+            let (lo, hi) = (v.lo.ceil() + 0.0, v.hi.floor() + 0.0);
+            (hi - lo == 1.0).then(|| [I::point(lo), I::point(hi)])
+        }
         Op::Bin(BinOp::Atan2) => {
             if !(x.hi < 0.0 && y.lo < 0.0 && y.hi >= 0.0) {
                 return None;
@@ -2809,7 +2835,11 @@ impl<const N: usize> Fork for Scope<'_, N> {
 pub fn eval_grads(tape: &Tape, ctx: &Ctx, pts: &[V3]) -> Vec<[f64; 4]> {
     // A few points (a cell's samples) in narrow lanes: the slots are
     // allocated, and each op run, per lane.
-    if pts.len() <= 8 { grads_in::<8>(tape, ctx, pts) } else { grads_in::<L>(tape, ctx, pts) }
+    match pts.len() {
+        1 => grads_in::<1>(tape, ctx, pts),
+        ..=8 => grads_in::<8>(tape, ctx, pts),
+        _ => grads_in::<L>(tape, ctx, pts),
+    }
 }
 
 /// `eval_grads` in chunks of N points.
@@ -2836,41 +2866,16 @@ fn grads_in<const N: usize>(tape: &Tape, ctx: &Ctx, pts: &[V3]) -> Vec<[f64; 4]>
                 }
                 Op::Var(Var::T) => s[o] = [[ctx.t; N], [0.0; N], [0.0; N], [0.0; N]],
                 Op::Var(Var::Param(p)) => s[o] = [[ctx.params[p as usize]; N], [0.0; N], [0.0; N], [0.0; N]],
-                Op::Un(op) => {
-                    let a = s[ins.a as usize];
-                    let r = &mut s[o];
-                    for k in 0..N {
-                        let (v, fa) = dun(op, a[0][k]);
-                        r[0][k] = v;
-                        for j in 1..4 {
-                            r[j][k] = mul0(fa, a[j][k]);
-                        }
-                    }
-                }
-                Op::Bin(op) => {
-                    let a = s[ins.a as usize];
-                    let b = s[ins.b as usize];
-                    let r = &mut s[o];
-                    for k in 0..N {
-                        let (v, fa, fb) = dbin(op, a[0][k], b[0][k]);
-                        r[0][k] = v;
-                        for j in 1..4 {
-                            r[j][k] = defined(mul0(fa, a[j][k]) + mul0(fb, b[j][k]));
-                        }
-                    }
-                }
-                Op::Select => {
-                    let c = s[ins.a as usize];
-                    let a = s[ins.b as usize];
-                    let b = s[ins.c as usize];
-                    let r = &mut s[o];
-                    for k in 0..N {
-                        let src = if c[0][k] < 0.0 { &a } else { &b };
-                        for j in 0..4 {
-                            r[j][k] = src[j][k];
-                        }
-                    }
-                }
+                Op::Un(op) => grad_lanes(&mut s, o, [ins.a as usize; 3], |x| {
+                    let (v, fa) = dun(op, x[0][0]);
+                    [v, mul0(fa, x[0][1]), mul0(fa, x[0][2]), mul0(fa, x[0][3])]
+                }),
+                Op::Bin(op) => grad_lanes(&mut s, o, [ins.a as usize, ins.b as usize, ins.b as usize], |x| {
+                    let (v, fa, fb) = dbin(op, x[0][0], x[1][0]);
+                    let d = |j: usize| defined(mul0(fa, x[0][j]) + mul0(fb, x[1][j]));
+                    [v, d(1), d(2), d(3)]
+                }),
+                Op::Select => grad_lanes(&mut s, o, [ins.a as usize, ins.b as usize, ins.c as usize], |x| if x[0][0] < 0.0 { x[1] } else { x[2] }),
                 Op::Read => {
                     // An op of its coordinates: its partials (its form's
                     // gradient there) chained with theirs.
@@ -2911,6 +2916,27 @@ fn grads_in<const N: usize>(tape: &Tape, ctx: &Ctx, pts: &[V3]) -> Vec<[f64; 4]>
         }
     }
     out
+}
+
+/// `lanes` for values and their gradients (`grads_in`'s slots): each
+/// lane's value and partials as `f` of its operands'.
+#[inline(always)]
+fn grad_lanes<const N: usize>(s: &mut [[[f64; N]; 4]], o: usize, args: [usize; 3], f: impl Fn([[f64; 4]; 3]) -> [f64; 4]) {
+    let lane = |x: &[[f64; N]; 4], k: usize| [x[0][k], x[1][k], x[2][k], x[3][k]];
+    if args.contains(&o) {
+        for k in 0..N {
+            let r = f(args.map(|a| lane(&s[a], k)));
+            (0..4).for_each(|j| s[o][j][k] = r[j]);
+        }
+        return;
+    }
+    let (below, rest) = s.split_at_mut(o);
+    let (out, above) = rest.split_first_mut().unwrap();
+    let x = args.map(|a| if a < o { &below[a] } else { &above[a - o - 1] });
+    for k in 0..N {
+        let r = f([lane(x[0], k), lane(x[1], k), lane(x[2], k)]);
+        (0..4).for_each(|j| out[j][k] = r[j]);
+    }
 }
 
 /// The chain rule's product: `0 * inf = 0` (a zero partial means "no
@@ -3372,7 +3398,8 @@ fn same_branches(tape: &Tape, i: usize) -> bool {
 /// two sides are one function over the box (their difference exact and 0:
 /// atan2's branches a whole turn apart, read by a sine or cosine, or in
 /// degrees as turns less their floor; Grad::gap), or give one exact value
-/// where they meet (Grad::seam: a wrap read by its distance from 1/2).
+/// where they meet (Grad::seam: a wrap read by its distance from 1/2, a
+/// gear's angle from its nearest tooth's centre line).
 /// Elsewhere the field may jump where the sides meet, so its partials are
 /// unbounded, but along an axis the jump's arguments do not move along
 /// (each line along it takes one side throughout).
@@ -3453,27 +3480,101 @@ impl Grad<'_> {
     /// operation whose bound is a point only where it is exact (a sum,
     /// product, quotient, min, max, negation, magnitude or floor): there
     /// it is that number on both sides at every point where they meet.
+    /// Where the floor's argument is a / p, p one nonzero number over the
+    /// box, a is m p there, so a less p times the floor (std's mod) is p on
+    /// the side below and 0 on the side above, exactly. A value is
+    /// opposite where the sides bound it so by numbers v and -v, and odd
+    /// and even functions carry it (Seam::of): a polar repeat's angle in
+    /// its wedge is p/2 one side and -p/2 the other, its turned y
+    /// opposite, x alike, so a copy built symmetric about its wedge's
+    /// middle (of |y|, y y, ...) is alike.
     fn seam(&self, i: usize, r: usize, m: f64) -> Vec<bool> {
         let ins = &self.code[i];
+        let ssa = &self.tape.ssa;
+        let quotient = &ssa[ssa[i].a as usize];
+        let (a, p) = if matches!(quotient.op, Op::Bin(BinOp::Div)) { (Some(quotient.a), Some(quotient.b)) } else { (None, None) };
+        // Per window value: p, where it is p times the floor.
+        let mut times = vec![None; r - i + 1];
         let mut s0: Vec<I> = self.s.iter().map(|g| g.v).collect();
         s0[ins.a as usize] = I::point(m);
         let mut s1 = s0.clone();
         let o = ins.out as usize;
         (s0[o], s1[o]) = (I::point(m - 1.0), I::point(m));
-        let mut differs = vec![false; s0.len()];
-        differs[o] = true;
+        let mut sides = vec![Seam::Alike; s0.len()];
+        sides[o] = Seam::Differ;
         let mut alike = vec![false; r - i + 1];
         for j in i + 1..=r {
             let x = &self.code[j];
-            let (args, na) = x.args();
-            let (v0, v1) = (interval_ins(self.tape, self.ctx, j, x, &s0, self.b, None, None, false), interval_ins(self.tape, self.ctx, j, x, &s1, self.b, None, None, false));
+            let (mut v0, mut v1) =
+                (interval_ins(self.tape, self.ctx, j, x, &s0, self.b, None, None, false), interval_ins(self.tape, self.ctx, j, x, &s1, self.b, None, None, false));
+            let y = &ssa[j];
+            match y.op {
+                Op::Bin(BinOp::Mul) if Some(y.a) == p && y.b as usize == i || Some(y.b) == p && y.a as usize == i => {
+                    let v = s0[if Some(y.a) == p { x.a } else { x.b } as usize];
+                    times[j - i] = (v.lo == v.hi && v.lo != 0.0).then_some(v);
+                }
+                Op::Bin(BinOp::Sub) if Some(y.a) == a && (y.b as usize) > i && (y.b as usize) < j => {
+                    if let Some(v) = times[y.b as usize - i] {
+                        (v0, v1) = (v, I::point(0.0));
+                    }
+                }
+                _ => {}
+            }
             let exact = matches!(x.op, Op::Un(UnOp::Neg | UnOp::Abs | UnOp::Floor) | Op::Bin(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Min | BinOp::Max));
-            let d = args[..na].iter().any(|&a| differs[a as usize]) && !(exact && v0.lo == v0.hi && v0 == v1);
+            let points = exact && v0.lo == v0.hi && v1.lo == v1.hi;
+            let side = match Seam::of(x, &sides) {
+                Seam::Alike => Seam::Alike,
+                _ if points && v0 == v1 => Seam::Alike,
+                _ if points && v0.lo == -v1.lo => Seam::Opposite,
+                side => side,
+            };
             let o = x.out as usize;
-            (s0[o], s1[o], differs[o]) = (v0, v1, d);
-            alike[j - i] = !d;
+            (s0[o], s1[o], sides[o]) = (v0, v1, side);
+            alike[j - i] = side == Seam::Alike;
         }
         alike
+    }
+}
+
+/// How a value of a floor's window compares on the floor's two sides
+/// where they meet (Grad::seam), at every such point: the same, one the
+/// other's negation, or neither shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Seam {
+    Alike,
+    Opposite,
+    Differ,
+}
+
+impl Seam {
+    /// Instruction `x`'s, from its arguments' in `sides`: alike where they
+    /// are all alike; else through odd functions (negation, sine, a
+    /// product or quotient by an alike value: x / 0 is 0 either way) and
+    /// even ones (magnitude, square, cosine, a product of two opposites),
+    /// each an identity in real numbers, and a promise (its field's value).
+    fn of(x: &crate::tape::Ins, sides: &[Seam]) -> Seam {
+        use Seam::*;
+        let (args, na) = x.args();
+        let side = |k: usize| sides[args[k] as usize];
+        if (0..na).all(|k| side(k) == Alike) {
+            return Alike;
+        }
+        match x.op {
+            Op::Un(UnOp::Neg | UnOp::Sin | UnOp::Rad | UnOp::Deg) | Op::Tag(_) | Op::Real => side(0),
+            Op::Un(UnOp::Abs | UnOp::Square | UnOp::Cos) if side(0) == Opposite => Alike,
+            Op::Bin(BinOp::Mul | BinOp::Div) if side(0) != Differ && side(1) != Differ => {
+                if side(0) == side(1) {
+                    Alike
+                } else {
+                    Opposite
+                }
+            }
+            Op::Bin(BinOp::Add | BinOp::Sub) if side(0) == Opposite && side(1) == Opposite => Opposite,
+            // A promise's value is its field's; its frame's is 0.
+            Op::Lipschitz => side(0),
+            Op::Frame => Alike,
+            _ => Differ,
+        }
     }
 }
 

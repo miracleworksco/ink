@@ -94,6 +94,11 @@ pub struct Source {
     /// along (0 x, 1 y, 2 z): a result's displacement-x (clients stating
     /// how far a part warped by it is displaced).
     pub component: Option<(String, usize)>,
+    /// Why no claim is decided on these samples, if none is: a result whose
+    /// producer measures its answers' error over a band it did not measure
+    /// for this one (a flow's field, one placement of its lattice). A claim
+    /// reading it is unknown, saying this.
+    pub undecided: Option<String>,
 }
 
 /// How far a source may be from its samples, soundly.
@@ -151,8 +156,8 @@ impl GridData {
     pub fn fingerprint(&self, fp: &mut crate::graph::Fingerprint) {
         fp.key(self.samples).word(self.holds as u64).word(self.source.is_some() as u64);
         if let Some(s) = &self.source {
-            let Source { what: _, at: _, kind, res, band, measured, note: _, unit: _, span: _, component: _ } = &**s;
-            fp.str(kind).f64(*res).str(&format!("{band:?} {measured:?}"));
+            let Source { what: _, at: _, kind, res, band, measured, note: _, unit: _, span: _, component: _, undecided } = &**s;
+            fp.str(kind).f64(*res).str(&format!("{band:?} {measured:?} {undecided:?}"));
         }
     }
 

@@ -1989,7 +1989,7 @@ const COUNTER_IN_PARENT: &[(&str, &str)] = &[(
     ),
 )];
 
-/// A pair whose question reads t (hunt-3; the target-path reviews): the
+/// A pair whose question reads t: the
 /// files it is written in (the last is run), its target, how many pairs
 /// fail, each at a moment past 0 of the model's spans' hull (0, 1), and
 /// whether guaranteed (else measured: a shape whose own field moves).
@@ -2108,11 +2108,11 @@ const BY_ARG: &[(&str, &str)] = &[
 ];
 
 pub const REPROS: &[Repro] = &[
-    repro("hunt-3 placed import", HUNT, None, 1, true),
-    repro("hunt-3 placed import by path", HUNT, Some("root/carried"), 1, true),
-    repro("hunt-3 placed import by name", HUNT, Some("m.moving"), 1, true),
-    repro("hunt-3 nested", NESTED, None, 1, true),
-    repro("hunt-3 nested by path", NESTED, Some("root/outer/inner"), 1, true),
+    repro("placed import", HUNT, None, 1, true),
+    repro("placed import by path", HUNT, Some("root/carried"), 1, true),
+    repro("placed import by name", HUNT, Some("m.moving"), 1, true),
+    repro("nested", NESTED, None, 1, true),
+    repro("nested by path", NESTED, Some("root/outer/inner"), 1, true),
     repro("placed twice", BOTH, None, 2, true),
     repro("placed in a parent by path", BOTH, Some("root/outer/inner"), 1, true),
     repro("a wall apart at t = 0", WALL, None, 2, true),
@@ -2228,12 +2228,13 @@ fn interfere_asks_a_pair_reading_t_over_every_span_the_model_states() {
 /// Following a solve along t stops at the call's time limit: the moment
 /// past where it got is refused, saying so, and the call answers in time.
 /// tests/motion/solve-branch.ink's four-bar with its crank sped up
-/// (10 t + t^2 / 1000 rad), so no period of it is followed in its stead:
-/// 6.3 s to t = 300 unstopped.
+/// (10 t + t^2 / 1000 rad) and its rocker's pivot creeping out (350 +
+/// t / 100), so t is read outside the crank's angle and no period of it
+/// is followed in its stead: seconds to t = 300 unstopped.
 #[test]
 fn following_a_solve_stops_at_the_time_limit() {
     let s = Scratch::new("follow-limit");
-    let f = s.model("chirp.ink", "(import \"std\")\n(t-span 0 0.6283185307)\n(body crank (shape (move (box 100 4 4) 50 0 0)) (frame pin (at (move 100 0 0))))\n(body coupler (shape (move (box 400 4 4) 200 0 0)) (frame pin (at (move 400 0 0))))\n(body rocker (shape (move (box 300 4 4) 150 0 0)) (frame pin (at (move 300 0 0))))\n(param th3 0.85) (param th4 1.52)\n(assembly (fourbar (p 0))\n  (instance crank crank (at) (turn z p))\n  (instance coupler coupler (at (rot-z (rad->deg th3)) (frame-of crank pin)))\n  (instance rocker rocker (at (rot-z (rad->deg th4)) (move 350 0 0))))\n(assembly root (instance f (fourbar (rad->deg (+ (* 10 t) (* 0.001 t t))))))\n(def gap (- (get (frame-of root/f/coupler pin) \"origin\") (get (frame-of root/f/rocker pin) \"origin\")))\n(solve loop (unknowns th3 th4) (== (nth gap 0) 0) (== (nth gap 1) 0))\n(assert open (value (sin th4) > 0.5))\n");
+    let f = s.model("chirp.ink", "(import \"std\")\n(t-span 0 0.6283185307)\n(body crank (shape (move (box 100 4 4) 50 0 0)) (frame pin (at (move 100 0 0))))\n(body coupler (shape (move (box 400 4 4) 200 0 0)) (frame pin (at (move 400 0 0))))\n(body rocker (shape (move (box 300 4 4) 150 0 0)) (frame pin (at (move 300 0 0))))\n(param th3 0.85) (param th4 1.52)\n(assembly (fourbar (p 0))\n  (instance crank crank (at) (turn z p))\n  (instance coupler coupler (at (rot-z (rad->deg th3)) (frame-of crank pin)))\n  (instance rocker rocker (at (rot-z (rad->deg th4)) (move (+ 350 (* 0.01 t)) 0 0))))\n(assembly root (instance f (fourbar (rad->deg (+ (* 10 t) (* 0.001 t t))))))\n(def gap (- (get (frame-of root/f/coupler pin) \"origin\") (get (frame-of root/f/rocker pin) \"origin\")))\n(solve loop (unknowns th3 th4) (== (nth gap 0) 0) (== (nth gap 1) 0))\n(assert open (value (sin th4) > 0.5))\n");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
     let t0 = std::time::Instant::now();
     // Searches stop 3 s before the call's limit, to answer whole.

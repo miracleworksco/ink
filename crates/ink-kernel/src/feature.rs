@@ -335,6 +335,114 @@ pub fn surface_names(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64) -
     (sorted(seen), unseen)
 }
 
+/// The names (tags) that form the surface of a moving shape over its
+/// motion `span`, and those that may: surface_names at moments of the
+/// span, `first` the answer at its start, then the span halved again and
+/// again (1/2, 1/4, 3/4, 1/8, ...: up to MOMENTS), stopping once each of
+/// `names` that can form surface at some moment is seen at one. `at` gives a
+/// moment's context and a box holding its material (None: it is not looked
+/// at). Those that can are the names on a path over `over`, a context with
+/// t ranged over the span and a box holding its material at every moment
+/// (interval arithmetic bounds every moment at once): a name on none is
+/// proven to form none at any moment. Without `over`, every name may.
+/// (formed, unseen as surface_names gives it, with 0 cells for a name on
+/// no path at a moment looked at, the moments looked at.)
+pub fn surface_names_over(
+    shape: &Arc<Tape>,
+    cells: f64,
+    span: (f64, f64),
+    names: &[u32],
+    first: (Vec<u32>, Vec<(u32, usize, usize)>),
+    mut at: impl FnMut(f64) -> Option<(Ctx, V3, V3)>,
+    over: Option<(&Ctx, V3, V3)>,
+) -> (Vec<u32>, Vec<(u32, usize, usize)>, usize) {
+    let (mut formed, unseen) = first;
+    let mut found: HashMap<u32, (usize, usize)> = unseen.into_iter().map(|(t, n, f)| (t, (n, f))).collect();
+    let asked: Vec<u32> = names.iter().filter(|t| !formed.contains(t)).copied().collect();
+    let mut can: HashSet<u32> = match over {
+        Some((ctx, lo, hi)) => memo_names("names-over", shape, ctx, (lo, hi), cells, &asked, |c| names_over(shape, c, lo, hi, cells, &asked)),
+        None => names_on_paths(shape).into_iter().collect(),
+    };
+    can.extend(found.keys());
+    can.retain(|t| asked.contains(t));
+    let mut looked = 1;
+    let len = span.1 - span.0;
+    let halvings = (1..MOMENTS.ilog2() + 1).flat_map(|d| (1..1u32 << d).step_by(2).map(move |k| k as f64 / (1u32 << d) as f64));
+    for t in halvings.map(|f| span.0 + f * len) {
+        if can.iter().all(|t| formed.contains(t)) {
+            break;
+        }
+        let Some((ctx, lo, hi)) = at(t) else { continue };
+        looked += 1;
+        let (seen, unseen) = memo_names("surface-names", shape, &ctx, (lo, hi), cells, &[], |c| surface_names(shape, c, lo, hi, cells));
+        formed.extend(seen.into_iter().filter(|t| !formed.contains(t)).collect::<Vec<_>>());
+        for (t, n, f) in unseen {
+            let e = found.entry(t).or_default();
+            *e = (e.0.max(n), e.1.max(f));
+        }
+    }
+    formed.sort_unstable();
+    let mut unseen: Vec<(u32, usize, usize)> =
+        can.into_iter().filter(|t| !formed.contains(t)).map(|t| (t, found.get(&t).map_or(0, |e| e.0), found.get(&t).map_or(0, |e| e.1))).collect();
+    unseen.sort_unstable();
+    (formed, unseen, looked)
+}
+
+/// How many moments surface_names_over looks at, at most: a power of 2.
+const MOMENTS: u32 = 16;
+
+/// A names query of `shape` over `lo..hi`, `cells` across, cached
+/// (cache::memo_region): its answer gives tags by the model's numbers, as
+/// `asked` does.
+fn memo_names<T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug>(
+    query: &str,
+    shape: &Arc<Tape>,
+    ctx: &Ctx,
+    region: (V3, V3),
+    cells: f64,
+    asked: &[u32],
+    compute: impl FnOnce(&Ctx) -> T,
+) -> T {
+    let inputs = |fp: &mut ink_core::graph::Fingerprint| {
+        asked.iter().for_each(|&t| _ = fp.word(t as u64));
+        survey_inputs(shape, ctx, cells, true, fp)
+    };
+    crate::cache::memo_region(query, &[shape], ctx, region, inputs, compute)
+}
+
+/// Those of `asked` on the paths of the tapes interval arithmetic
+/// simplifies for the cells of `lo..hi`, `cells` across, the surface can
+/// cross over `ctx`'s scope (surface_names' proof, over every moment of a
+/// motion at once). A cell whose paths hold none not found yet is not
+/// descended.
+fn names_over(shape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, cells: f64, asked: &[u32]) -> HashSet<u32> {
+    let h = crate::query::max_extent(lo, hi) / cells;
+    let (grid, top) = root_for(sub(lo, [h; 3]), add(hi, [h; 3]), h, 1);
+    let found = Mutex::new(HashSet::new());
+    fn below(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, asked: &[u32], found: &Mutex<HashSet<u32>>) {
+        let mut ch = vec![BOTH; tape.len()];
+        let r = eval_interval(tape, ctx, grid.cell_box(cell), Some(&mut ch));
+        if r.none_inside() || r.all_inside() {
+            return;
+        }
+        let sub = tape.narrowed(&ch);
+        let names: Vec<u32> = names_on_paths(&sub).into_iter().filter(|t| asked.contains(t)).collect();
+        {
+            let mut f = found.lock().unwrap();
+            if names.iter().all(|t| f.contains(t)) {
+                return;
+            }
+            if cell.size <= 1 {
+                f.extend(names);
+                return;
+            }
+        }
+        cell.children().par_iter().for_each(|k| below(&sub, ctx, grid, *k, asked, found));
+    }
+    below(shape, ctx, &grid, top, asked, &found);
+    found.into_inner().unwrap()
+}
+
 /// How much finer than its cells surface_names searches for a name it has
 /// not seen, and in how many of the cells it is on a path in, at most.
 const FINER: i64 = 8;
@@ -362,7 +470,7 @@ fn names_below(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, found: &Fou
     if r.none_inside() || r.all_inside() {
         return;
     }
-    let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
+    let sub = tape.narrowed(&ch);
     let names = names_on_paths(&sub);
     {
         let mut f = found.names.lock().unwrap();
@@ -511,7 +619,7 @@ pub fn intervals_over(tape: &Arc<Tape>, ctx: &Ctx, boxes: &[[ink_core::interval:
         let mut ch = vec![BOTH; tape.len()];
         counted(tape);
         eval_interval(tape, ctx, cell, Some(&mut ch));
-        let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
+        let sub = tape.narrowed(&ch);
         // Halved on each axis it is more than twice as wide as its boxes
         // (where it can be).
         let mid = cell.map(|x| x.mid());
@@ -664,6 +772,8 @@ pub fn plane_area_in_cell(c: V3, h: f64, q: V3, n: V3) -> f64 {
 /// the thinnest, so the answer is the one tracing every ray in full gives.
 /// Rays spread over the samples go first (SPREAD), so how soon the thinnest
 /// walls are found does not hang on where they come in the samples' order.
+/// Samples whose rays see the same (`alike`: a wall's at every height of an
+/// extrusion, a face's across it) share one ray's answer.
 /// Returns where the thinnest sample is and its thickness (the first in
 /// sample order where several tie; a ray with no exit measures the box's
 /// diagonal); None: no sample measured one. Stopped: the call's time limit
@@ -690,20 +800,23 @@ fn thinnest(local: &Local, pts: &[(V3, V3, f64)], h: f64, diag: f64) -> Result<O
     // The thinnest so far (positive floats order as their bits).
     let best = AtomicU64::new(diag.to_bits());
     let stopped = AtomicBool::new(false);
-    // Sample i's thickness: None where it cannot be the thinnest.
-    let ray = |i: usize| -> Option<f64> {
+    // Sample i's thickness (None where it cannot be the thinnest), and how
+    // far along its ray that read the field.
+    let eps = 0.05 * h;
+    let ray = |i: usize| -> (Option<f64>, f64) {
         if stopped.load(Relaxed) || crate::stop::reached() {
             stopped.store(true, Relaxed);
-            return None;
+            return (None, 0.0);
         }
         let (p, n, _) = pts[i];
         let stop = f64::from_bits(best.load(Relaxed));
-        let Some(t) = ray_to_within(local, p, scale(n, -1.0), (1e-3 * h, diag), Side::Outside, 0.05 * h, stop).map(|x| x.t) else {
+        let Some(t) = ray_to_within(local, p, scale(n, -1.0), (1e-3 * h, diag), Side::Outside, eps, stop).map(|x| x.t) else {
             // No exit at all, or none before the thinnest so far.
-            return (stop == diag).then_some(diag);
+            return ((stop == diag).then_some(diag), stop);
         };
+        let reach = t + eps;
         if t > stop {
-            return None;
+            return (None, reach);
         }
         // A wall's far side faces back at the ray (normals within 60
         // degrees of opposite). An exit through a neighbouring face, as
@@ -713,21 +826,113 @@ fn thinnest(local: &Local, pts: &[(V3, V3, f64)], h: f64, diag: f64) -> Result<O
         let g = eval_grads(&local.tape_over(&q.map(ink_core::interval::I::point)), ctx, &[q])[0];
         let gl = (g[1] * g[1] + g[2] * g[2] + g[3] * g[3]).sqrt();
         if (gl > 0.0 && (g[1] * n[0] + g[2] * n[1] + g[3] * n[2]) / gl > -0.5) || t < 0.25 * h {
-            return None;
+            return (None, reach);
         }
         best.fetch_min(t.to_bits(), Relaxed);
-        Some(t)
+        (Some(t), reach)
     };
-    let mut each: Vec<Option<f64>> = vec![None; pts.len()];
+    // Each group's first ray, then the rest of each (shared where they see
+    // the same): every group has been looked at before any is split.
+    let (order, groups) = alike(pts);
+    let group = |g: usize| &order[groups[g].clone()];
+    let mut first = vec![(None, 0.0); groups.len()];
     for (k, &every) in SPREAD.iter().enumerate() {
-        let these: Vec<usize> = (0..pts.len()).step_by(every).filter(|&i| SPREAD[..k].iter().all(|&s| i % s != 0)).collect();
-        let got: Vec<Option<f64>> = these.par_iter().map(|&i| ray(i)).collect();
-        these.into_iter().zip(got).for_each(|(i, t)| each[i] = t);
+        let these: Vec<usize> = (0..groups.len()).step_by(every).filter(|&i| SPREAD[..k].iter().all(|&s| i % s != 0)).collect();
+        let got: Vec<(Option<f64>, f64)> = these.par_iter().map(|&g| ray(group(g)[0])).collect();
+        these.into_iter().zip(got).for_each(|(g, r)| first[g] = r);
     }
+    let mut each: Vec<Option<f64>> = vec![None; pts.len()];
+    (0..groups.len()).for_each(|g| each[group(g)[0]] = first[g].0);
+    let many: Vec<usize> = (0..groups.len()).filter(|&g| groups[g].len() > 1).collect();
+    let got: Vec<Vec<(usize, Option<f64>)>> = many.par_iter().map(|&g| share(local, pts, group(g), first[g], &ray, eps, 4.0 * h)).collect();
+    got.into_iter().flatten().for_each(|(i, t)| each[i] = t);
     if stopped.into_inner() {
         return Err(Stopped);
     }
     Ok(pts.iter().zip(each).filter_map(|(s, t)| Some((s.0, t?))).min_by(|a, b| a.1.total_cmp(&b.1)))
+}
+
+/// The samples whose rays may see the same, in groups: one outward normal,
+/// and the same coordinates along each axis it has a component on, so the
+/// rays lie apart only along axes across the normal, along which none moves
+/// (a wall's at each height of an extrusion; a flat face's across it). The
+/// samples in order of their group, then their own, and each group's span
+/// of them, the groups in their first sample's order.
+fn alike(pts: &[(V3, V3, f64)]) -> (Vec<usize>, Vec<std::ops::Range<usize>>) {
+    // -0 and 0 alike.
+    let key = |i: usize| {
+        let (p, n, _) = pts[i];
+        (n.map(|x| (x + 0.0).to_bits()), std::array::from_fn::<_, 3, _>(|k| (n[k] != 0.0).then(|| p[k].to_bits())))
+    };
+    let mut order: Vec<usize> = (0..pts.len()).collect();
+    order.par_sort_unstable_by(|&i, &j| key(i).cmp(&key(j)).then(i.cmp(&j)));
+    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+    for (k, &i) in order.iter().enumerate() {
+        match groups.last_mut() {
+            Some(g) if key(order[g.start]) == key(i) => g.end = k + 1,
+            _ => groups.push(k..k + 1),
+        }
+    }
+    groups.sort_unstable_by_key(|g| order[g.start]);
+    (order, groups)
+}
+
+/// The answers of samples `members` (`alike`) by `ray` (an answer, and how
+/// far along its ray it read the field): the first's (given) shared by all
+/// where the field over the box their rays span that far, for its sign
+/// alone (query::signed), reads none of the axes they lie apart along: each
+/// ray then sees the field the first sees, moved along those axes, so meets
+/// the surface where it does. Else they are taken a block `block` across at
+/// a time, each block's first traced and shared so, or each of its rays
+/// traced. Each box asked counts as an evaluation along a ray.
+fn share(
+    local: &Local,
+    pts: &[(V3, V3, f64)],
+    members: &[usize],
+    first: (Option<f64>, f64),
+    ray: &(dyn Fn(usize) -> (Option<f64>, f64) + Sync),
+    eps: f64,
+    block: f64,
+) -> Vec<(usize, Option<f64>)> {
+    let n = pts[members[0]].1;
+    let apart: Vec<usize> = (0..3).filter(|&k| n[k] == 0.0).collect();
+    // Whether the rays from `these`, read `reach` along, all see the same.
+    let same = |these: &[usize], reach: f64| {
+        if these.len() == 1 {
+            return true;
+        }
+        let mut b = [ink_core::interval::I::new(f64::INFINITY, f64::NEG_INFINITY); 3];
+        for &i in these {
+            let p = pts[i].0;
+            for e in [p, sub(p, scale(n, reach + eps))] {
+                for k in 0..3 {
+                    b[k] = ink_core::interval::I::new(b[k].lo.min(e[k]).next_down(), b[k].hi.max(e[k]).next_up());
+                }
+            }
+        }
+        local.count_ray_evals(1);
+        b.iter().all(|x| x.lo.is_finite() && x.hi.is_finite()) && {
+            let read = crate::query::signed(&local.tape_over(&b), local.ctx(), b).space_read();
+            !apart.iter().any(|&k| read[k])
+        }
+    };
+    if same(members, first.1) {
+        return members.iter().map(|&i| (i, first.0)).collect();
+    }
+    let mut blocks: std::collections::BTreeMap<Vec<i64>, Vec<usize>> = Default::default();
+    for &i in members {
+        blocks.entry(apart.iter().map(|&k| (pts[i].0[k] / block).floor() as i64).collect()).or_default().push(i);
+    }
+    let blocks: Vec<Vec<usize>> = blocks.into_values().collect();
+    blocks
+        .par_iter()
+        .flat_map_iter(|these| {
+            let r = if these[0] == members[0] { first } else { ray(these[0]) };
+            let shared = same(these, r.1);
+            let rest = these[1..].iter().map(move |&i| (i, if shared { r.0 } else { ray(i).0 }));
+            std::iter::once((these[0], r.0)).chain(rest).collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -856,6 +1061,44 @@ mod tests {
         pts.par_iter().for_each(|&(p, n, _)| _ = crate::query::ray_to(&through, p, scale(n, -1.0), (1e-3 * h, diag), Side::Outside, 0.05 * h));
         let full = through.ray_evals();
         assert!(3 * most < full, "{most} evaluations, {full} tracing every ray through");
+    }
+
+    /// A stroke 0.8 wide and 10 long, on the diagonal, extruded 0 to 2 (an
+    /// emax of the profile and its span), sampled 0.05 apart: its walls'
+    /// rays at every height see what those at one height see (the field
+    /// along them, for its sign, reads no z), and its top's and bottom's
+    /// see the same at every point of the face inside the profile's walls
+    /// (it reads neither x nor y there). The thinnest is the profile's,
+    /// for about the evaluations the profile asked in the plane takes
+    /// (every ray traced: 1.36 M, 10 times the profile's).
+    #[test]
+    fn an_extrusions_rays_cost_what_its_profiles_do() {
+        use crate::test_fields::B;
+        use ink_core::graph::{BinOp, Var};
+        let thinnest = |solid: bool| {
+            let mut b = B::new();
+            let (x, y) = (b.v(Var::X), b.v(Var::Y));
+            let k = b.c(std::f64::consts::FRAC_1_SQRT_2);
+            let (u, v) = (b.bin(BinOp::Add, x, y), b.bin(BinOp::Sub, x, y));
+            let (u, v) = (b.bin(BinOp::Mul, u, k), b.bin(BinOp::Mul, v, k));
+            let (across, along) = (b.slab(u, 0.0, 0.4), b.slab(v, 0.0, 5.0));
+            let mut f = b.bin(BinOp::Max, across, along);
+            if solid {
+                let z = b.v(Var::Z);
+                let span = b.slab(z, 1.0, 1.0);
+                f = b.bin(BinOp::Emax, f, span);
+            }
+            let (t, ctx) = (Arc::new(b.tape(f)), Ctx::new(0.0, vec![]));
+            let (lo, hi) = ([-4.0, -4.0, 0.0], [4.0, 4.0, if solid { 2.0 } else { 0.0 }]);
+            let cells = crate::query::max_extent(lo, hi) / 0.05;
+            let (pts, h) = surface(&t, &ctx, lo, hi, cells);
+            let local = Local::new(&t, &ctx, sub(lo, [h; 3]), 4.0 * h);
+            let got = thinnest(&local, &pts, h, norm(sub(hi, lo)) + 4.0 * h).unwrap().unwrap();
+            (got.1, local.ray_evals())
+        };
+        let ((solid, rays), (plane, plane_rays)) = (thinnest(true), thinnest(false));
+        assert!((solid - 0.8).abs() < 1e-9 && (plane - 0.8).abs() < 1e-9, "{solid} {plane}");
+        assert!(rays <= 2 * plane_rays, "extruded: {rays} evaluations, the profile {plane_rays}");
     }
 
     #[test]

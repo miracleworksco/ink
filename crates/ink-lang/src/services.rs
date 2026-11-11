@@ -158,6 +158,7 @@ impl Doc {
         // The sampled data a field reads (directly, or through a solve
         // setting a param it reads), which its own bound does not reach.
         let mut inner: Vec<String> = Vec::new();
+        let mut from: Vec<std::sync::Arc<crate::grid::Source>> = Vec::new();
         let (field, stl, what) = if name == "import-stl" {
             let SK::Str(rel) = &src.k else { return Err(self.err(src, "import-stl path must be a string")) };
             let path = self.dir().join(rel);
@@ -172,7 +173,8 @@ impl Doc {
         } else {
             let f = self.field(src, env)?;
             self.bake(&[f]);
-            inner = self.inexact(&[f], &[]).samples.iter().map(|s| s.what.clone()).collect();
+            from = self.inexact(&[f], &[]).samples;
+            inner = from.iter().map(|s| s.what.clone()).collect();
             let mut text = src.to_string();
             if text.chars().count() > 80 {
                 text = text.chars().take(77).chain("...".chars()).collect();
@@ -214,8 +216,14 @@ impl Doc {
                 unit: "",
                 span: None,
                 component: None,
+                // (a refusal of what it was sampled from is its own)
+                undecided: crate::inexact::undecided_from(&from),
             };
             let data = std::sync::Arc::new(crate::grid::GridData::new(c.origin, c.h, c.dims, c.values).with_source(source));
+            // what it was sampled from, as `(bounds f)` keeps it
+            if let Some(s) = data.source().filter(|_| !from.is_empty()) {
+                d.found_from.push((s.clone(), from.clone()));
+            }
             let at = [d.g.var(Var::X), d.g.var(Var::Y), d.g.var(Var::Z)];
             let mut f = d.g.grid(data, at);
             // A region import is the mesh's solid inside the box it was cut

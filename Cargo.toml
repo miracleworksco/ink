@@ -11,21 +11,21 @@ resolver = "3"
 # toolchain the workspace builds and tests with (1.94 lacks the atomics'
 # try_update, which ink-io uses).
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 rust-version = "1.95"
 repository = "https://github.com/miracleworksco/ink"
 
 # The crates as each other's dependencies: a path here, a version where
 # published (cargo package needs both). Keep the versions the workspace's.
 [workspace.dependencies]
-ink-core = { path = "crates/ink-core", version = "0.1.4" }
-ink-kernel = { path = "crates/ink-kernel", version = "0.1.4" }
-ink-io = { path = "crates/ink-io", version = "0.1.4" }
-ink-lang = { path = "crates/ink-lang", version = "0.1.4" }
-ink-design = { path = "crates/ink-design", version = "0.1.4" }
-ink-mma = { path = "crates/ink-mma", version = "0.1.4" }
-ink = { path = "crates/ink", version = "0.1.4" }
-ink-cli = { path = "crates/ink-cli", version = "0.1.4" }
+ink-core = { path = "crates/ink-core", version = "0.1.5" }
+ink-kernel = { path = "crates/ink-kernel", version = "0.1.5" }
+ink-io = { path = "crates/ink-io", version = "0.1.5" }
+ink-lang = { path = "crates/ink-lang", version = "0.1.5" }
+ink-design = { path = "crates/ink-design", version = "0.1.5" }
+ink-mma = { path = "crates/ink-mma", version = "0.1.5" }
+ink = { path = "crates/ink", version = "0.1.5" }
+ink-cli = { path = "crates/ink-cli", version = "0.1.5" }
 
 # Lints, for every crate here (each says `[lints] workspace = true`).
 # Clippy's default set stays at warn: `cargo clippy --workspace

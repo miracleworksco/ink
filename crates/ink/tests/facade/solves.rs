@@ -274,6 +274,70 @@ fn a_solve_that_repeats_in_t_is_followed_one_period() {
     }
 }
 
+/// A solve whose equations read t through one expression of t, and repeat
+/// in it, is followed one period of that and every other moment folded
+/// into it: solve-branch.ink's crank sped up, at 10 t + t^2 / 1000 rad, is
+/// at t = 300 (490 turns) and t = 3e4 (1.4 M turns) the rocker the crank at
+/// 10 t' rad puts there, t' that angle over 10, in a few hundred steps.
+#[test]
+fn a_solve_that_repeats_in_an_expression_of_t_is_followed_one_period() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/motion/solve-branch.ink")).unwrap().replace("(import \"std\")", "");
+    let plain = view(&src, "clock-plain").unwrap();
+    let certified = || ink::lang::follow::CERTIFIED.with(std::cell::Cell::get);
+    let before = certified();
+    let sped = view(&src.replace("(fourbar (* (rad->deg 10) t))", "(fourbar (rad->deg (+ (* 10 t) (/ (* t t) 1000))))"), "clock-sped").unwrap();
+    for t in [300.0, 3e4] {
+        let (ctx, failed) = sped.doc.ctx_at(&[], t).unwrap();
+        let (want, _) = plain.doc.ctx_at(&[], (10.0 * t + t * t / 1000.0) / 10.0).unwrap();
+        for name in ["th3", "th4"] {
+            let k = sped.doc.param_index(name).unwrap();
+            assert!(failed.is_empty() && (ctx.params[k] - want.params[k]).abs() < 1e-6, "t = {t}: {name} {} against {}, {failed:?}", ctx.params[k], want.params[k]);
+        }
+        assert!(certified() - before < 1000, "t = {t}: {} steps", certified() - before);
+    }
+}
+
+/// A solve reading one that repeats is followed one of its periods where
+/// its equations are unchanged by a shift of its unknowns and what it
+/// reads together: w = 2 th, th = 10 t + pi / 6 turning a turn a period,
+/// moves by two turns, so at t = 300 and 1e7 (16 M periods) it is twice
+/// th, in a few dozen steps.
+#[test]
+fn a_solve_reading_one_that_repeats_moves_with_it() {
+    let certified = || ink::lang::follow::CERTIFIED.with(std::cell::Cell::get);
+    let before = certified();
+    let v = view("(solve A (unknowns (th 0.5)) (== (sin (- th (* 10 t))) 0.5)) (solve B (unknowns (w 1)) (== w (* 2 th)))", "period-twice").unwrap();
+    let w = v.doc.param_index("w").unwrap();
+    for t in [300.0, 1e7, -1e7] {
+        let (ctx, failed) = v.doc.ctx_at(&[], t).unwrap();
+        let want = 2.0 * (10.0 * t + PI / 6.0);
+        assert!(failed.is_empty() && (ctx.params[w] - want).abs() < 1e-6 * want.abs(), "t = {t}: w {} against {want}, {failed:?}", ctx.params[w]);
+        assert!(certified() - before < 200, "t = {t}: {} steps", certified() - before);
+    }
+}
+
+/// Folding never lands on another root. (u + i v)^2 = e^(i g), g = 10 t +
+/// t^2 / 1000, repeats every 2 pi of g, but its root from (1, 0), (cos g/2,
+/// sin g/2), only every 4 pi: after one period it is (-1, 0), the other
+/// root, so the root at 0 held is not the one followed there and nothing
+/// is folded; at t = 1, 1.6 periods on, it is the followed root, not its
+/// negative. A clock that jumps (10 t, plus 1 past t = 5) is not folded
+/// across the jump: following stops there, as it does for t itself.
+#[test]
+fn a_fold_never_lands_on_another_root() {
+    let v = view("(def g (+ (* 10 t) (/ (* t t) 1000))) (solve s (unknowns (u 1) (v 0)) (== (- (square u) (square v)) (cos g)) (== (* 2 u v) (sin g)))", "fold-cover").unwrap();
+    let (u, w) = (v.doc.param_index("u").unwrap(), v.doc.param_index("v").unwrap());
+    for t in [1.0, 2.0] {
+        let (ctx, failed) = v.doc.ctx_at(&[], t).unwrap();
+        let g = 10.0 * t + t * t / 1000.0;
+        let got = (ctx.params[u], ctx.params[w]);
+        assert!(failed.is_empty() && (got.0 - (g / 2.0).cos()).abs() < 1e-6 && (got.1 - (g / 2.0).sin()).abs() < 1e-6, "t = {t}: {got:?} against g / 2 = {}, {failed:?}", g / 2.0);
+    }
+    let v = view("(def g (+ (* 10 t) (select (- t 5) 0 1))) (solve s (unknowns (th 0.5)) (== (sin (- th g)) 0.5))", "fold-jump").unwrap();
+    let (_, failed) = v.doc.ctx_at(&[], 10.0).unwrap();
+    assert!(!failed.is_empty(), "followed across the jump");
+}
+
 /// An unknown with no period of its own is not moved over t's period: q
 /// = sin t repeats with q held, shown so where its root at 0 lands in the
 /// tube at 2 pi. At t = 1e12 (followed step by step, about a step per

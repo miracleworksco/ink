@@ -8,7 +8,7 @@
 use ink_core::V3;
 use ink_core::eval::{Ctx, eval_grads, eval_interval, eval_points};
 use ink_core::interval::I;
-use ink_core::tape::{BOTH, Tape};
+use ink_core::tape::{BOTH, Pass, Tape};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -132,16 +132,6 @@ where
     descend_inner(tape, ctx, grid, cell, leaf, pad, on_leaf, on_full)
 }
 
-/// `descend_padded` with no full cells kept, which stops going down once
-/// `go` says so (a limit on the leaves reached).
-pub fn descend_while<R, FL>(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, leaf: i64, pad: f64, go: &(dyn Fn() -> bool + Sync), on_leaf: &FL) -> Vec<R>
-where
-    R: Send,
-    FL: Fn(&Arc<Tape>, Cell) -> Option<R> + Sync,
-{
-    descend_go(tape, ctx, grid, cell, leaf, pad, go, on_leaf, &|_: &Arc<Tape>, _| None)
-}
-
 fn descend_inner<R, FL, FF>(tape: &Arc<Tape>, ctx: &Ctx, grid: &Grid, cell: Cell, leaf: i64, pad: f64, on_leaf: &FL, on_full: &FF) -> Vec<R>
 where
     R: Send,
@@ -177,7 +167,7 @@ where
     if r.all_inside() {
         return on_full(tape, cell).into_iter().collect();
     }
-    let sub = if ch.iter().any(|&c| c != BOTH) { Arc::new(tape.simplify(&ch)) } else { tape.clone() };
+    let sub = tape.narrowed(&ch);
     if cell.size <= leaf {
         return on_leaf(&sub, cell).into_iter().collect();
     }
@@ -201,8 +191,10 @@ pub struct Local<'a> {
     /// threads reading one map contend for it, and a block is mostly
     /// reused by the thread that first needed it.
     near: Vec<Mutex<HashMap<(u32, [i64; 3]), Arc<Tape>>>>,
-    /// Instructions run on points so far (`work`).
+    /// Machine instructions run on points so far (`work`), and making
+    /// blocks' tapes (`blocks_work`).
     work: std::sync::atomic::AtomicUsize,
+    made: std::sync::atomic::AtomicUsize,
     /// Evaluations along rays traced through it so far (`ray_evals`).
     rays: std::sync::atomic::AtomicUsize,
 }
@@ -214,24 +206,40 @@ impl<'a> Local<'a> {
     /// The smallest blocks are of `size`, on a lattice through `origin`.
     pub fn new(tape: &'a Arc<Tape>, ctx: &'a Ctx, origin: V3, size: f64) -> Local<'a> {
         let near = (0..rayon::current_num_threads()).map(|_| Mutex::new(HashMap::new())).collect();
-        Local { tape, ctx, origin, size, blocks: RwLock::new(HashMap::new()), near, work: Default::default(), rays: Default::default() }
+        Local { tape, ctx, origin, size, blocks: RwLock::new(HashMap::new()), near, work: Default::default(), made: Default::default(), rays: Default::default() }
     }
 
     /// No blocks: every point and box gets the whole tape (for a few
     /// evaluations, where simplifying would cost more than it saves).
     pub fn whole(tape: &'a Arc<Tape>, ctx: &'a Ctx) -> Local<'a> {
-        Local { tape, ctx, origin: [0.0; 3], size: f64::INFINITY, blocks: RwLock::new(HashMap::new()), near: Vec::new(), work: Default::default(), rays: Default::default() }
+        Local {
+            tape,
+            ctx,
+            origin: [0.0; 3],
+            size: f64::INFINITY,
+            blocks: RwLock::new(HashMap::new()),
+            near: Vec::new(),
+            work: Default::default(),
+            made: Default::default(),
+            rays: Default::default(),
+        }
     }
 
     pub fn ctx(&self) -> &'a Ctx {
         self.ctx
     }
 
-    /// The instructions it has run on points: each point's block's tape's
-    /// length, summed (what reading points here cost, not counting the
-    /// blocks' simplification).
+    /// The machine instructions it has run on points (Tape::work): each
+    /// point's block's tape's, summed (what reading points here cost, not
+    /// counting making the blocks' tapes: `blocks_work`).
     pub fn work(&self) -> usize {
         self.work.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The machine instructions making its blocks' tapes has run: each its
+    /// parent's over the block, and simplified.
+    pub fn blocks_work(&self) -> usize {
+        self.made.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The evaluations of the field along rays traced through it
@@ -276,18 +284,18 @@ impl<'a> Local<'a> {
 
     /// The field's values at `pts`, as `eval_points` gives them.
     pub fn eval(&self, pts: &[V3]) -> Vec<f64> {
-        self.each(pts, |tape, p, out| eval_points(tape, self.ctx, p, out))
+        self.each(pts, Pass::Point, |tape, p, out| eval_points(tape, self.ctx, p, out))
     }
 
     /// Values and spatial gradients at `pts`, as `eval_grads` gives them.
     pub fn grads(&self, pts: &[V3]) -> Vec<[f64; 4]> {
-        self.each(pts, |tape, p, out| *out = eval_grads(tape, self.ctx, p))
+        self.each(pts, Pass::Gradient, |tape, p, out| *out = eval_grads(tape, self.ctx, p))
     }
 
     /// `run` over the points in each block, with the block's tape: points
     /// are taken in runs of 4096 (callers pass them in an order that
     /// follows space, as a mesh's are), each run grouped by block.
-    fn each<R: Copy + Default + Send>(&self, pts: &[V3], run: impl Fn(&Tape, &[V3], &mut Vec<R>) + Sync) -> Vec<R> {
+    fn each<R: Copy + Default + Send>(&self, pts: &[V3], pass: Pass, run: impl Fn(&Tape, &[V3], &mut Vec<R>) + Sync) -> Vec<R> {
         let key = |p: &V3| -> [i64; 3] { std::array::from_fn(|a| ((p[a] - self.origin[a]) / self.size).floor() as i64) };
         let mut out = vec![R::default(); pts.len()];
         out.par_chunks_mut(4096).zip(pts.par_chunks(4096)).for_each(|(out, pts)| {
@@ -296,7 +304,7 @@ impl<'a> Local<'a> {
             let (mut p, mut v) = (Vec::new(), Vec::new());
             for g in order.chunk_by(|a, b| a.0 == b.0) {
                 let tape = self.block(0, g[0].0);
-                self.work.fetch_add(tape.len() * g.len(), std::sync::atomic::Ordering::Relaxed);
+                self.work.fetch_add(tape.work(pass) * g.len(), std::sync::atomic::Ordering::Relaxed);
                 p.clear();
                 p.extend(g.iter().map(|&(_, i)| pts[i as usize]));
                 v.clear();
@@ -332,7 +340,9 @@ impl<'a> Local<'a> {
         let parent = self.block(level + 1, k.map(|x| x.div_euclid(2)));
         let mut ch = vec![BOTH; parent.len()];
         eval_interval(&parent, self.ctx, self.block_box(level, k), Some(&mut ch));
-        let t = if ch.iter().any(|&c| c != BOTH) { Arc::new(parent.simplify(&ch)) } else { parent };
+        let t = parent.narrowed(&ch);
+        let simplified = if Arc::ptr_eq(&t, &parent) { 0 } else { parent.simplify_work(&t) };
+        self.made.fetch_add(parent.work(Pass::Box) + simplified, std::sync::atomic::Ordering::Relaxed);
         self.blocks.write().unwrap().entry((level, k)).or_insert(t).clone()
     }
 

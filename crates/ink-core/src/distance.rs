@@ -510,8 +510,19 @@ mod tests {
     fn samples_of_a_distance_are_never_shown_one() {
         let pts: Vec<f32> = (0..125).map(|l| crate::grid::ijk(l, [5; 3]).iter().map(|&i| (i as f64 - 2.0).powi(2)).sum::<f64>().sqrt() as f32 - 1.0).collect();
         let grid = |kind: &'static str| {
-            let source =
-                crate::grid::Source { what: "ball".into(), at: "test".into(), kind, res: 1.0, band: None, measured: None, note: None, unit: "mm", span: None, component: None };
+            let source = crate::grid::Source {
+                what: "ball".into(),
+                at: "test".into(),
+                kind,
+                res: 1.0,
+                band: None,
+                measured: None,
+                note: None,
+                unit: "mm",
+                span: None,
+                component: None,
+                undecided: None,
+            };
             std::sync::Arc::new(crate::grid::GridData::new([-2.0; 3], 1.0, [5; 3], pts.clone()).with_source(source))
         };
         let mut g = Graph::new();

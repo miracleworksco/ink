@@ -1345,8 +1345,8 @@ fn a_drafted_line_is_read_about_its_middle() {
     // a bulge of 2.9e-9 (at the size where a bow is kept, not dropped),
     // drafted 45 degrees or mixed: the lines its construction adds there
     // slope alike read about their middle or an end, and read about an
-    // end, the bound at a point 0.3 microns outside spanned 0 (lane E's
-    // arcbound probes: 90 of 160 went unknown, 30 more excluded the side
+    // end, the bound at a point 0.3 microns outside spanned 0 (in probes
+    // of arc bounds: 90 of 160 went unknown, 30 more excluded the side
     // they are on). Each point's bound there is on its side.
     let outline = |drafts: &str| format!("(polygon (vec (vec 0 0 -2.9e-09 0.02) (vec 10 0 0 0.02) (vec 10 10 0 0.02) (vec 0 10 0 0.02)) (vec {drafts}) 0 0.5)");
     let ctx = crate::eval::Ctx::new(0.0, vec![]);

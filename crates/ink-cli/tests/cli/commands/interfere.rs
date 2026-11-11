@@ -36,6 +36,49 @@ fn seated_screws_hold_to_the_accuracy_and_threads_are_excused_by_their_zones() {
     );
 }
 
+/// An insert tapped M3 (std's thread-iso, 0.05 clear) and a screw on
+/// its axis, placed `place`.
+fn threads(place: &str) -> String {
+    format!(
+        "(import \"std\")\n(body insert (shape (subtract (cylinder-z 3 4) (- (thread-iso 3 .5) .05))))\n\
+(body screw (shape (max (thread-iso 2.9 .5) (cylinder-z 2 8))))\n(assembly root (instance insert insert) (instance screw screw (at {place})))\n"
+    )
+}
+
+#[test]
+fn threads_in_phase_hold_outright_and_out_of_phase_fail() {
+    // A screw moved along its axis by whole turns of its pitch is in phase:
+    // its engagement is proven clear outright on one cross-section. Turned
+    // half a turn, it overlaps.
+    let s = Scratch::new("threads");
+    let pair = |place: &str| {
+        let d = s.ink(["interfere", &s.model(&format!("threads-{}.ink", place.len()), &threads(place)), "--accuracy", "0.02575"]).ok();
+        pairs(&d)[0].clone()
+    };
+    let seated = pair("(move 0 0 1.5)");
+    assert!(verdict(&seated) == "holds" && seated["held"] == "outright", "{}", pretty(&seated));
+    let turned = pair("(rot-z 180) (move 0 0 1.5)");
+    assert!(verdict(&turned) == "fails", "{}", pretty(&turned));
+}
+
+#[test]
+fn a_seated_thread_moved_over_a_tolerance_holds_only_where_every_value_is_clear() {
+    // The screw lifted up its axis by a toleranced param: through half a
+    // pitch it meets the insert's thread, 0.07 deep at the band's end (by
+    // sampling), and is never held; over a hundredth of a pitch it stays
+    // clear, held outright.
+    let s = Scratch::new("threads-ranged");
+    let pair = |tol: f64| {
+        let text = format!("(param lift 0 (tol 0 {tol}))\n{}", threads("(move 0 0 (+ 1.5 lift))"));
+        let d = s.ink(["interfere", &s.model(&format!("lift-{tol}.ink"), &text), "--accuracy", "0.02575"]).ok();
+        pairs(&d)[0].clone()
+    };
+    let wide = pair(0.25);
+    assert!(verdict(&wide) != "holds", "{}", pretty(&wide));
+    let narrow = pair(0.005);
+    assert!(verdict(&narrow) == "holds" && narrow["held"] == "outright", "{}", pretty(&narrow));
+}
+
 #[test]
 fn parts_seated_by_frames_hold_guaranteed() {
     // A part seated by frames is placed exactly: its touching faces are

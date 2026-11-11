@@ -148,7 +148,7 @@ fn requirements(v: &mut ModelView, name: &str) -> Result<(Objective, Vec<(String
 /// decided, how it held (the thin air it set aside). An empty shape has no
 /// wall and no void.
 pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<f64>, accuracy: f64) -> Result<Measured, InkError> {
-    let measured = |value, at, res| Measured { value, at, res, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None };
+    let measured = |value, at, res| Measured { value, at, res, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None, band: None };
     Ok(match metric {
         "min-thickness" => match v.thickness(f, res) {
             None => measured(Ok(f64::INFINITY), None, None),
@@ -161,7 +161,14 @@ pub(crate) fn shape_metric(v: &mut ModelView, metric: &str, f: u32, res: Option<
                 let held = c.count().map(|_| if c.thin == 0 { Held::Outright } else { Held::SetAside { cells: c.thin, at: c.thin_at } });
                 let mut m = Measured { proven: true, held, ..measured(Ok(c.at_least as f64), c.count().is_none().then_some(c.at).flatten(), None) };
                 if let Some((what, decide)) = c.why_undecided() {
-                    m.excluded.push(crate::lang::Excluded { key: "undecided-cells", value: c.at_most.map_or(f64::INFINITY, |n| n as f64), at: c.at, what, decide });
+                    m.excluded.push(crate::lang::Excluded {
+                        key: "undecided-cells",
+                        value: c.at_most.map_or(f64::INFINITY, |n| n as f64),
+                        at: c.at,
+                        what,
+                        decide,
+                        singular: false,
+                    });
                 }
                 m
             }

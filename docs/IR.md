@@ -473,7 +473,9 @@ only this way.
   finer res is coarsened, with a warning), so sample a small fit over a
   small `region`. A grid holds at most 64 million values, as f32.
 
-A claim that reads a sampled field is an estimate (Results: `samples`).
+A claim that reads a sampled field is an estimate (Results: `samples`);
+one that reads a result whose form measures a band it did not measure for
+it (a flow's field) is unknown, saying so.
 Sampled data cannot shape the model at load time (a `for` list, an `if`,
 a count, a form's setting): that is an error. `(bounds f)` of it bounds the samples, its
 numbers measured like them: size and place shapes with them. Found empty,
@@ -784,10 +786,12 @@ Catalog tapped holes and nuts have thread clearance, so a catalog screw
 needs no zone when its thread is in phase with theirs, as it is when
 placed on their thread frame (a part's `tap-0` ..., a screw's and a nut's
 `seat`): `(instance s screw (at (along-thread h p) (frame-of plate tap-0))
-seat)` seats a screw h out from the tap, turned with the thread. Threads
-placed by hand can be out of phase and overlap (an M3 screw in its nut,
-turned 180 degrees, 0.08 mm deep). Faces seated by CFRAME need no zone:
-touching faces are proven to the accuracy.
+seat)` seats a screw h out from the tap, turned with the thread; in
+phase, its engagement is proven clear outright on one cross-section a
+pitch tall (two threads of one pitch on one axis are the same at every
+turn). Threads placed by hand can be out of phase and overlap (an M3
+screw in its nut, turned 180 degrees, 0.08 mm deep). Faces seated by
+CFRAME need no zone: touching faces are proven to the accuracy.
 
 **Relations.** `(relate A B KIND)` says what A and B (named as in
 `contact`) are to each other: claims and data, checked where it is used,
@@ -1085,7 +1089,12 @@ arithmetic on one is an error: use `place`.
   too thin for coarser cells is checked, and answered, on finer ones:
   `res` says which). One that holds by less than its grid error, or that
   no such grids read, is `unknown`; so is one whose run failed, with the
-  reason in `unavailable`.
+  reason in `unavailable`. A metric
+  measured with a band (where the value may lie, an estimate: a flow's
+  `drag` over placements of its cells) is answered on the band widened by
+  that grid error on each side, whether it holds or not: it holds only
+  where both ends hold and fails only where both fail; else `unknown`,
+  naming the part that dominates.
 
 **Bounds and comparisons.** A claim's bound (the `v`) is any expression
 of constants and params, at the current `--param` values (solved params
@@ -1133,6 +1142,7 @@ Its other fields say what the answer rests on:
 | `unbounded`, `in_window` | a shape not proven bounded | only the window was examined, and what was settled there |
 | `res`; `res_given`, `res_given_by` | a claim searched on cells (not a value or a probe); where a res is given | the finest cells the search used, coarse where their bounds decided it before refining; the cell size asked, and by `assert` or `--res` |
 | `accuracy_given_by`, `tolerances` | the accuracy is not the default | `assert` (its own), `--accuracy` (interfere's), or `tolerance`: its parts' (Claims) and each one's |
+| `band` | a metric measured with one | `low`, `high`, each part's half-width (`half_widths`), the largest `dominant`, and `basis` |
 | `samples` | reads a sampled field | each field's source, where, spacing, its error bound where one can be derived (`grid-bake`'s; none for `import-stl`, `redistance` or a package form's result) and the error measured at probe points (`measured_error`) |
 | `solved_inputs`, `unsettled` | reads a solved value | the solves it rests on; those short of their accuracy, and why |
 | `param_spans` | reads a ranged param | the params and their ranges; not a `(ranged)` no def names (`hidden`'s views) |
@@ -1261,9 +1271,9 @@ clearance, `min-thickness`, `cavities`: none) is asked in the plane, of
 the profiles' extent in x and y, so `(subset letters face)` and
 `(min-thickness letters > 0.8)` of 2D letters cost a search of the plane.
 One shape read with z (an extrusion) makes it a search of space; an
-emptiness proof (emptiness, `subset`, `disjoint`, `overlaps`) of
-extrusions costs about the plane's inside their spans, but clearance and
-`min-thickness` do not yet.
+emptiness proof (emptiness, `subset`, `disjoint`, `overlaps`) or a
+clearance of extrusions costs about the plane's inside their spans, a
+`min-thickness` a few times the plane's.
 
 The claim's own field must be bounded: `(empty (max x ball))`, a
 half-space cut by a ball, proves outright. A union is bounded by its
@@ -1294,8 +1304,11 @@ fake a proof or a witness (CORE.md).
   body's surface, and about one it never saw deciding a patch of it where
   it searched (undecided: it may form only an edge, where it ties with
   what covers it, or a blend's weighted-out side, or a face the sampled
-  search missed; the warning says how many cells it searched). Another
-  body used in this one (`shape-of`) counts as one construction.
+  search missed; the warning says how many cells it searched). A body
+  that moves (reads t) is judged over the t-span: hidden is proven at
+  every moment, and a name is seen if seen at any of up to 16 moments
+  (the span halved again and again). Another body used in this one
+  (`shape-of`) counts as one construction.
 - `(shape-of path name)` gives a named construction inside a placed part
   (Assemblies).
 - `ink check` also warns about a body with no interior: proven empty, or
@@ -1414,8 +1427,12 @@ report says how far to trust it.
   both pieces read crosses a level one compares it with), or, where the
   surface does not cross it, searched finer as far as a budget allows;
   each report counts every cell holding material or a gap it leaves out
-  (`material`; `thinnest` across), every one undecided (`undecided`:
-  nothing ruled out down to samples `searched` apart), and of them those
+  (`material`; `thinnest` across), every one undecided
+  (`undecided_at_least`: nothing ruled out down to samples `searched`
+  apart; of them, at a select switching between two fields, `seams_at_least`;
+  at least, as a crossed cell is left `untried` where its brick of 8^3
+  cells already reports `thinner_than` 2 res and no search reads it),
+  and of them those
   beside a cell the surface crosses (`beside`) and the undecided ones not
   (`away`), with one `at`, and `regions`: boxes covering them (every cell
   in one; touching bricks of 8^3 cells one region, more than 16 merged
@@ -1426,17 +1443,30 @@ report says how far to trust it.
   within that box's diagonal, 2 sqrt 3 res (`drawn_within`), of the
   cell's vertex, and so does what else lies in that box; elsewhere only a
   sign kept throughout does. A select is continuous where its condition
-  is x - y and its sides one expression of x and of y; undecided cells
-  where one switches between two other fields, which bounds cannot show
-  continuous (a sweep's mitres), are counted apart (`seams`). Each region
+  is x - y and its sides one expression of x and of y; one switching
+  between two other fields (a sweep's mitres) bounds cannot show
+  continuous. Each region
   and the report say how thin what may hide is (`thinner_than`: it holds
   no ball that wide): in a searched cell, sqrt 3 times the spacing
   searched; across a crossed cell's box, a seam's reach (its sides' gap
   over their least rate along the direction checked), else the box, 2
   res; round a sample on 0 drawn as air, 2 res. A mesh whose grid
-  would take more bricks of cells than its budget pays for is made at
-  twice the res until it does not (`refused`: the res asked).
+  would take more bricks of cells' samples than its budget pays for is
+  made at twice the res until it does not (`refused`: the res asked).
   `--max-res R`: no coarser than R.
+- **Drawn whole.** A mesh made to an accuracy (not `--accuracy 0`) is
+  not sampled where bounds show the surface flat: in slabs of blocks of
+  cells where the field's rate along an axis is never 0 and its faces
+  across that axis have opposite signs (one sheet, a height field,
+  nothing else there), its slopes spread little enough over the block,
+  and paint keeps one value. Slabs beside each other are joined into
+  regions, meshed only in the cells round their rims and triangulated
+  inside. A face of a wall under two cells thick is drawn so where
+  bounds show the rest of its cell one sign; a brick holding an edge is
+  sampled. Their triangles lie within `drawn_whole.within` of the
+  surface (from the slopes' bounds and the rim's vertices), no more than
+  half the accuracy; `drawn_within` is the larger of it and 2 sqrt 3
+  res.
 - **A mesh for a file** (STL, 3MF): res is the target's size / 256, no
   finer than all the targets' / 2048 (mesh a small part beside a large one
   alone, or give `--res`). It is simplified to `--accuracy` (default
@@ -1453,7 +1483,8 @@ report says how far to trust it.
   is simplified to `--accuracy` (default res / 4); shading turns at the
   shape's creases only.
 - **The report** (each object of `ink mesh`): `res`;
-  `uniform_triangles` (before simplifying) and `triangles` (in the file);
+  `uniform_triangles` (before simplifying; a region drawn whole as
+  triangulated) and `triangles` (in the file);
   `watertight`; `unresolved`; and `deviation`:
   - `max`: the largest distance from the mesh to the surface, sampled at
     points at most res apart, and where (`at`). A sample, not a bound. It
@@ -1507,12 +1538,12 @@ answer may be.
 | gaps, slots, holes | `(min-thickness (air-around part m) > g)` | estimate, the same rays across the air |
 | undercuts from a set of directions | `(empty (hidden part stock (clear-air part stock lo) views))` | guaranteed for undercuts deeper than lo plus twice the accuracy |
 | overhangs, printed along +z | `(empty (overhangs part z0 a h))` | guaranteed, to a few degrees (below) |
+| bridges at most l long | `(empty (unbridged part z0 a h l w))` | guaranteed holds, air under 0.3 mm read as contact; a failure may be up to 2w under l (below) |
 | enclosed voids | `(cavities part < 1)` | proven to the accuracy, or unknown (below) |
 | a flat outline to cut | `ink slice --out FILE.dxf` | its loops (Geometric queries) |
 
 examples/machining-access.ink, mould-undercut.ink, print-checks.ink and
-sls-hollow.ink show each holding and failing. Bridges are not checked: a
-bridge a printer can span fails as an overhang where wider than 2 h tan a.
+sls-hollow.ink show each holding and failing.
 
 - **Walls.** `(min-thickness f > t)`, a shape metric of the design
   package: rays along the inward normal from surface samples; `value` is
@@ -1545,6 +1576,29 @@ bridge a printer can span fails as an overhang where wider than 2 h tan a.
   - At 45, a face up to 2.3 degrees under the limit may fail, between the
     8 directions.
   - A ceiling narrower than 2 h tan a counts as held.
+- **Bridges.** `(unbridged f z0 a h l w)` is where an overhang's ceiling
+  is not a bridge at most l long, read in the ceiling (a failure's
+  witness is there): points 0.05 to 0.3 mm inside a face with air 0.3 mm
+  under them, over an overhang (as `overhangs` reads one h below, or 0.3
+  mm below), whose row along x and whose row along y each reach air, or
+  run longer than l, before a support: material with material 0.3 mm
+  under it (a wall touching the ceiling). Where a row meets air is a
+  param the claim searches. Only signs are read (air where f is at or
+  above 0).
+  - 0.3 mm parts a gap from contact. Air reaching 0.3 mm under a point of
+    a flat ceiling is a gap, however close the material or the bed under
+    it: the ceiling over it is a bridge. A ceiling tilted 30 degrees or
+    more over a gap under h is not read, as `overhangs` reads it not. Air
+    between two points 0.3 mm apart that are both material is contact: a
+    ceiling t thick over air thinner than 0.3 - t, over its wall or
+    anywhere, is not read (a 0.12 mm roof 0.15 mm over its walls passes).
+  - Otherwise a pass is a proof. Rows are read for supports at steps of
+    w, so a failure may be a span over (floor(l / w) - 1) w (at l 10, w
+    0.8: 8.8), or one resting on a wall thinner than w (FDM: w 0.8, the
+    thinnest wall).
+  - A bridge at an angle to x and y is read along them, so longer, and
+    may fail near an open end: turn the part to read along it,
+    `(unbridged (rotate-z part 30) ...)`.
 - **Enclosed voids.** `(cavities f < n)` counts f's enclosed voids, air
   no path leads out of (trapped powder or resin), with air deeper than
   the accuracy (a length, as for shapes: Claims). A shape metric of the
@@ -1803,9 +1857,12 @@ flagged `outside_band` by the others.
     even where both sides agree. Start the motion where the linkage
     closes, away from a dead point. So, in that call, is every moment
     past where following had got when the call's time limit passed.
-  - A solve whose equations repeat in t (t only inside sin and cos, its
-    unknowns angles or not repeating) is followed one period; any other
-    moment is that period's root, its angles moved by whole turns.
+  - A solve whose equations repeat in t, or in one expression of t they
+    read t only through (a crank's angle `(+ (* 10 t) (/ (* t t) 1000))`),
+    is followed one period; any other moment is that period's root, moved
+    by exact whole turns, or by what a solve it reads moves (w = 2 th:
+    twice th's turn). Where its root does not come back to itself moved,
+    or that expression jumps, it is followed step by step.
   - A solve with more equations than unknowns has no certified root, so
     is not followed: at each moment it is the solver's answer there, as
     is every solve on t that reads what it sets, and claims reading them

@@ -686,7 +686,7 @@ impl ModelView {
             return p.shape_metric(self, m.metric, f, opts.res, accuracy);
         }
         if let Some(why) = self.doc.ext_form(Some(m.package), &m.form).and_then(|e| e.form.unavailable(m.metric)) {
-            return Ok(Measured { value: Err(why), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None });
+            return Ok(Measured { value: Err(why), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None, band: None });
         }
         let out = self.outcome(Some(m.package), &m.form, opts)?;
         let mut measured = out.metric(m.metric).ok_or_else(|| InkError::msg(format!("'{}' gave no '{}'", m.form, m.metric)))?;

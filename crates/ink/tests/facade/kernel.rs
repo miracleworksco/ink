@@ -222,17 +222,53 @@ fn a_void_count_is_to_its_accuracy() {
 }
 
 /// A void count its forecast puts past its budget stops there, early, and
-/// says the budget stopped it: a plate 1 mm thick drilled with 160 x 160
-/// holes 1 mm across (48 x 48 count in 200 k cells), some 2 M cells to
-/// count, stops within a tenth of the budget, not at it.
+/// says the budget stopped it: a plate 1 mm thick drilled with 320 x 320
+/// holes 1 mm across, some 10 M cells to count, stops within a tenth of
+/// the budget, not at it.
 #[test]
 fn a_void_count_forecast_past_its_budget_stops_early() {
     let (mut v, f) = view_of(
-        "(def holes (repeat-linear (repeat-linear (extrude-z (circle-2d 0.5) -1 2) 160 2.5 0 0) 160 0 2.5 0))
-         (def f (subtract (move (box 400 400 1) 198.75 198.75 0.5) holes))",
+        "(def holes (repeat-linear (repeat-linear (extrude-z (circle-2d 0.5) -1 2) 320 2.5 0 0) 320 0 2.5 0))
+         (def f (subtract (move (box 800 800 1) 398.75 398.75 0.5) holes))",
     );
     let c = v.voids(f, None, 0.05).unwrap().unwrap();
     assert!(c.count().is_none() && c.ended == Some(ink::query::Ended::Limit) && c.cells < ink::voids::MAX_CELLS / 10, "{c:?}");
+}
+
+/// A cut flush with a face of the block it cuts, the two written as other
+/// values (turned one way in one step and in two, as parts converted from
+/// other CAD programs are): 0 across the face, air either side, which no
+/// split by signs parts. The air each side of it slides off it along its
+/// own term of the cut (the block's face, the cut's), into the air above
+/// and below, one group: no void, where the cells on the face, sliding
+/// only along an axis the whole field rises along, were halved past the
+/// budget's forecast.
+#[test]
+fn a_void_count_slides_each_terms_air_off_a_flush_face() {
+    let (mut v, f) = view_of(
+        "(def block (place (box 20 20 20) (at (rot 1 2 3 17))))
+         (def cut (place (move (box 30 30 10) 0 0 5) (at (rot 1 2 3 10) (rot 1 2 3 7))))
+         (def f (subtract block cut))",
+    );
+    let c = v.voids(f, None, 0.05).unwrap().unwrap();
+    assert_eq!(c.count(), Some(0), "{c:?}");
+}
+
+/// Where only thin air is left to halve, a void count halves the cells on
+/// one way out of each group that may be a void, not every thin cell: a
+/// hollow cube at an odd angle, its void opened by a slit 0.06 wide
+/// (thinner than twice the accuracy) and its faces cut with 20 grooves as
+/// thin, counts no void in a fifth of the budget (halving every thin cell
+/// took half of it).
+#[test]
+fn a_void_count_halves_one_way_out_through_thin_air() {
+    let (mut v, f) = view_of(
+        "(def slit (subtract (box 10 10 10) (box 6 6 6) (move (box 0.06 2 10) 0.25 0 5)))
+         (def grooved (subtract slit (move (repeat-linear (box 10.2 0.06 0.06) 20 0 0.2 0) 0 -1.9 5)))
+         (def f (place grooved (at (rot 1 2 3 17))))",
+    );
+    let c = v.voids(f, None, 0.05).unwrap().unwrap();
+    assert!(c.count() == Some(0) && c.cells < ink::voids::MAX_CELLS / 5, "{c:?}");
 }
 
 /// A void count is the one search's (crate::search): what it answers is a
@@ -1003,6 +1039,31 @@ fn faces_one_param_moves_together_are_bounded_tight() {
 }
 
 #[test]
+fn a_floor_forks_at_its_integers() {
+    // floor(-2 min(z, t - t)) is 0 or 1 over z in [-0.71, 0.24], and atan2
+    // of it and -1 is pi or 3 pi / 4. First order in t the floor's argument
+    // is bounded from -5e-324 (its value at the centre, 0, rounded out), so
+    // its bound is [-5e-324, 1]. Forked at those ends, the side at -5e-324
+    // put atan2 near -pi and the bound over the span missed pi by pi / 4.
+    use ink::graph::{BinOp, Graph, UnOp, Var};
+    let mut g = Graph::new();
+    let (t, z) = (g.var(Var::T), g.var(Var::Z));
+    let nt = g.un(UnOp::Neg, t);
+    let zero = g.add(t, nt);
+    let m = g.min(z, zero);
+    let n = g.un(UnOp::Neg, m);
+    let n2 = g.add(n, n);
+    let f = g.un(UnOp::Floor, n2);
+    let c = g.constant(-1.0);
+    let out = g.bin(BinOp::Atan2, f, c);
+    let tape = Tape::new(&g, out);
+    let b = [I::new(0.85, 1.14), I::new(-0.76, -0.43), I::new(-0.71, 0.24)];
+    let ctx = Ctx { t_span: Some((0.47, 0.63)), ..Ctx::new(0.55, vec![]) };
+    let r = eval_interval_scope(&tape, &ctx, b, None);
+    assert!(r.lo <= 3.0 * PI / 4.0 && PI <= r.hi, "{r:?}");
+}
+
+#[test]
 fn a_grid_face_a_hair_inside_a_span_is_a_jump() {
     // A sampled field's x-slope is 0 in the cell x < 0 and 1 in x >= 0.
     // Read at x = t over t in [-2^-54, 1/4]: the low end's local coordinate
@@ -1301,15 +1362,89 @@ fn unresolved_regions_keep_every_cell_and_a_point_in_each() {
 }
 
 #[test]
+fn points_read_alike_in_any_lanes() {
+    // A sweep's field reuses slots (an operation's output in an operand's
+    // slot) throughout: its values and gradients at 100 points (64 lanes
+    // and 36), at 5 (8 lanes) and one at a time are the same numbers.
+    let (t, c) = body_field("(body b (shape (sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 6) (vec 0 0 1))))");
+    let pts: Vec<[f64; 3]> = (0..100).map(|k| [25.0 * (0.1 * k as f64).cos(), 25.0 * (0.1 * k as f64).sin(), 0.15 * k as f64]).collect();
+    let mut all = Vec::new();
+    eval_points(&t, &c, &pts, &mut all);
+    let grads = eval_grads(&t, &c, &pts);
+    for (k, p) in pts.iter().enumerate() {
+        let mut few = Vec::new();
+        eval_points(&t, &c, &pts[k / 5 * 5..(k / 5 * 5 + 5)], &mut few);
+        assert_eq!([all[k].to_bits(), few[k % 5].to_bits()], [eval_point(&t, &c, *p).to_bits(); 2], "{p:?}");
+        assert_eq!(eval_grads(&t, &c, &[*p])[0].map(f64::to_bits), grads[k].map(f64::to_bits), "{p:?}");
+        assert_eq!(eval_grads(&t, &c, &pts[k / 5 * 5..(k / 5 * 5 + 5)])[k % 5].map(f64::to_bits), grads[k].map(f64::to_bits), "{p:?}");
+    }
+}
+
+#[test]
+fn a_meshs_proofs_make_a_tape_per_block_and_none_per_cell() {
+    // A bar swept along a helix (60 segments, one select each), meshed and
+    // searched: its proofs simplify the field once per block of 8, 4 and 2
+    // cells across, each cell's proof reading its block's (a tape a cell
+    // cost more to make than reading it saved), and its search reads each
+    // brick's tape, made once: 10,012 tapes for 15,310 cells drawn, where a
+    // tape each cell, and each brick's again at each level of the search,
+    // made 41,967. Its seams are still reported, and no material is left
+    // out.
+    let (t, c) = body_field("(body b (shape (sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 60) (vec 0 0 1))))");
+    let limit = mesh::Limit { bricks: usize::MAX, search: 1e7 };
+    let (m, u) = mesh::mesh_checked(&t, &c, [-30.0, -30.0, -3.0], [30.0, 30.0, 18.0], 0.5, limit, 0.125).unwrap();
+    assert!(u.tapes < m.verts.len(), "{} tapes, {} cells drawn", u.tapes, m.verts.len());
+    assert!(u.seams > 0 && u.material == 0, "{u:?}");
+}
+
+#[test]
+fn a_crossed_cell_no_proof_can_change_the_report_of_is_left_untried() {
+    // A slab 0.8 thick, tilted, at res 0.5: both its faces lie in each
+    // crossed cell's box, so none is shown one sheet, and each brick's
+    // first reports what may hide there as thick as that box (2 res).
+    // The rest of its crossed cells, at no seam, are left untried: counted
+    // as such, in its regions' boxes, the report as thick. Unsearched, its
+    // proofs, the tapes they simplify included, retire 1.9 passes of the
+    // field over a box a cell drawn (Tape::work); searched, the cells
+    // beside those the search reads are tried.
+    let (t, c) = body_field("(body b (shape (max (- (abs (+ (* 0.6 x) (* 0.8 z))) 0.4) (- (abs x) 10) (- (abs y) 10) (- (abs z) 10))))");
+    for search in [0.0, 1e7] {
+        let (m, u) = mesh::mesh_checked(&t, &c, [-11.0; 3], [11.0; 3], 0.5, mesh::Limit { bricks: usize::MAX, search }, 0.125).unwrap();
+        let per = u.read as f64 / m.verts.len() as f64 / t.work(ink::tape::Pass::Box) as f64;
+        assert!(u.untried > u.undecided && (search > 0.0 || per < 5.0), "{per} times the field a cell drawn: {u:?}");
+        assert!(u.thinner_than == 1.0 && u.material == 0 && u.seams == 0, "{u:?}");
+        assert_eq!(u.regions.iter().map(|r| r.cells).sum::<usize>(), u.cells);
+        assert_eq!(u.regions.iter().map(|r| r.untried).sum::<usize>(), u.untried);
+    }
+}
+
+#[test]
+fn a_seam_no_proof_can_change_the_report_of_is_left_untried() {
+    // A bar swept along a helix, its seams at each of 60 mitres: once a
+    // brick reports what may hide as thick as a crossed cell's box, its
+    // seams' cells and blocks are left untried too, as its others: its
+    // proofs, the tapes they simplify included, retire 1.06 passes of the
+    // field over a box a cell drawn (Tape::work), where trying every seam
+    // retired 1.63 (15,013 cells untried, not 415), the report as thick,
+    // no material, its regions holding every cell, 16,676 either way.
+    let (t, c) = body_field("(body b (shape (sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 60) (vec 0 0 1))))");
+    let (m, u) = mesh::mesh_checked(&t, &c, [-30.0, -30.0, -3.0], [30.0, 30.0, 18.0], 0.5, mesh::Limit { bricks: usize::MAX, search: 0.0 }, 0.125).unwrap();
+    let per = u.read as f64 / m.verts.len() as f64 / t.work(ink::tape::Pass::Box) as f64;
+    assert!(per < 1.3 && u.untried > u.seams, "{per} times the field a cell drawn: {u:?}");
+    assert!(u.thinner_than == 1.0 && u.material == 0, "{u:?}");
+    assert_eq!(u.regions.iter().map(|r| r.cells).sum::<usize>(), u.cells);
+}
+
+#[test]
 fn a_cells_proof_reads_only_the_field_that_reaches_it() {
     // A bar swept along a helix of 60 segments, one select each: a brick of
     // cells keeps most of them (their bounds overlap at its size), a cell's
     // box a few. Proved in blocks, each on the field focused on it, its
-    // cells' proofs run 1.1 times the whole field's instructions per cell
-    // drawn; each cell on its brick's field, 5.7.
+    // cells' proofs, the tapes they simplify included, retire 1.06 passes
+    // of the whole field over a box per cell drawn (Tape::work).
     let (t, c) = body_field("(body b (shape (sweep (rounded-rect-2d 6 3 0.8) (helix-points 25 15 1 60) (vec 0 0 1))))");
     let (m, u) = mesh::mesh_checked(&t, &c, [-30.0, -30.0, -3.0], [30.0, 30.0, 18.0], 0.5, mesh::Limit { bricks: usize::MAX, search: 0.0 }, 0.0).unwrap();
-    let per = u.read as f64 / m.verts.len() as f64 / t.len() as f64;
+    let per = u.read as f64 / m.verts.len() as f64 / t.work(ink::tape::Pass::Box) as f64;
     assert!(!m.tris.is_empty() && per < 2.0, "{per} times the whole field a cell drawn ({} instructions, {} cells): {u:?}", t.len(), m.verts.len());
 }
 
@@ -1326,6 +1461,135 @@ fn a_sweeps_seams_hide_no_material_its_mesh_draws() {
     let limit = mesh::Limit { bricks: usize::MAX, search: 1e9 };
     let (m, u) = mesh::mesh_checked(&t, &c, [-30.0, -30.0, -3.0], [30.0, 30.0, 18.0], 0.42, limit, 0.25 * 0.42).unwrap();
     assert!(!m.tris.is_empty() && u.material == 0 && u.undecided > 0, "{} cells of material left out: {:?}", u.material, u.regions);
+}
+
+/// The farthest the surface lies from the triangles of `m` that `pick`
+/// takes (by its corners), as `t` (a distance field) reads it at each
+/// one's corners, centre and sides' middles.
+fn strays(t: &Tape, c: &Ctx, m: &mesh::Mesh, pick: impl Fn([[f64; 3]; 3]) -> bool) -> f64 {
+    let mid = |a: [f64; 3], b: [f64; 3], s: f64| -> [f64; 3] { std::array::from_fn(|k| a[k] + s * (b[k] - a[k])) };
+    let pts: Vec<[f64; 3]> = m
+        .tris
+        .iter()
+        .map(|tr| tr.map(|i| m.verts[i as usize]))
+        .filter(|p| pick(*p))
+        .flat_map(|[a, b, q]| [a, mid(a, b, 0.5), mid(b, q, 0.5), mid(q, a, 0.5), mid(mid(a, b, 0.5), q, 1.0 / 3.0)])
+        .collect();
+    let mut v = Vec::new();
+    eval_points(t, c, &pts, &mut v);
+    v.iter().fold(0.0f64, |m, x| m.max(x.abs()))
+}
+
+#[test]
+fn a_flat_face_is_sampled_at_its_rim_only() {
+    // A box's faces are planes: blocks of cells across them are drawn
+    // whole from the cells round their rims, not meshed inside. Its mesh
+    // has a fraction of the uniform grid's triangles, for fewer
+    // instructions run, is closed, and holds the volume the uniform mesh
+    // does, as near the surface.
+    let (t, c) = body_field("(body b (shape (box 60 40 30)))");
+    let (lo, hi) = ([-30.0, -20.0, -15.0], [30.0, 20.0, 15.0]);
+    let (uniform, v) = mesh::mesh_checked(&t, &c, lo, hi, 0.25, mesh::Limit::GRID, 0.0).unwrap();
+    let (m, u) = mesh::mesh_checked(&t, &c, lo, hi, 0.25, mesh::Limit::GRID, 0.25 / 4.0).unwrap();
+    let a = mesh::analyze(&m);
+    let ran = |u: &mesh::Unresolved| u.read + u.sampled;
+    assert!(m.tris.len() * 4 < uniform.tris.len() && ran(&u) < ran(&v), "{} triangles, uniform {}; ran {}, uniform {}", m.tris.len(), uniform.tris.len(), ran(&u), ran(&v));
+    let volume = mesh::analyze(&uniform).volume;
+    assert!(a.boundary_edges == 0 && a.nonmanifold_edges == 0 && (a.volume - volume).abs() < 1e-9 * volume, "{} {} {} {volume}", a.boundary_edges, a.nonmanifold_edges, a.volume);
+    assert!(u.whole > 0 && strays(&t, &c, &m, |_| true) <= strays(&t, &c, &uniform, |_| true) + 1e-12);
+}
+
+#[test]
+fn a_curved_face_drawn_whole_is_within_its_stated_bound() {
+    // A box under a sphere's cap 2000 across, at res 0.5 made to 0.5: blocks
+    // across the cap are drawn whole, each triangle within the bound stated
+    // for them (half of 0.5), which holds where the cap is read.
+    let (t, c) = body_field("(body b (shape (max (box 60 60 40) (- (sqrt (+ (square x) (square y) (square (+ z 1985)))) 2000))))");
+    let (lo, hi) = ([-30.0, -30.0, -20.0], [30.0, 30.0, 15.01]);
+    let (m, u) = mesh::mesh_checked(&t, &c, lo, hi, 0.5, mesh::Limit::GRID, 0.5).unwrap();
+    let a = mesh::analyze(&m);
+    assert!(u.whole > 0 && u.whole_within > 0.0 && u.whole_within <= 0.25, "{} blocks, within {}", u.whole, u.whole_within);
+    assert!(a.boundary_edges == 0 && a.nonmanifold_edges == 0);
+    let cap = strays(&t, &c, &m, |p| p.iter().all(|q| q[2] > 10.0 && q[0].abs() < 28.0 && q[1].abs() < 28.0));
+    assert!(cap > 0.0 && cap <= u.whole_within + 1e-3, "the cap strays {cap}, stated {}", u.whole_within);
+}
+
+#[test]
+fn a_wall_thinner_than_two_cells_has_both_faces_drawn_whole() {
+    // A plate 2.588 thick at res 2: no plane of the grid lies between its
+    // upper face and its middle, where its faces' pieces meet, so that face's
+    // slab, a cell thick, is drawn whole above a plane through it below
+    // which the field is all inside; its lower face lies on a plane of the
+    // grid, drawn whole by the cells above it, the proof reaching a quarter
+    // cell below. Both faces drawn whole (only one was, 25,204 triangles),
+    // its mesh has a third of the uniform grid's triangles (39,996): the
+    // bricks along its edges are meshed whole.
+    let (t, c) = body_field("(body b (shape (box 200 200 2.588)))");
+    let (lo, hi) = ([-100.0, -100.0, -1.294], [100.0, 100.0, 1.294]);
+    let (uniform, _) = mesh::mesh_checked(&t, &c, lo, hi, 2.0, mesh::Limit::GRID, 0.0).unwrap();
+    let (m, u) = mesh::mesh_checked(&t, &c, lo, hi, 2.0, mesh::Limit::GRID, 0.5).unwrap();
+    let a = mesh::analyze(&m);
+    assert!(u.whole >= 2 && m.tris.len() * 3 < uniform.tris.len(), "{} regions, {} triangles, uniform {}", u.whole, m.tris.len(), uniform.tris.len());
+    assert!(a.boundary_edges == 0 && a.nonmanifold_edges == 0 && strays(&t, &c, &m, |_| true) <= strays(&t, &c, &uniform, |_| true) + 1e-12);
+}
+
+#[test]
+fn a_cell_beside_a_face_drawn_whole_is_reported_beside_it() {
+    // A sheet 0.05 thick 0.9 above a box's top face, at res 1: between
+    // samples, its cells are undecided. The face is drawn whole and its
+    // cells meshed only round their regions' rims, but the surface still
+    // crosses those below the sheet: its cells are beside drawn surface,
+    // as in the uniform mesh, none away.
+    let (t, c) = body_field("(body b (shape (min (box 40 40 10.6) (move (box 40 40 0.05) 0 0 6.2))))");
+    let (lo, hi) = ([-20.0, -20.0, -5.3], [20.0, 20.0, 6.225]);
+    let limit = mesh::Limit { bricks: usize::MAX, search: 0.0 };
+    let (_, uniform) = mesh::mesh_checked(&t, &c, lo, hi, 1.0, limit, 0.0).unwrap();
+    let (_, u) = mesh::mesh_checked(&t, &c, lo, hi, 1.0, limit, 0.25).unwrap();
+    assert!(
+        u.whole > 0 && u.undecided > 0 && uniform.away == 0 && u.away == 0,
+        "{} regions; away {} of {} undecided (uniform: {} of {})",
+        u.whole,
+        u.away,
+        u.undecided,
+        uniform.away,
+        uniform.undecided
+    );
+}
+
+#[test]
+fn a_face_just_under_a_blocks_plane_is_drawn_once() {
+    // A face 0.05 under a block's top plane at res 0.5 (or over its
+    // bottom, overhanging), with a bump 0.06 high crossing the plane
+    // inside the block; and lens faces of radius 1000 and 10000, their apex
+    // just over it. A cell-thick slab drawn whole proves no sheet past its
+    // cell's side: the cells there mesh the bump, so the face is drawn
+    // once, closed (it was drawn under the bump too, its cap's rim open:
+    // 2 shells, 12 to 20 open edges).
+    let bump = "(* 0.06 (max 0 (- 1 (/ (+ (square (- x 1.2734)) (square (- y 1.2734))) 9))))";
+    let sag = |r: f64| format!("(/ (+ (square (- x 1.2734)) (square (- y 1.2734))) {})", 2.0 * r);
+    let cases = [
+        (format!("(max (- (abs x) 32) (- (abs y) 32) (- z (+ 3.1863 {bump})) (- -20 z))"), 3.54, 1.0),
+        (
+            format!("(min (max (- (abs x) 32) (- (abs y) 32) (- (- 3.2863 {bump}) z) (- z (+ 3.2863 20))) (max (- (abs (+ x 30)) 1) (- (abs (+ y 30)) 1) (- -20 z) (- z 4)))"),
+            23.32,
+            1.0,
+        ),
+        (format!("(max (- (abs x) 32) (- (abs y) 32) (- z (- 3.2369 {})) (- -20 z))", sag(1000.0)), 3.54, 0.5 / 4.0),
+        (format!("(max (- (abs x) 32) (- (abs y) 32) (- z (- 3.23636 {})) (- -20 z))", sag(10000.0)), 3.54, 0.5 / 30.0),
+    ];
+    for (shape, top, within) in cases {
+        let (t, c) = body_field(&format!("(body b (shape {shape}))"));
+        let (lo, hi) = ([-32.22656249999999, -32.22656249999999, -20.263671874999993], [32.23, 32.23, top]);
+        let (m, u) = mesh::mesh_checked(&t, &c, lo, hi, 0.5, mesh::Limit::GRID, within).unwrap();
+        let a = mesh::analyze(&m);
+        assert!(
+            u.whole > 0 && a.boundary_edges == 0 && a.nonmanifold_edges == 0 && a.shells.len() == 1,
+            "{shape}: {} open edges, {} shells, {} regions",
+            a.boundary_edges,
+            a.shells.len(),
+            u.whole
+        );
+    }
 }
 
 /// Whether the field over `b` may crease (Tape::may_crease).
@@ -1379,6 +1643,32 @@ fn a_select_switching_between_fields_is_a_seam() {
     };
     assert!(seam("(body b (shape (select x (- y 0.1) (- y 0.2))))"));
     assert!(!seam("(body b (shape (select (- x 5) (- y 0.1) (- y 0.2))))"));
+}
+
+#[test]
+fn a_select_whose_branches_the_region_makes_one_field_is_no_seam() {
+    // Over this box z + 100 is never the min, so both branches are y - 0.1
+    // as the field simplified there reads them: no seam, and one sheet
+    // along +y, read from the unsimplified field's bounds too. Where the
+    // region leaves a branch's min undecided (z + 0.5) they differ: a seam.
+    let b = [I::new(-1.0, 1.0); 3];
+    let seam = |src: &str| {
+        let (t, c) = body_field(src);
+        let mut ch = vec![ink::tape::BOTH; t.len()];
+        eval_interval(&t, &c, b, Some(&mut ch));
+        (t.switches(&ch), t.simplify(&ch).switches(&ch_of(&t.simplify(&ch), &c, b)))
+    };
+    let one = "(def a (- y 0.1)) (body b (shape (select x (min a (+ z 100)) (min a (+ z 200)))))";
+    assert_eq!(seam(one), (false, false));
+    assert!(one_change(one, b, [0.0, 1.0, 0.0]));
+    assert_eq!(seam("(def a (- y 0.1)) (body b (shape (select x (min a (+ z 0.5)) (min a (+ z 200)))))"), (true, true));
+}
+
+/// `t`'s choices over `b`.
+fn ch_of(t: &Tape, c: &Ctx, b: [I; 3]) -> Vec<u8> {
+    let mut ch = vec![ink::tape::BOTH; t.len()];
+    eval_interval(t, c, b, Some(&mut ch));
+    ch
 }
 
 #[test]
@@ -2419,7 +2709,19 @@ fn reads_of_samples_are_one_node_only_when_the_same_quantity() {
     use ink::grid::{Band, GridData, Source};
     let h = 0.5;
     let band = Band { err: 0.25, outside: Some(0.5) };
-    let source = Source { what: "cube.stl".into(), at: "test".into(), kind: "mesh", res: h, band: Some(band), measured: None, note: None, unit: "", span: None, component: None };
+    let source = Source {
+        what: "cube.stl".into(),
+        at: "test".into(),
+        kind: "mesh",
+        res: h,
+        band: Some(band),
+        measured: None,
+        note: None,
+        unit: "",
+        span: None,
+        component: None,
+        undecided: None,
+    };
     let values: Vec<f32> = (0..729).map(|n| ((n % 9) as f32 - 4.0).abs() + 0.1 * (n / 81) as f32).collect();
     let data = Arc::new(GridData::new([-2.0; 3], h, [9; 3], values).with_source(source));
     let mut g = Graph::new();
@@ -3071,6 +3373,172 @@ fn slope_bounds_take_a_jump_as_a_choice() {
     }
 }
 
+/// std's mod, a - p floor(a / p), is p just below its seam (where a / p
+/// is a whole number) and 0 just above, exactly, whatever p's float. So a
+/// fold of it about the middle of its period, p/2 - |mod(a, p) - p/2| (a
+/// gear's angle from its nearest tooth's centre line), is continuous
+/// there, and its slope across the seam is one side's or the other's: the
+/// bounds are finite and keep their sign, on a std gear's tip where a
+/// tooth's centre line crosses it, and on a chain sprocket's tip. So is a
+/// polar repeat of a copy symmetric about its wedge's middle, whose turned
+/// y is opposite either side. The mod itself, a fold off the middle and a copy off the middle
+/// jump at the seam, their slopes unbounded across it. Every sampled
+/// point's value and gradient lie in the bounds, and every pair of points,
+/// most of them either side of the seam, within the Lipschitz bound.
+#[test]
+fn a_repeat_symmetric_about_its_seam_is_continuous_across_it() {
+    use ink::interval::lipschitz;
+    let grad = |src: &str, b: [I; 3]| {
+        let (d, tape) = tape_of(src);
+        eval_interval_grad(&tape, &d.ctx(&[], 0.0).unwrap(), b)
+    };
+    let across = [I::new(0.69, 0.715), I::new(-0.01, 0.01), I::new(-0.01, 0.01)];
+    let folded = grad("(abs (- (mod x 0.7) 0.35))", across);
+    assert!(lipschitz(&folded).is_finite() && folded.d[1] == I::point(0.0), "{folded:?}");
+    for src in ["(- (mod x 0.7) 0.35)", "(abs (- (mod x 0.7) 0.3))"] {
+        let g = grad(src, across);
+        assert!(!g.d[0].hi.is_finite() && lipschitz(&g).is_infinite(), "{src}: {g:?}");
+    }
+    // 15 teeth of module 1.5: tip radius 12.75, a tooth's centre line on +x.
+    let gear = "(involute-gear-2d 15 1.5 20 0)";
+    let tip = [I::new(12.7, 12.8), I::new(-0.02, 0.02), I::new(-0.1, 0.1)];
+    let g = grad(gear, tip);
+    assert!(g.d[0].lo > 0.5 && lipschitz(&g).is_finite(), "{g:?}");
+    // A polar repeat's copy symmetric about its wedge's middle: one copy
+    // either side of the seam (9 degrees round), on its outer face.
+    let wedge = PI / 20.0;
+    let on_face = [I::new(2.45, 2.49), I::new(0.38, 0.4), I::new(-0.1, 0.1)];
+    let ring = "(repeat-polar (move (box 1 1.2 1) 2 0 0) 20)";
+    let off = "(repeat-polar (move (box 1 1.2 1) 2 0.05 0) 20)";
+    let g = grad(ring, on_face);
+    assert!(on_face[1].lo < 2.47 * wedge.sin() && 2.47 * wedge.sin() < on_face[1].hi);
+    assert!(g.d[0].lo > 0.5 && lipschitz(&g).is_finite(), "{g:?}");
+    let g = grad(off, on_face);
+    assert!(lipschitz(&g).is_infinite(), "{g:?}");
+    let mut rng = Lcg(97);
+    let pitch = 2.0 * PI / 15.0;
+    let at_seam = |r: &mut Lcg| {
+        let (a, rad) = (wedge * (2.0 * r.range(-10.0, 10.0).round() + 1.0) + r.range(-0.02, 0.02), r.range(0.5, 3.2));
+        [rad * a.cos(), rad * a.sin(), r.range(-0.6, 0.6)]
+    };
+    // A roller-chain sprocket's teeth (parts/chain's ISO form, 30 teeth):
+    // its fold's seam is each tooth's centre line, where atan2's cut lies
+    // too, crossed by the tip circle.
+    let sprocket = "(let ((n 30) (dr 7.92) (rp 60.75) (ro 64) (rho (len2 x y)) (step (/ (* 2 pi) n)) (shift (/ step 2))
+        (ax (- (* (cos shift) x) (* (sin shift) y))) (ay (+ (* (sin shift) x) (* (cos shift) y)))
+        (a (- (mod (+ (atan2 ax ay) shift (/ step 2)) step) (/ step 2)))
+        (u (abs (* rho (sin a)))) (v (- (* rho (cos a)) rp))
+        (ri (* .505 dr)) (re (* .12 dr (+ n 2))) (ga (deg->rad (/ (- 140 (/ 90 n)) 2)))
+        (vv (- v (- ri (/ dr 2)))) (nx (sin ga)) (ny (neg (cos ga)))
+        (cx (* (- ri re) nx)) (cy (* (- ri re) ny))
+        (gap (select (+ (* (cos ga) u) (* (sin ga) vv)) (- ri (len2 u vv)) (- re (len2 (- u cx) (- vv cy))))))
+      (min (circle-2d (- rp (/ dr 2) .01)) (max (circle-2d ro) gap)))";
+    let tooth = 2.0 * PI / 30.0;
+    let on_tip = |r: &mut Lcg| {
+        let (a, rad) = (PI / 2.0 + tooth * (r.range(-15.0, 15.0).round() + 0.5) + r.range(-0.004, 0.004), r.range(55.0, 66.0));
+        [rad * a.cos(), rad * a.sin(), r.range(-0.5, 0.5)]
+    };
+    let centre = PI / 2.0 + tooth / 2.0;
+    let tip = [64.0 * centre.cos(), 64.0 * centre.sin(), 0.0].map(|v| I::new(v - 0.02, v + 0.02));
+    let g = grad(sprocket, tip);
+    assert!(lipschitz(&g).is_finite(), "{g:?}");
+    let cases: [(&str, &dyn Fn(&mut Lcg) -> [f64; 3]); 7] = [
+        (sprocket, &on_tip),
+        (ring, &at_seam),
+        (off, &at_seam),
+        ("(abs (- (mod x 0.7) 0.35))", &|r: &mut Lcg| [0.7 * (r.range(-4.0, 4.0).round()) + r.range(-0.05, 0.05), r.range(-1.0, 1.0), 0.0]),
+        ("(abs (- (mod x 0.7) 0.3))", &|r: &mut Lcg| [0.7 * (r.range(-4.0, 4.0).round()) + r.range(-0.05, 0.05), r.range(-1.0, 1.0), 0.0]),
+        ("(- (mod (* 3 y) 1.3) 0.65)", &|r: &mut Lcg| [r.range(-1.0, 1.0), 1.3 / 3.0 * (r.range(-4.0, 4.0).round()) + r.range(-0.05, 0.05), 0.0]),
+        (gear, &|r: &mut Lcg| {
+            let (a, rad) = (pitch * r.range(-8.0, 8.0).round() + r.range(-0.01, 0.01), r.range(9.0, 13.0));
+            [rad * a.cos(), rad * a.sin(), r.range(-1.0, 1.0)]
+        }),
+    ];
+    for (src, centre) in cases {
+        let (d, tape) = tape_of(src);
+        let ctx = d.ctx(&[], 0.0).unwrap();
+        for _ in 0..3000 {
+            let c = centre(&mut rng);
+            let h = rng.range(0.001, 0.2);
+            let b = c.map(|v| I::new(v - h, v + h));
+            let g = eval_interval_grad(&tape, &ctx, b);
+            let l = lipschitz(&g);
+            let pts: Vec<[f64; 3]> = (0..12).map(|_| c.map(|v| rng.range(v - h, v + h))).collect();
+            let at = eval_grads(&tape, &ctx, &pts);
+            for (p, a) in pts.iter().zip(&at) {
+                let tol = 1e-9 * (1.0 + a[0].abs());
+                assert!(g.v.lo - tol <= a[0] && a[0] <= g.v.hi + tol, "{src}: value {} outside {:?} at {p:?}", a[0], g.v);
+                for k in 0..3 {
+                    let t = 1e-9 * (1.0 + a[k + 1].abs());
+                    assert!(g.d[k].lo - t <= a[k + 1] && a[k + 1] <= g.d[k].hi + t, "{src}: d/d{k} {} outside {:?} at {p:?}", a[k + 1], g.d[k]);
+                }
+            }
+            for i in 0..pts.len() {
+                for j in i + 1..pts.len() {
+                    let r = (0..3).map(|k| (pts[i][k] - pts[j][k]).powi(2)).sum::<f64>().sqrt();
+                    let df = (at[i][0] - at[j][0]).abs();
+                    assert!(df <= l * r * (1.0 + 1e-9) + 1e-12, "{src}: {df} apart over {r} with slope {l} in {b:?}");
+                }
+            }
+        }
+    }
+}
+
+/// std's involute gear reads its flank's angle at radius r through the
+/// tangent squared, (r^2 - rb^2) / rb^2, never its square root, whose slope
+/// is unbounded at the base circle rb: so a box on the flank where it
+/// crosses the base circle (above the root here: 50 teeth at 14.5 degrees)
+/// has finite slope bounds. The tangent's form and the squared one agree,
+/// and every sampled value, gradient and pair of points near the base
+/// circle lies in the bounds.
+#[test]
+fn an_involute_flank_has_bounded_slope_at_its_base_circle() {
+    use ink::interval::lipschitz;
+    let (d, same) = tape_of("(- (involute-of-tan-squared (square x)) (involute-of-tan x))");
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    for k in 0..=150 {
+        let t = k as f64 / 100.0;
+        let e = eval_point(&same, &ctx, [t, 0.0, 0.0]);
+        assert!(e.abs() <= 1e-15 * (1.0 + t * t * t), "{t}: {e}");
+    }
+    let gear = "(involute-gear-2d 50 1.27 14.5 0)";
+    let (d, tape) = tape_of(gear);
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let rb = 0.5 * 1.27 * 50.0 * (14.5f64).to_radians().cos();
+    // The flank's angle from its tooth's centre line at the base circle.
+    let a = PI / 100.0 + ((14.5f64).to_radians().tan() - (14.5f64).to_radians());
+    let at = [rb * a.cos(), rb * a.sin(), 0.0];
+    let b = at.map(|v| I::new(v - 0.01, v + 0.01));
+    let g = eval_interval_grad(&tape, &ctx, b);
+    assert!(g.v.lo < 0.0 && 0.0 < g.v.hi && lipschitz(&g).is_finite(), "{g:?}");
+    let mut rng = Lcg(5);
+    for _ in 0..3000 {
+        let (t, r) = (2.0 * PI / 50.0 * rng.range(-25.0, 25.0).round() + rng.range(-1.5, 1.5) * a, rb + rng.range(-0.3, 0.3));
+        let c = [r * t.cos(), r * t.sin(), 0.0];
+        let h = rng.range(0.001, 0.1);
+        let b = c.map(|v| I::new(v - h, v + h));
+        let g = eval_interval_grad(&tape, &ctx, b);
+        let l = lipschitz(&g);
+        let pts: Vec<[f64; 3]> = (0..10).map(|_| c.map(|v| rng.range(v - h, v + h))).collect();
+        let at = eval_grads(&tape, &ctx, &pts);
+        for (p, a) in pts.iter().zip(&at) {
+            let tol = 1e-9 * (1.0 + a[0].abs());
+            assert!(g.v.lo - tol <= a[0] && a[0] <= g.v.hi + tol, "value {} outside {:?} at {p:?}", a[0], g.v);
+            for k in 0..3 {
+                let t = 1e-9 * (1.0 + a[k + 1].abs());
+                assert!(g.d[k].lo - t <= a[k + 1] && a[k + 1] <= g.d[k].hi + t, "d/d{k} {} outside {:?} at {p:?}", a[k + 1], g.d[k]);
+            }
+        }
+        for i in 0..pts.len() {
+            for j in i + 1..pts.len() {
+                let r = (0..3).map(|k| (pts[i][k] - pts[j][k]).powi(2)).sum::<f64>().sqrt();
+                let df = (at[i][0] - at[j][0]).abs();
+                assert!(df <= l * r * (1.0 + 1e-9) + 1e-12, "{df} apart over {r} with slope {l} in {b:?}");
+            }
+        }
+    }
+}
+
 /// A jump a box and scope straddle once is a choice of its two sides in
 /// bounds first order in time and ranged params too (eval::scope_run), each
 /// side its branch continued over the whole region: an arm of a polar
@@ -3520,4 +3988,62 @@ fn jumps_are_forked_where_the_output_reads_them() {
     let near = [I::new(18.66, 18.68), I::new(-0.01, 0.01), I::new(0.1, 0.12)];
     let (n, v, g) = forks(near);
     assert!(n > 0 && n <= 4 && ink::interval::lipschitz(&g).is_finite(), "{n} {v:?} {g:?}");
+}
+
+/// A jump's two sides join where the output moves one way with its value,
+/// however many times it is read: each end of the output's bound then
+/// comes from the same end of the value's every read, so joining loses
+/// nothing. Shifted copies of a screw, each read twice the same way (as a
+/// manufacturing check reads one copy of a part at several conditions),
+/// fork each copy's jumps within that copy: forking every jump costs a few
+/// runs, not a doubling per copy (each copy's sides joined only at the
+/// output, every later copy's forks inside them). On the half-plane the
+/// copies' atan2 cuts at, the bound is the one each copy read once gives.
+#[test]
+fn a_jump_read_again_the_same_way_joins_at_once() {
+    let copy = |j: usize| format!("(move (thread-iso 3 0.5) {} 0 0)", 0.05 * j as f64);
+    let twice: String = (0..10).map(|j| format!(" (max {c} (- z 4)) (max {c} (- -4 z))", c = copy(j))).collect();
+    let once: String = (0..10).map(|j| format!(" (max {} (min (- z 4) (- -4 z)))", copy(j))).collect();
+    let near = [I::new(-1.34, -1.32), I::new(-0.01, 0.01), I::new(0.1, 0.12)];
+    let bound = |src: &str| {
+        let (d, tape) = tape_of(src);
+        let ctx = d.ctx(&[], 0.0).unwrap();
+        (tape.forked_steps() as f64 / tape.len() as f64, eval_interval(&tape, &ctx, near, None))
+    };
+    let (runs, twice) = bound(&format!("(min{twice})"));
+    let (_, once) = bound(&format!("(min{once})"));
+    assert!(runs <= 4.0 && twice == once, "{runs} runs, {twice:?}; read once: {once:?}");
+}
+
+/// A select between two numbers moves one way with its condition (from the
+/// first number below 0 to the second at or above it), so a jump in a value
+/// read only as such a condition joins at that value: shifted copies of a
+/// screw, each read as air (`(select f 1 -1)`, below 0 where f is at or
+/// above 0), fork in 1.5 runs of the tape (2.7 where each joined only
+/// past its select), and bound as tightly as the air of their union read
+/// through one select.
+#[test]
+fn a_jump_read_as_a_select_condition_joins_at_once() {
+    let copy = |j: usize| format!("(move (thread-iso 3 0.5) {} 0 0)", 0.05 * j as f64);
+    let each: String = (0..10).map(|j| format!(" (select {} 1 -1)", copy(j))).collect();
+    let union: String = (0..10).map(|j| format!(" {}", copy(j))).collect();
+    let near = [I::new(-1.34, -1.32), I::new(-0.01, 0.01), I::new(0.1, 0.12)];
+    let bound = |src: &str| {
+        let (d, tape) = tape_of(src);
+        let ctx = d.ctx(&[], 0.0).unwrap();
+        (tape.forked_steps() as f64 / tape.len() as f64, eval_interval(&tape, &ctx, near, None))
+    };
+    let (runs, each) = bound(&format!("(min{each})"));
+    let (_, once) = bound(&format!("(select (max{union}) 1 -1)"));
+    assert!(runs <= 2.0 && each == once, "{runs} runs, {each:?}; through one select: {once:?}");
+}
+
+/// std's bridge check reads each copy of the part one way, as material or
+/// as air, so a seam in the part (a thread's atan2 here) forks its own copy
+/// alone: forking every jump costs a few runs of the check, not a doubling
+/// per copy, which took a printed part with a splined hub past half an hour.
+#[test]
+fn a_bridge_check_forks_each_copy_of_the_part_on_its_own() {
+    let (_, tape) = tape_of("(unbridged (subtract (move (box 16 12 8) 0 0 4) (move (box 8 20 5) 0 0 2.5) (move (thread-iso 3 0.5) 5 0 0)) 0 45 1 10 0.8)");
+    assert!(!tape.jumps.is_empty() && tape.forked_steps() <= 4 * tape.len() as u64, "{} jumps, {} forked steps of {}", tape.jumps.len(), tape.forked_steps(), tape.len());
 }

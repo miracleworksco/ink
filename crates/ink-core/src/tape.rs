@@ -11,6 +11,8 @@
 use crate::graph::{BinOp, Fingerprint, Graph, Node, NodeId, UnOp, Var};
 use crate::interval::I;
 
+mod kept;
+
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
     Const(f64),
@@ -55,6 +57,47 @@ pub struct Ins {
     pub c: u32,
 }
 
+/// How a tape is evaluated, for what that costs (`Op::work`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// At points, in lanes (eval::eval_points).
+    Point,
+    /// Its value and gradient at points (eval::eval_grads).
+    Gradient,
+    /// Its range over a box (eval::eval_interval).
+    Box,
+}
+
+impl Op {
+    /// The machine instructions evaluating it retires, by `Pass`: its own,
+    /// beyond its operands', counted on a core of a Zen 5 with AVX-512 (a
+    /// point's share of the lanes it runs in). Arithmetic costs about one
+    /// at a point, a transcendental 15 to 270 times that, a sampled
+    /// field's read about 800; over a box, 60 to 1,000.
+    pub fn work(self, pass: Pass) -> usize {
+        let [point, gradient, range] = match self {
+            Op::Const(_) | Op::Var(_) => [1, 50, 60],
+            Op::Bin(BinOp::Mul) => [1, 117, 300],
+            Op::Bin(BinOp::Div) => [2, 130, 255],
+            Op::Un(UnOp::Floor) => [1, 65, 275],
+            Op::Un(UnOp::Rad | UnOp::Deg) => [15, 65, 350],
+            Op::Bin(BinOp::Emax) => [70, 175, 520],
+            Op::Un(UnOp::Exp | UnOp::Ln) => [78, 130, 375],
+            Op::Un(UnOp::Sin | UnOp::Cos) => [93, 218, 490],
+            Op::Un(UnOp::Tan) => [121, 171, 490],
+            Op::Bin(BinOp::Atan2) => [120, 235, 690],
+            Op::Bin(BinOp::Pow) => [273, 775, 980],
+            Op::Grid(..) | Op::Read => [780, 8300, 6300],
+            _ => [1, 70, 120],
+        };
+        match pass {
+            Pass::Point => point,
+            Pass::Gradient => gradient,
+            Pass::Box => range,
+        }
+    }
+}
+
 impl Ins {
     /// Argument slots (or ssa indices) and how many there are.
     pub fn args(&self) -> ([u32; 3], usize) {
@@ -68,8 +111,9 @@ impl Ins {
 }
 
 /// The first instruction from `j` on that every later use of j's value
-/// passes through (no other value depending on j is still to be read),
-/// and from which the output is `monotone`. `dep` is scratch, all false.
+/// passes through (no other value depending on j is still to be read, as
+/// interval evaluation reads them: Tape::uses), and from which the output
+/// is `monotone`. `dep` is scratch, all false.
 fn join_of(ssa: &[Ins], last: &[u32], monotone: &[bool], dep: &mut [bool], j: usize) -> usize {
     let n = ssa.len();
     if monotone[j] {
@@ -80,7 +124,7 @@ fn join_of(ssa: &[Ins], last: &[u32], monotone: &[bool], dep: &mut [bool], j: us
     let mut live = 1usize;
     let mut at = n - 1;
     for i in j + 1..n {
-        let (args, k) = Tape::reads(ssa, i);
+        let (args, k) = Tape::uses(ssa, i);
         let mut d = false;
         for (m, &a) in args[..k].iter().enumerate() {
             let a = a as usize;
@@ -104,6 +148,25 @@ fn join_of(ssa: &[Ins], last: &[u32], monotone: &[bool], dep: &mut [bool], j: us
     at
 }
 
+/// Where each of `jumps` joins (Tape::rejoin; 0 for other instructions),
+/// given the instructions from which the output is monotone.
+fn rejoins(ssa: &[Ins], jumps: &[u32], monotone: &[bool]) -> Vec<u32> {
+    let n = ssa.len();
+    let mut last = vec![0u32; n];
+    for i in 0..n {
+        let (args, k) = Tape::uses(ssa, i);
+        for &a in &args[..k] {
+            last[a as usize] = i as u32;
+        }
+    }
+    last[n - 1] = u32::MAX;
+    let (mut rejoin, mut dep) = (vec![0u32; n], vec![false; n]);
+    for &j in jumps {
+        rejoin[j as usize] = join_of(ssa, &last, monotone, &mut dep, j as usize) as u32;
+    }
+    rejoin
+}
+
 /// Tape::forked_steps over instructions `from..to`.
 fn forked_steps(jumps: &[u32], rejoin: &[u32], from: usize, to: usize) -> u64 {
     let (mut steps, mut i) = (0u64, from);
@@ -123,8 +186,10 @@ fn forked_steps(jumps: &[u32], rejoin: &[u32], from: usize, to: usize) -> u64 {
 /// Whether instruction `u`'s bound is its operand `a`'s ends mapped, with
 /// its other operands fixed (so a bound of it from the hull of two bounds
 /// of `a` is the hull of the bounds from each): sums, min, max, emax, a
-/// select's branches, a monotone function, a product with a constant; `a`
-/// read once.
+/// select's branches, or its condition where its branches are numbers (one
+/// where the condition is below 0 over the bound, the other at or above,
+/// else both), a monotone function, a product with a constant; `a` read
+/// once.
 fn ends_mapped(ssa: &[Ins], u: usize, a: u32) -> bool {
     let ins = &ssa[u];
     let (args, k) = ins.args();
@@ -137,9 +202,43 @@ fn ends_mapped(ssa: &[Ins], u: usize, a: u32) -> bool {
         Op::Bin(BinOp::Mul) => constant(if ins.a == a { ins.b } else { ins.a }),
         Op::Bin(BinOp::Div) => ins.a == a && constant(ins.b),
         Op::Un(UnOp::Neg | UnOp::Sqrt | UnOp::Exp | UnOp::Floor) | Op::Tag(_) | Op::Real => true,
-        Op::Select => ins.a != a,
+        Op::Select => ins.a != a || (constant(ins.b) && constant(ins.c)),
         Op::Lipschitz => ins.a == a,
         _ => false,
+    }
+}
+
+static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Which way instruction `u`'s value moves with its operand `a`, the
+/// others held: 1 with it, -1 against it, 0 where its bound is not `a`'s
+/// ends mapped (`ends_mapped`) or it moves both ways.
+fn way_of(ssa: &[Ins], u: usize, a: u32) -> i8 {
+    if !ends_mapped(ssa, u, a) {
+        return 0;
+    }
+    let ins = &ssa[u];
+    let value = |x: u32| match ssa[x as usize].op {
+        Op::Const(c) => c,
+        _ => 0.0,
+    };
+    let sign = |x: u32| match value(x) {
+        c if c > 0.0 => 1,
+        c if c < 0.0 => -1,
+        _ => 0,
+    };
+    match ins.op {
+        // From the first branch below 0 to the second at or above it.
+        Op::Select if ins.a == a => match value(ins.c) - value(ins.b) {
+            d if d > 0.0 => 1,
+            d if d < 0.0 => -1,
+            _ => 0,
+        },
+        Op::Bin(BinOp::Sub) if ins.b == a => -1,
+        Op::Un(UnOp::Neg) => -1,
+        Op::Bin(BinOp::Mul) => sign(if ins.a == a { ins.b } else { ins.a }),
+        Op::Bin(BinOp::Div) => sign(ins.b),
+        _ => 1,
     }
 }
 
@@ -288,9 +387,13 @@ impl Promise {
 /// Where each of a tape's jumps joins (Tape::rejoin). An instruction is
 /// monotone where its value reaches the output only through operations
 /// that each read it once and whose bounds are their operand's ends mapped
-/// (sums, min, max, a monotone function): a bound of the output from the
-/// hull of two bounds of it is then the hull of the bounds from each, so
-/// nothing is lost by joining them there (eval::forked).
+/// (sums, min, max, a monotone function), the output moving the same way
+/// with it through every read: a bound of the output from the hull of two
+/// bounds of it is then the hull of the bounds from each (each end of the
+/// output's bound is the end of every read that moves it, all from the
+/// same end of the hull), so nothing is lost by joining them there
+/// (eval::forked). A value read again through a negation is not: a
+/// screw's thread, and the same thread cut from its nut.
 #[derive(Clone, Debug)]
 struct Joins {
     /// Per jump (Tape::jumps): Tape::rejoin's instruction; 0 for others.
@@ -495,23 +598,33 @@ impl Tape {
         off(b, a).or_else(|| off(a, b).map(|(c, neg)| (c, !neg)))
     }
 
-    fn from_ssa(ssa: Vec<Ins>) -> Tape {
-        let n = ssa.len();
-        // A min or max of a and a + c reads c too (Tape::apart): its slot
-        // is kept until there.
-        let uses = |i: usize| {
-            let (mut u, k) = Self::reads(&ssa, i);
-            match Self::apart_of(&ssa, i) {
-                Some((c, _)) => {
-                    u[k] = c;
-                    (u, k + 1)
-                }
-                None => (u, k),
+    /// Tapes built in this process (`Tape::new`, a cone, a simplified
+    /// tape): what a query's repeated derivations cost (`kept`).
+    pub fn built() -> usize {
+        BUILT.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// What instruction i of `ssa` reads as interval evaluation runs it:
+    /// `reads`, and c of a min or max of a and a + c (Tape::apart), whose
+    /// bound reads c's slot to order the two.
+    fn uses(ssa: &[Ins], i: usize) -> ([u32; 5], usize) {
+        let (mut u, k) = Self::reads(ssa, i);
+        match Self::apart_of(ssa, i) {
+            Some((c, _)) => {
+                u[k] = c;
+                (u, k + 1)
             }
-        };
+            None => (u, k),
+        }
+    }
+
+    fn from_ssa(ssa: Vec<Ins>) -> Tape {
+        BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = ssa.len();
+        // Each slot is kept until its value's last use.
         let mut last = vec![0usize; n];
         for i in 0..n {
-            let (args, k) = uses(i);
+            let (args, k) = Self::uses(&ssa, i);
             for &a in &args[..k] {
                 last[a as usize] = i;
             }
@@ -535,7 +648,7 @@ impl Tape {
                 c.c = slot[ins.c as usize];
             }
             // Free argument slots whose last use is here; the output may reuse one.
-            let (args, k) = uses(i);
+            let (args, k) = Self::uses(&ssa, i);
             for j in 0..k {
                 let a = args[j] as usize;
                 if last[a] == i && !args[..j].contains(&args[j]) {
@@ -674,28 +787,28 @@ impl Tape {
     fn joins(&self) -> &Joins {
         self.joins.get_or_init(|| {
             let (ssa, n) = (&self.ssa, self.ssa.len());
-            let mut last = vec![0u32; n];
-            let mut count = vec![0u32; n];
-            for i in 0..n {
-                let (args, k) = Self::reads(ssa, i);
+            // Backwards from the output, which way it moves with each value:
+            // the same way through every read, each by an operation whose
+            // bound is that operand's ends mapped (`ends_mapped`), or not
+            // monotone (0). A reader's way is final before its operands'.
+            let mut way = vec![None::<i8>; n];
+            if n > 0 {
+                way[n - 1] = Some(1);
+            }
+            for u in (0..n).rev() {
+                let w = way[u].unwrap_or(0);
+                let (args, k) = Self::uses(ssa, u);
                 for &a in &args[..k] {
-                    last[a as usize] = i as u32;
-                    count[a as usize] += 1;
+                    let by = if w == 0 { 0 } else { w * way_of(ssa, u, a) };
+                    let a = a as usize;
+                    way[a] = Some(match way[a] {
+                        Some(x) if x != by => 0,
+                        _ => by,
+                    });
                 }
             }
-            last[n - 1] = u32::MAX;
-            // Backwards from the output: read once (so by its last reader),
-            // by an operation monotone in that operand, itself monotone.
-            let mut monotone = vec![false; n];
-            monotone[n - 1] = true;
-            for i in (0..n.saturating_sub(1)).rev() {
-                let u = last[i] as usize;
-                monotone[i] = count[i] == 1 && monotone[u] && ends_mapped(ssa, u, i as u32);
-            }
-            let (mut rejoin, mut dep) = (vec![0u32; n], vec![false; n]);
-            for &j in &self.jumps {
-                rejoin[j as usize] = join_of(ssa, &last, &monotone, &mut dep, j as usize) as u32;
-            }
+            let monotone: Vec<bool> = way.iter().map(|w| w.is_some_and(|w| w != 0)).collect();
+            let rejoin = rejoins(ssa, &self.jumps, &monotone);
             let forked = forked_steps(&self.jumps, &rejoin, 0, n);
             Joins { rejoin, forked }
         })
@@ -844,6 +957,19 @@ impl Tape {
         self.ssa.len()
     }
 
+    /// The machine instructions a pass of it retires (`Op::work`).
+    pub fn work(&self, pass: Pass) -> usize {
+        self.ssa.iter().map(|i| i.op.work(pass)).sum()
+    }
+
+    /// The machine instructions simplifying it over a box into `simple`
+    /// retires beside the box's pass (the choices it reads, and
+    /// `simplify`): 200 an instruction it reads and 600 one it keeps,
+    /// counted as `Op::work` is.
+    pub fn simplify_work(&self, simple: &Tape) -> usize {
+        200 * self.len() + 600 * simple.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ssa.is_empty()
     }
@@ -965,12 +1091,7 @@ impl Tape {
     /// value.
     pub fn continuous_select(&self, i: usize, choices: &[u8]) -> bool {
         let ssa = &self.ssa;
-        let strip = |mut j: usize| {
-            while let Op::Tag(_) = ssa[j].op {
-                j = ssa[j].a as usize;
-            }
-            j
-        };
+        let strip = |j: usize| self.through(choices, j);
         let c = strip(ssa[i].a as usize);
         let (x, y) = match ssa[c].op {
             Op::Bin(BinOp::Sub) => (strip(ssa[c].a as usize), strip(ssa[c].b as usize)),
@@ -1049,39 +1170,19 @@ impl Tape {
     /// that are not one field: a seam, which bounds cannot show continuous
     /// (a sweep's mitre between two segments' fields).
     pub fn switches(&self, choices: &[u8]) -> bool {
-        let n = self.ssa.len();
-        let strip = |mut j: usize| {
-            while let Op::Tag(_) = self.ssa[j].op {
-                j = self.ssa[j].a as usize;
-            }
-            j
-        };
-        let mut live = vec![false; n];
-        live[n - 1] = true;
-        for i in (0..n).rev() {
-            if !live[i] {
-                continue;
-            }
-            let ins = &self.ssa[i];
-            let picked = match (ins.op, choices[i]) {
-                (Op::Select, BOTH) if strip(ins.b as usize) != strip(ins.c as usize) && !self.continuous_select(i, choices) => return true,
-                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), FIRST) => Some(ins.a),
-                (Op::Bin(BinOp::Min | BinOp::Max | BinOp::Emax), SECOND) => Some(ins.b),
-                (Op::Select, FIRST) => Some(ins.b),
-                (Op::Select, SECOND) => Some(ins.c),
-                _ => None,
-            };
-            match picked {
-                Some(a) => live[a as usize] = true,
-                None => {
-                    let (args, k) = ins.args();
-                    for &a in &args[..k] {
-                        live[a as usize] = true;
-                    }
-                }
-            }
-        }
-        false
+        self.seams(choices, &self.live(choices)).contains(&true)
+    }
+
+    /// Per instruction, whether it is a select the output reads (`live`)
+    /// that may switch between branches that are not one field (`switches`).
+    fn seams(&self, choices: &[u8], live: &[bool]) -> Vec<bool> {
+        let strip = |j: usize| self.through(choices, j);
+        (0..self.ssa.len())
+            .map(|i| {
+                let ins = &self.ssa[i];
+                live[i] && matches!((ins.op, choices[i]), (Op::Select, BOTH)) && strip(ins.b as usize) != strip(ins.c as usize) && !self.continuous_select(i, choices)
+            })
+            .collect()
     }
 
     /// Whether the output's 0 over a region has no volume (holds no ball),
@@ -1212,8 +1313,56 @@ impl Tape {
     /// `sheet`, and the way the output changes sign along d where it does
     /// (1: below 0, then not; -1: the reverse; 2: it keeps one sign).
     pub fn sheet_way(&self, choices: &[u8], grads: &[crate::interval::G], centre: Option<(&[crate::interval::G], crate::V3)>, d: crate::V3) -> (Sheet, i8) {
+        self.sheets(choices, grads).way(centre, d)
+    }
+
+    /// What `sheet_way` reads of a region whatever the direction, from
+    /// `choices` and `grads` found over it: found once, walked along any
+    /// number of directions (`Sheets::way`).
+    pub fn sheets<'a>(&'a self, choices: &'a [u8], grads: &'a [crate::interval::G]) -> Sheets<'a> {
+        let live = self.live(choices);
+        Sheets { tape: self, choices, grads, seams: self.seams(choices, &live), thin: self.thin_zeros(grads), live }
+    }
+}
+
+/// A region's account for `Tape::sheet_way` that does not depend on the
+/// direction (`Tape::sheets`): the values the output reads through the
+/// branches `choices` pick (`live`), its selects that may switch between
+/// branches that are not one field (`seams`), and the values whose 0s
+/// have no volume there (`thin`).
+pub struct Sheets<'a> {
+    tape: &'a Tape,
+    choices: &'a [u8],
+    grads: &'a [crate::interval::G],
+    live: Vec<bool>,
+    seams: Vec<bool>,
+    thin: Vec<bool>,
+}
+
+impl Sheets<'_> {
+    /// Whether a select may switch there between branches that are not
+    /// one field (`Tape::switches`).
+    pub fn switches(&self) -> bool {
+        self.seams.contains(&true)
+    }
+
+    /// The instructions a walk along a direction runs: those the output
+    /// reads.
+    pub fn reads(&self) -> usize {
+        self.live.iter().filter(|&&l| l).count()
+    }
+
+    /// `Tape::sheet`.
+    pub fn sheet(&self, centre: Option<(&[crate::interval::G], crate::V3)>, d: crate::V3) -> Sheet {
+        self.way(centre, d).0
+    }
+
+    /// `Tape::sheet_way`: each value the output reads, in order (the
+    /// others are never read).
+    pub fn way(&self, centre: Option<(&[crate::interval::G], crate::V3)>, d: crate::V3) -> (Sheet, i8) {
         use crate::interval::{I, add_o, div_o, hull, mul_o, sub_o};
-        let n = self.ssa.len();
+        let (tape, choices, grads, thin) = (self.tape, self.choices, self.grads, &self.thin);
+        let n = tape.ssa.len();
         let mut r: Vec<I> = Vec::with_capacity(n);
         // Each value's way of changing sign along d: 1 (below 0, then
         // not), -1 (not, then below), 0 (unknown); and how thick what it
@@ -1224,17 +1373,17 @@ impl Tape {
         // Inside throughout (or at most 0, its 0 of no volume: pieces
         // meeting flush, drawn as material, crate::sign::solid), or
         // nowhere (crate::sign).
-        let thin = self.thin_zeros(grads);
-        let strip = |mut j: usize| {
-            while let Op::Tag(_) = self.ssa[j].op {
-                j = self.ssa[j].a as usize;
-            }
-            j
-        };
+        let strip = |j: usize| tape.through(choices, j);
         let below = |j: u32| v(j).all_inside() || v(j).hi <= 0.0 && thin[j as usize];
         let not_below = |j: u32| v(j).none_inside();
         for i in 0..n {
-            let ins = &self.ssa[i];
+            if !self.live[i] {
+                r.push(I::point(0.0));
+                way.push(0);
+                thick.push(0.0);
+                continue;
+            }
+            let ins = &tape.ssa[i];
             let at = |j: u32| r[j as usize];
             let rate = match (ins.op, choices[i]) {
                 (Op::Var(Var::X), _) => I::point(d[0]),
@@ -1278,14 +1427,8 @@ impl Tape {
                 // unless its condition is constant along d (it does not
                 // switch on a line along d) or its branches are one field.
                 (Op::Select, BOTH) => {
-                    let strip = |mut j: usize| {
-                        while let Op::Tag(_) = self.ssa[j].op {
-                            j = self.ssa[j].a as usize;
-                        }
-                        j
-                    };
                     let still = at(ins.a) == I::point(0.0);
-                    match still || strip(ins.b as usize) == strip(ins.c as usize) || self.continuous_select(i, choices) {
+                    match still || !self.seams[i] {
                         true => hull(at(ins.b), at(ins.c)),
                         false => I::new(f64::NEG_INFINITY, f64::INFINITY),
                     }
@@ -1347,8 +1490,8 @@ impl Tape {
                 // of the two): where one of them is below 0 throughout, as
                 // the other is, so as its rate shows (a wall's face, in a
                 // box reaching its middle but not its other face).
-                (Op::Bin(BinOp::Sub), _) if matches!(self.ssa[strip(ins.a as usize)].op, Op::Un(UnOp::Abs)) => {
-                    let (x, y) = (self.ssa[strip(ins.a as usize)].a, ins.b);
+                (Op::Bin(BinOp::Sub), _) if matches!(tape.ssa[strip(ins.a as usize)].op, Op::Un(UnOp::Abs)) => {
+                    let (x, y) = (tape.ssa[strip(ins.a as usize)].a, ins.b);
                     let rate = if add_o(v(x), v(y)).lo > 0.0 {
                         sub_o(r[x as usize], r[y as usize])
                     } else if sub_o(v(x), v(y)).hi < 0.0 {
@@ -1401,7 +1544,9 @@ impl Tape {
         };
         (held, way[n - 1])
     }
+}
 
+impl Tape {
     /// Whether the output's gradient may turn abruptly in a region, from
     /// `choices` and `grads` found over it (eval_interval's and
     /// eval_interval_grad_every's): through the branches they pick, a min,
@@ -1411,7 +1556,20 @@ impl Tape {
     /// that may be 0 there (its sides' gradients opposite), or a floor that
     /// may step there.
     pub fn may_crease(&self, choices: &[u8], grads: &[crate::interval::G]) -> bool {
-        use crate::interval::apart;
+        self.turns(choices, grads, &crate::interval::apart)
+    }
+
+    /// Whether `may_crease` may hold for some gradients: a min, max, emax
+    /// or select it reads is undecided, an abs's value may be 0 or a
+    /// floor's step, from `grads`' values alone. Where none is, the
+    /// output's gradient turns smoothly whatever its gradients.
+    pub fn may_turn(&self, choices: &[u8], grads: &[crate::interval::G]) -> bool {
+        self.turns(choices, grads, &|_, _| true)
+    }
+
+    /// `may_crease` with `apart` telling where two branches' gradients
+    /// point apart.
+    fn turns(&self, choices: &[u8], grads: &[crate::interval::G], apart: &dyn Fn(&[crate::interval::I; 3], &[crate::interval::I; 3]) -> bool) -> bool {
         let neg = |d: [crate::interval::I; 3]| d.map(|i| crate::interval::I::new(-i.hi, -i.lo));
         let n = self.ssa.len();
         let mut live = vec![false; n];
@@ -1545,6 +1703,28 @@ impl Tape {
 
     /// The operand min/max/select instruction `i` reduces to by `choices`
     /// (interval evaluation proved the other cannot win), if one.
+    /// Value `j` as the tape simplified by `choices` reads it: past its
+    /// names (tags), and through each min, max and select they decide to
+    /// the branch it takes (`simplify` aliases it so).
+    pub fn through(&self, choices: &[u8], mut j: usize) -> usize {
+        loop {
+            j = match (self.ssa[j].op, self.pick(choices, j)) {
+                (Op::Tag(_), _) => self.ssa[j].a as usize,
+                (_, Some(a)) => a as usize,
+                _ => return j,
+            };
+        }
+    }
+
+    /// Value `j` as the tape simplified by `choices` holds it: through each
+    /// min, max and select they decide to the branch it takes.
+    pub fn picked(&self, choices: &[u8], mut j: usize) -> usize {
+        while let Some(a) = self.pick(choices, j) {
+            j = a as usize;
+        }
+        j
+    }
+
     fn pick(&self, choices: &[u8], i: usize) -> Option<u32> {
         let ins = &self.ssa[i];
         match (ins.op, choices[i]) {
@@ -1577,6 +1757,105 @@ impl Tape {
             }
         }
         live
+    }
+
+    /// The tape over a region where interval evaluation recorded `choices`
+    /// on this one: itself where they pick no branch, else simplified
+    /// (`simplify`), kept (`kept`): a region's parts that choose as it did
+    /// share it.
+    pub fn narrowed(self: &std::sync::Arc<Self>, choices: &[u8]) -> std::sync::Arc<Tape> {
+        if choices.iter().all(|&c| c == BOTH) {
+            return self.clone();
+        }
+        kept::Kept::global().get(self, kept::Ask::Narrowed, choices, || self.simplify(choices))
+    }
+
+    /// `cone`, kept (`kept`).
+    pub fn kept_cone(self: &std::sync::Arc<Self>, i: usize) -> std::sync::Arc<Tape> {
+        kept::Kept::global().get(self, kept::Ask::Cone, &(i as u32).to_le_bytes(), || self.cone(i))
+    }
+
+    /// The bytes the tape holds, about: its lists, not what is derived
+    /// from them when first read.
+    pub fn bytes(&self) -> usize {
+        use std::mem::size_of_val;
+        let Tape { ssa, code, nslots: _, grids, opaque, fixed, pmask, pread, plist, slopes, forms, jumps, joins: _, promises: _, axes: _, levels: _, apart } = self;
+        size_of_val(&**ssa)
+            + size_of_val(&**code)
+            + size_of_val(&**grids)
+            + size_of_val(&**opaque)
+            + size_of_val(&**fixed)
+            + size_of_val(&**pmask)
+            + size_of_val(&**pread)
+            + size_of_val(&**plist)
+            + size_of_val(&**slopes)
+            + size_of_val(&**forms)
+            + size_of_val(&**jumps)
+            + size_of_val(&**apart)
+    }
+
+    /// An instruction's op as two words: its kind and what it carries (a
+    /// constant to the bit).
+    fn op_words(op: Op) -> (u64, u64) {
+        match op {
+            Op::Const(v) => (0, v.to_bits()),
+            Op::Var(v) => (
+                1,
+                match v {
+                    Var::X => 0,
+                    Var::Y => 1,
+                    Var::Z => 2,
+                    Var::T => 3,
+                    Var::Param(k) => 4 + k as u64,
+                },
+            ),
+            Op::Un(u) => (2, u as u64),
+            Op::Bin(b) => (3, b as u64),
+            Op::Select => (4, 0),
+            Op::Tag(t) => (5, t as u64),
+            Op::Grid(g, m) => (6, (g as u64) << 8 | m as u64),
+            Op::Read => (7, 0),
+            Op::Lipschitz => (8, 0),
+            Op::Frame => (9, 0),
+            Op::Deriv(d) => (10, d as u64),
+            Op::Real => (11, 0),
+            Op::Within(id) => (12, id),
+        }
+    }
+
+    /// A hash of the lists `same` compares, for this process alone (its
+    /// grids and forms by address).
+    pub fn content(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        let Tape { ssa, grids, opaque, fixed, pmask, pread, plist, slopes, forms, .. } = self;
+        h.write_usize(ssa.len());
+        for &Ins { op, out, a, b, c } in ssa {
+            let (k, v) = Tape::op_words(op);
+            [k, v, out as u64, a as u64, b as u64, c as u64].into_iter().for_each(|w| h.write_u64(w));
+        }
+        grids.iter().for_each(|g| h.write_usize(std::sync::Arc::as_ptr(g) as usize));
+        forms.iter().for_each(|f| h.write_usize(std::sync::Arc::as_ptr(f) as usize));
+        (opaque, fixed, pmask, pread, plist, slopes).hash(&mut h);
+        h.finish()
+    }
+
+    /// Whether two tapes are one field, evaluated alike: every list equal,
+    /// each constant to the bit, the same grids and forms.
+    pub fn same(&self, other: &Tape) -> bool {
+        // Every field, named: one added must be compared too. `code`,
+        // `nslots`, `jumps`, `apart` and what is derived when first read
+        // follow from `ssa`.
+        let Tape { ssa, code: _, nslots: _, grids, opaque, fixed, pmask, pread, plist, slopes, forms, jumps: _, joins: _, promises: _, axes: _, levels: _, apart: _ } = self;
+        let ins = |i: &Ins| (Tape::op_words(i.op), i.out, i.a, i.b, i.c);
+        fn arcs<T>(a: &[std::sync::Arc<T>], b: &[std::sync::Arc<T>]) -> bool {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| std::sync::Arc::ptr_eq(x, y))
+        }
+        ssa.len() == other.ssa.len()
+            && ssa.iter().zip(&other.ssa).all(|(x, y)| ins(x) == ins(y))
+            && arcs(grids, &other.grids)
+            && arcs(forms, &other.forms)
+            && (opaque, fixed, pmask, pread, plist, slopes) == (&other.opaque, &other.fixed, &other.pmask, &other.pread, &other.plist, &other.slopes)
     }
 
     /// Drop branches of min/max/select that interval evaluation proved can't win.
@@ -1709,6 +1988,87 @@ mod tests {
     use super::*;
     use crate::eval::{Ctx, eval_interval_clamped, eval_point};
     use crate::interval::I;
+
+    /// A min of a and a + c reads c's slot to order them (Tape::apart), so a
+    /// jump in c joins no earlier than that min, however `monotone` is
+    /// decided: here with every value but the jumps taken as monotone (a
+    /// wrong rule), c = atan2(x, z - 2.64) and a = |y| would join at a + c,
+    /// and the min after it would order a and a + c by the slot of c as the
+    /// second side left it.
+    #[test]
+    fn a_jump_joins_after_a_min_that_reads_it_to_order_two_values() {
+        let mut g = Graph::new();
+        let (x, y, z) = (g.var(Var::X), g.var(Var::Y), g.var(Var::Z));
+        let a = g.un(UnOp::Abs, y);
+        let k = g.constant(2.64);
+        let zk = g.sub(z, k);
+        let c = g.bin(BinOp::Atan2, x, zk);
+        let v = g.add(a, c);
+        let m = g.min(a, v);
+        let fz = g.un(UnOp::Floor, z);
+        let inner = g.max(v, m);
+        let out = g.max(inner, fz);
+        let t = Tape::new(&g, out);
+        let ordered = (0..t.ssa.len()).find(|&i| Tape::apart_of(&t.ssa, i).is_some()).expect("a min of a and a + c");
+        let wrong: Vec<bool> = (0..t.ssa.len()).map(|i| !t.jumps.contains(&(i as u32))).collect();
+        let r = rejoins(&t.ssa, &t.jumps, &wrong);
+        let at = t.jumps.iter().find(|&&j| matches!(t.ssa[j as usize].op, Op::Bin(BinOp::Atan2))).copied().unwrap();
+        assert!(r[at as usize] as usize >= ordered, "atan2 at {at} joins at {}, before the min at {ordered} that reads it", r[at as usize]);
+    }
+
+    /// A simplified tape keeps its order but drops edges, so a jump's window
+    /// can hold another jump that feeds nothing the window joins: here
+    /// floor y joins at max(sin floor y, min(sin floor z + 10, floor y)),
+    /// the min decided for floor y over the box (and, after floor x is
+    /// taken as the case 0, for floor y plus 20 floor x), with floor z
+    /// inside the window, read past it by cos. Its window ends where its
+    /// value's last reader does; a window reaching floor z's join there
+    /// read the max as the second side left it, -9 to -9 where f is -10.
+    #[test]
+    fn a_simplified_tape_joins_each_jump_where_its_value_is_last_read() {
+        let mut g = Graph::new();
+        let (x, y, z) = (g.var(Var::X), g.var(Var::Y), g.var(Var::Z));
+        let j = g.un(UnOp::Floor, y);
+        let sj = g.un(UnOp::Sin, j);
+        let k = g.un(UnOp::Floor, z);
+        let sk = g.un(UnOp::Sin, k);
+        let c10 = g.constant(10.0);
+        let q = g.add(sk, c10);
+        let fx = g.un(UnOp::Floor, x);
+        let c20 = g.constant(20.0);
+        let wx = g.mul(fx, c20);
+        let shifted = g.add(j, wx);
+        let ck = g.un(UnOp::Cos, k);
+        let c11 = g.constant(11.0);
+        let h = g.sub(ck, c11);
+        let b = [I::new(-1.0, 1.0), I::new(0.5, 1.5), I::new(0.2, 0.4)];
+        let ctx = Ctx::new(0.0, vec![]);
+        // f(0.5, 0.7, 0.3) = sin 0 max (sin 0 + 10) min 0, plus cos 0 - 11: -10.
+        let p = [0.5, 0.7, 0.3];
+        let bound_of = |t: &Tape| {
+            let mut ch = vec![BOTH; t.len()];
+            crate::eval::eval_interval(t, &ctx, b, Some(&mut ch));
+            let s = t.simplify(&ch);
+            (crate::eval::eval_interval(&s, &ctx, b, None), eval_point(&s, &ctx, p))
+        };
+        let plain = {
+            let m = g.min(q, j);
+            let r = g.max(sj, m);
+            let out = g.add(r, h);
+            bound_of(&Tape::new(&g, out))
+        };
+        let cased = {
+            let m = g.min(q, shifted);
+            let r = g.max(sj, m);
+            let out = g.add(r, h);
+            let t = Tape::new(&g, out);
+            let at = (0..t.len()).find(|&i| matches!(t.ssa[i].op, Op::Un(UnOp::Floor)) && matches!(t.ssa[t.ssa[i].a as usize].op, Op::Var(Var::X))).unwrap();
+            bound_of(&t.with_consts(&[(at, 0.0)]))
+        };
+        for (r, v) in [plain, cased] {
+            assert!(v == -10.0 && r.lo <= v && v <= r.hi, "{r:?} misses {v}");
+        }
+    }
 
     /// A term shared by many is one conjunct, whatever the paths to it: a
     /// sphere's field under twenty emaxes of itself with itself is one term

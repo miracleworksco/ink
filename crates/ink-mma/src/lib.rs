@@ -21,13 +21,15 @@ pub struct Mma {
     x2: Vec<f64>,
     low: Vec<f64>,
     upp: Vec<f64>,
+    /// Each variable's own move limit, at most `step` (`update`).
+    moves: Vec<f64>,
     k: usize,
 }
 
 impl Mma {
     /// A run whose variables each move at most `step` per iteration.
     pub fn new(step: f64) -> Mma {
-        Mma { step, x1: Vec::new(), x2: Vec::new(), low: Vec::new(), upp: Vec::new(), k: 0 }
+        Mma { step, x1: Vec::new(), x2: Vec::new(), low: Vec::new(), upp: Vec::new(), moves: Vec::new(), k: 0 }
     }
 
     /// The next iterate from `x` (in [0, 1]), given the objective's
@@ -50,6 +52,7 @@ impl Mma {
         if self.k < 2 {
             self.low = x.iter().map(|v| v - init).collect();
             self.upp = x.iter().map(|v| v + init).collect();
+            self.moves = vec![self.step; n];
         } else {
             for j in 0..n {
                 let osc = (x[j] - self.x1[j]) * (self.x1[j] - self.x2[j]);
@@ -60,6 +63,21 @@ impl Mma {
                 } else {
                     1.0
                 };
+                // Adaptive move limits (Wujek and Renaud 1998): a variable
+                // whose steps alternate has its move limit shrunk, as its
+                // asymptotes are; one moving steadily has it grown back
+                // toward `step`. The asymptotes close in on an oscillation
+                // only to within 0.01, so without this a variable can cycle
+                // there for good (a topology's cells at its projection's
+                // steepest, where a design step of 0.003 moves a density
+                // 0.03, never settled).
+                self.moves[j] = if osc < 0.0 {
+                    decr * self.moves[j]
+                } else if osc > 0.0 {
+                    (incr * self.moves[j]).min(self.step)
+                } else {
+                    self.moves[j]
+                };
                 self.low[j] = (x[j] - gamma * (self.x1[j] - self.low[j])).clamp(x[j] - 10.0, x[j] - 0.01);
                 self.upp[j] = (x[j] + gamma * (self.upp[j] - self.x1[j])).clamp(x[j] + 0.01, x[j] + 10.0);
             }
@@ -67,8 +85,9 @@ impl Mma {
         let (low, upp) = (&self.low, &self.upp);
         // Move limits.
         let albefa = 0.1;
-        let alfa: Vec<f64> = (0..n).map(|j| (low[j] + albefa * (x[j] - low[j])).max(x[j] - self.step).max(0.0)).collect();
-        let beta: Vec<f64> = (0..n).map(|j| (upp[j] - albefa * (upp[j] - x[j])).min(x[j] + self.step).min(1.0)).collect();
+        let mv = |j: usize| self.moves.get(j).copied().unwrap_or(self.step);
+        let alfa: Vec<f64> = (0..n).map(|j| (low[j] + albefa * (x[j] - low[j])).max(x[j] - mv(j)).max(0.0)).collect();
+        let beta: Vec<f64> = (0..n).map(|j| (upp[j] - albefa * (upp[j] - x[j])).min(x[j] + mv(j)).min(1.0)).collect();
         // p / (U - x) + q / (x - L) per variable for each function.
         let pq = |d: &[f64]| -> Vec<(f64, f64)> {
             (0..n)
@@ -156,6 +175,29 @@ mod tests {
             x = mma.update(&x, &df, &[(g, vec![0.5; 20])], None);
         }
         assert!(x.iter().all(|v| (v - 0.1).abs() < 0.01), "{x:?}");
+    }
+
+    #[test]
+    fn a_variable_behind_a_steep_projection_settles() {
+        // Minimize the sum of (p(x_i) - t_i)^2, p a Heaviside projection
+        // at its steepest (tanh, beta 16: slope 8 at 1/2), the targets
+        // where it is steep. The asymptotes close in on the oscillation
+        // only to within 0.01, which p turns into 0.08: the iterates cycled
+        // there; shrinking an oscillating variable's move limit settles it.
+        let (b, a) = (16.0f64, (8.0f64).tanh());
+        let p = |x: f64| (a + (b * (x - 0.5)).tanh()) / (2.0 * a);
+        let dp = |x: f64| b * (1.0 - (b * (x - 0.5)).tanh().powi(2)) / (2.0 * a);
+        let t: Vec<f64> = (0..10).map(|i| 0.3 + 0.04 * i as f64).collect();
+        let mut mma = Mma::new(0.2);
+        let mut x = vec![0.5; 10];
+        let mut moved = 1.0;
+        for _ in 0..80 {
+            let df: Vec<f64> = x.iter().zip(&t).map(|(x, t)| 2.0 * (p(*x) - t) * dp(*x)).collect();
+            let next = mma.update(&x, &df, &[], None);
+            moved = x.iter().zip(&next).map(|(a, b)| (p(*a) - p(*b)).abs()).fold(0.0, f64::max);
+            x = next;
+        }
+        assert!(moved < 0.01, "the projected values still move {moved}");
     }
 
     #[test]

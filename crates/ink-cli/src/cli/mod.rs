@@ -1,6 +1,8 @@
 //! The commands behind `ink`'s verbs (main.rs parses arguments and dispatches).
 
 mod claims;
+#[cfg(test)]
+pub(crate) mod counted;
 mod docs;
 pub(crate) mod queries;
 pub(crate) mod session;

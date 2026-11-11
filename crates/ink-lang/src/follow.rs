@@ -32,13 +32,16 @@
 //! rates) bounded over the step as a root is, its equations linear in it;
 //! and along their path, moving at their rates (roots::Moving).
 //!
-//! A solve whose equations repeat in t (ink_core::period: t only inside
-//! sin and cos, its unknowns angles or not repeating) and read no solve on
-//! t is followed one period, where its root is shown to be the one at 0
-//! moved by whole turns (Follow::fold): a moment past it or before 0 is
-//! its moment in that period, moved (Follow::folded); where the period's
-//! enclosure leaves the count of periods to it uncertain, any of the
-//! first period's moments, certified at the moment itself.
+//! A solve whose equations read t only through one expression of t (a
+//! clock: t itself, or a crank's angle 10 t + t^2 / 1000) and repeat in it
+//! (ink_core::period), and the solves on t they read repeat in it too, is
+//! followed one period, where its root is shown to be the one at 0 moved
+//! by exact amounts that leave the equations unchanged (Follow::fold): a
+//! moment past it or before 0, the clock not jumping between, is a moment
+//! of that period where the clock is where it is, moved by whole periods
+//! (Follow::folded); where the period's enclosure leaves the count of
+//! periods to it uncertain, any of the first period's moments, certified
+//! at the moment itself.
 //!
 //! The steps depend only on where following starts, never on the moments
 //! asked for, and are kept (Paths) by the solve and the values of what its
@@ -53,9 +56,10 @@ use crate::eval::{Ctx, ParamSpans, span_mid};
 use crate::ext::ParamProvider;
 use crate::roots::{Moving, Roots};
 use crate::tape::Tape;
+use ink_core::eval;
 use ink_core::graph::{BinOp, Fingerprint, Var};
 use ink_core::interval::{self, I, add_o, mul_o, sub_o};
-use ink_core::period::{Shown, period};
+use ink_core::period::{Clock, Coef, Shown, clocks, common_base, keeps, period, period_in};
 use ink_kernel::cache;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -123,10 +127,36 @@ pub struct Path {
     anchor: Option<Result<(Vec<f64>, Vec<I>), String>>,
     /// Forward (t > 0) and backward (t < 0).
     ways: [Way; 2],
-    /// Its period p (enclosed), once looked for, and once p is passed,
-    /// whether it holds (Follow::fold): each unknown's shift over it.
-    period: Option<Option<I>>,
-    fold: Option<Option<Vec<I>>>,
+    /// Its period, once looked for, and once it is passed, whether it holds
+    /// (Follow::fold).
+    period: Option<Option<Period>>,
+    fold: Option<Option<Fold>>,
+}
+
+/// A solve's period (Follow::period): its equations read t through `clock`
+/// and are unchanged by the clock moved by p (exactly, and enclosed), each
+/// solve on t they read (`upstream`: its index, and how many of its own
+/// periods p is) moved by its own periods. The clock is g0 at t = 0, and
+/// has moved by more than p from there by t = `reach`, up (`way` 1) or down
+/// (-1).
+#[derive(Clone)]
+struct Period {
+    clock: Clock,
+    base: Coef,
+    p: Coef,
+    pe: I,
+    upstream: Vec<(usize, i128)>,
+    g0: I,
+    reach: f64,
+    way: f64,
+}
+
+/// A period that holds (Follow::fold): each unknown's move over it,
+/// exactly (None: 0), and enclosed.
+#[derive(Clone)]
+struct Fold {
+    exact: Vec<Option<Coef>>,
+    shift: Vec<I>,
 }
 
 struct Way {
@@ -372,67 +402,246 @@ impl Follow {
         found
     }
 
-    /// Solve `i`'s period, looked for once a path: one with no solve on t
-    /// under it whose equations are unchanged by t -> t + p, p = 2 pi / a
-    /// for a base a ink_core::period shows (enclosed). None: none shown.
-    fn period(&self, i: usize, params: &[f64], path: &mut Path) -> Option<I> {
+    /// Solve `i`'s period, looked for once a path: its equations read t
+    /// through one expression of t alone (period::Clock: t itself, or a
+    /// crank's angle 10 t + t^2 / 1000) and repeat in it, as ink_core::period
+    /// shows, with the unknowns held; or the clock of the solves on t they
+    /// read, each of which repeats in it (Follow::repeats). The least whole
+    /// multiple of their periods; the clock at t = 0, and a moment by
+    /// which it has moved more than that from there, and which way.
+    /// None: none shown.
+    fn period(&self, i: usize, params: &[f64], path: &mut Path) -> Option<Period> {
+        if let Some(p) = &path.period {
+            return p.clone();
+        }
         let s = &self.solves[i];
-        *path.period.get_or_insert_with(|| {
+        let found = (|| {
             let equations: Vec<&Tape> = s.equations.as_ref()?.iter().collect();
-            let Shown::Base(b) = s.upstream.is_empty().then(|| period(&equations, Var::T, &self.at_rest(i, params)))?? else { return None };
-            Some(b.shift()).filter(|p| p.lo > 0.0 && p.hi.is_finite())
-        })
+            let ctx = self.at_rest(i, params);
+            let mut ups: Vec<(usize, Period)> = Vec::new();
+            for &j in &s.upstream {
+                ups.push((j, self.repeats(j, params)?.0));
+            }
+            let (clock, own) = match ups.first() {
+                Some((_, u)) if ups.iter().all(|(_, v)| v.clock.same(&u.clock)) => {
+                    let c = u.clock.in_tapes(&equations, &ctx)?;
+                    let own = period_in(&equations, &c, &ctx)?;
+                    (c, own)
+                }
+                Some(_) => return None,
+                None => clocks(&equations, &ctx).into_iter().find_map(|c| match period_in(&equations, &c, &ctx)? {
+                    Shown::Base(b) => Some((c, Shown::Base(b))),
+                    Shown::Every => None,
+                })?,
+            };
+            let mut bases: Vec<Coef> = ups.iter().map(|(_, u)| u.base).collect();
+            if let Shown::Base(b) = own {
+                bases.push(b);
+            }
+            let base = common_base(&bases)?;
+            let p = base.period()?;
+            let pe = p.value();
+            let upstream = ups.iter().map(|(j, u)| Some((*j, p.whole_of(u.p)?))).collect::<Option<Vec<_>>>()?;
+            // The first moment, doubling, then halving the gap, by which the
+            // clock has moved past p.
+            let g0 = self.clock(&clock, params, (0.0, 0.0));
+            let past = |t: f64| {
+                let g = self.clock(&clock, params, (t, t));
+                if g.lo > interval::add_up(g0.hi, pe.hi) {
+                    Some(1.0)
+                } else if -g.hi > interval::add_up(-g0.lo, pe.hi) {
+                    Some(-1.0)
+                } else {
+                    None
+                }
+            };
+            let mut reach = FIRST;
+            while past(reach).is_none() {
+                reach *= 2.0;
+                if !(pe.lo > 0.0 && pe.hi.is_finite() && reach < f64::MAX / 4.0) {
+                    return None;
+                }
+            }
+            let way = past(reach)?;
+            let mut below = 0.0;
+            for _ in 0..64 {
+                let m = 0.5 * (below + reach);
+                match past(m) == Some(way) {
+                    true => reach = m,
+                    false => below = m,
+                }
+            }
+            // Its value over it does not jump.
+            self.continuous_clock(&clock, params, (0.0, reach)).then_some(Period { clock, base, p, pe, upstream, g0, reach, way })
+        })();
+        // Not kept where a solve it reads stopped at the time limit: a
+        // later call may find it.
+        if found.is_some() || !ink_kernel::stop::reached() {
+            path.period = Some(found.clone());
+        }
+        found
+    }
+
+    /// Solve `j`'s period and fold, where it is followed and both hold.
+    fn repeats(&self, j: usize, params: &[f64]) -> Option<(Period, Fold)> {
+        if !self.solves[j].followed {
+            return None;
+        }
+        let path = self.path(j, params);
+        let mut path = path.lock().unwrap();
+        let per = self.period(j, params, &mut path)?;
+        let fold = self.fold(j, params, &mut path, &per)?;
+        Some((per, fold))
+    }
+
+    /// A clock's value over `span` of t, enclosed.
+    fn clock(&self, c: &Clock, params: &[f64], span: (f64, f64)) -> I {
+        let mut ctx = Ctx::new(span_mid(span), params.to_vec());
+        ctx.t_span = (span.0 < span.1).then_some(span);
+        eval::eval_interval(&c.cone, &ctx, [I::point(0.0); 3], None)
+    }
+
+    /// Whether a clock's rate along t over `span` is bounded: it does not
+    /// jump there.
+    fn continuous_clock(&self, c: &Clock, params: &[f64], span: (f64, f64)) -> bool {
+        let mut ctx = Ctx::new(span_mid(span), params.to_vec());
+        ctx.t_span = (span.0 < span.1).then_some(span);
+        let (v, d) = eval::eval_interval_rates(&c.cone, &ctx, [I::point(0.0); 3], &eval::Inputs { t: true, params: Vec::new() });
+        [v.lo, v.hi].iter().chain(d.iter().flat_map(|d| [&d.lo, &d.hi])).all(|x| x.is_finite())
+    }
+
+    /// The moments from 0 to `reach` at which a clock may be in `target`,
+    /// enclosed (t: those of the target; else halving the span, keeping the
+    /// halves it may be in there). None: none.
+    fn preimage(&self, c: &Clock, params: &[f64], target: I, reach: f64) -> Option<I> {
+        if c.is_t() {
+            let at = interval::meet(target, I::new(0.0, reach));
+            return (at.lo <= at.hi).then_some(at);
+        }
+        let meets = |span: (f64, f64)| {
+            let g = self.clock(c, params, span);
+            g.lo <= target.hi && target.lo <= g.hi
+        };
+        let mut front = vec![(0.0, reach)];
+        for _ in 0..64 {
+            let mut next = Vec::new();
+            for &(a, b) in &front {
+                let m = 0.5 * (a + b);
+                if !(a < m && m < b) {
+                    next.push((a, b));
+                    continue;
+                }
+                next.extend([(a, m), (m, b)].into_iter().filter(|&h| meets(h)));
+            }
+            if next.is_empty() {
+                return None;
+            }
+            if next.len() > 64 || next == front {
+                break;
+            }
+            front = next;
+        }
+        Some(front.iter().fold(I::new(front[0].0, front[0].1), |h, &(a, b)| interval::hull(h, I::new(a, b))))
     }
 
     /// The context solve `i`'s equations are evaluated in over a step, for
-    /// ink_core::period: its params' values, its unknowns ranged (as
-    /// Krawczyk's test ranges them: Roots::enclose).
+    /// ink_core::period: its params' values, its unknowns and the params of
+    /// the solves on t it reads ranged (as Krawczyk's test ranges them:
+    /// Roots::enclose), so none is taken as a fixed float.
     fn at_rest(&self, i: usize, params: &[f64]) -> Ctx {
+        let s = &self.solves[i];
         let mut ctx = Ctx::new(0.0, params.to_vec());
-        ctx.p_spans = ParamSpans::new(self.solves[i].p.owns().iter().map(|&k| (k as u32, (params[k], params[k]))));
+        let ranged = s.p.owns().iter().chain(s.upstream.iter().flat_map(|&j| self.solves[j].p.owns()));
+        ctx.p_spans = ParamSpans::new(ranged.map(|&k| (k as u32, (params[k], params[k]))));
         ctx
     }
 
-    /// Whether solve `i`'s period p holds, looked for once a path: the
-    /// equations are unchanged by t moved by p (the unknowns held), and so
-    /// with each unknown moved by a whole number of its own period too
-    /// (an unknown ink_core::period shows none for is not moved). The path is followed to p; each unknown's number is its move
-    /// there, rounded. Where the root at 0 so moved (its enclosure, the
-    /// period and shifts enclosed) lies in the tube of every step that may
-    /// hold p, which holds one root at p, it is the root followed to p;
-    /// then the root followed to t + p is the one at t moved, at every t,
-    /// both ways (the moved path is a path of roots through it, and a
-    /// regular root is followed one way). The unknowns' shifts, enclosed;
-    /// None: it does not hold.
-    fn fold(&self, i: usize, params: &[f64], path: &mut Path, p: I) -> Option<Vec<I>> {
+    /// Whether solve `i`'s period holds, looked for once a path: the path is
+    /// followed past where the clock has moved by p, and there each unknown
+    /// has moved by an exact amount d (a whole number of its own period, of
+    /// p, or of what a solve it reads moves by: w = 2 th moves by twice th's
+    /// turn; 0), its move rounded to one, such that the equations are
+    /// unchanged by the clock moved by p, each solve's they read by its
+    /// whole periods' moves, and the unknowns by d, at once
+    /// (period::keeps). Where the root at 0 so moved (its enclosure, d
+    /// enclosed) lies in the tube of every step that may hold that
+    /// moment, which holds one root there, it is the root followed there;
+    /// then the root followed to where the clock is g + p is the one where it
+    /// is g moved, for every g, both ways: the moved path is a path of roots
+    /// through it, and a regular root is followed one way. The unknowns'
+    /// shifts; None: it does not hold.
+    fn fold(&self, i: usize, params: &[f64], path: &mut Path, per: &Period) -> Option<Fold> {
         if let Some(f) = &path.fold {
             return f.clone();
         }
         let s = &self.solves[i];
         // Not kept where following stopped at the time limit or a chunk
         // is gone from disk (Err): a later call may find it.
-        let found = (|| -> Result<Option<Vec<I>>, ()> {
+        let found = (|| -> Result<Option<Fold>, ()> {
             let Some(equations) = s.equations.as_ref() else { return Ok(None) };
             let equations: Vec<&Tape> = equations.iter().collect();
             let Ok((r0, e0)) = self.anchor(i, params, path) else { return Ok(None) };
-            if self.reach(i, params, path, p.hi).is_err() {
+            if self.reach(i, params, path, per.reach).is_err() {
                 return if ink_kernel::stop::reached() { Err(()) } else { Ok(None) };
             }
-            let steps = path.ways[0].holding(1.0, p.lo, p.hi).ok_or(())?;
-            let Some(at) = steps.iter().find(|st| st.a <= p.mid() && p.mid() <= st.b) else { return Ok(None) };
-            let w = (p.mid() - at.a) / (at.b - at.a);
-            let mut shift = Vec::with_capacity(r0.len());
+            let target = add_o(per.g0, mul_o(I::point(per.way), per.pe));
+            let Some(near) = self.preimage(&per.clock, params, target, per.reach) else { return Ok(None) };
+            let steps = path.ways[0].holding(1.0, near.lo, near.hi).ok_or(())?;
+            let Some(at) = steps.iter().find(|st| st.a <= near.mid() && near.mid() <= st.b) else { return Ok(None) };
+            let w = (near.mid() - at.a) / (at.b - at.a);
+            let ctx = self.at_rest(i, params);
+            let Some(by) = per.p.times(per.way as i128) else { return Ok(None) };
+            // What the solves on t read move by over p.
+            let mut ups: Vec<(u32, Coef)> = Vec::new();
+            for &(j, n) in &per.upstream {
+                let Some((_, f)) = self.repeats(j, params) else { return Ok(None) };
+                for (&k, d) in self.solves[j].p.owns().iter().zip(&f.exact) {
+                    if let Some(d) = d {
+                        let Some(d) = d.times(n) else { return Ok(None) };
+                        ups.push((k as u32, d));
+                    }
+                }
+            }
+            // Each unknown's candidate moves: 0, and its move rounded to a
+            // whole number of each unit.
+            let mut choices: Vec<Vec<Option<Coef>>> = Vec::new();
             for (j, &k) in s.p.owns().iter().enumerate() {
                 let moved = at.ra[j] + w * (at.rb[j] - at.ra[j]) - r0[j];
-                // A whole number of its own period, where it has one; else
-                // none (the equations are unchanged by t's period alone).
-                shift.push(match period(&equations, Var::Param(k as u32), &self.at_rest(i, params)) {
-                    Some(Shown::Base(c)) => mul_o(I::point((moved / c.shift().mid()).round()), c.shift()),
-                    _ => I::point(0.0),
-                });
+                let own = match period(&equations, Var::Param(k as u32), &ctx) {
+                    Some(Shown::Base(c)) => c.period(),
+                    _ => None,
+                };
+                let mut c: Vec<Option<Coef>> = vec![None];
+                for u in own.into_iter().chain([per.p]).chain(ups.iter().map(|u| u.1)) {
+                    let n = (moved / u.value().mid()).round();
+                    if n != 0.0
+                        && n.abs() < 1e15
+                        && let Some(d) = u.times(n as i128)
+                        && !c.contains(&Some(d))
+                    {
+                        c.push(Some(d));
+                    }
+                }
+                choices.push(c);
             }
-            let lands = |tube: &[I]| e0.iter().zip(&shift).zip(tube).all(|((e, d), x)| x.lo <= add_o(*e, *d).lo && add_o(*e, *d).hi <= x.hi);
-            Ok(steps.iter().all(|st| lands(&st.tube)).then_some(shift))
+            let lands = |d: &[I], tube: &[I]| e0.iter().zip(d).zip(tube).all(|((e, d), x)| x.lo <= add_o(*e, *d).lo && add_o(*e, *d).hi <= x.hi);
+            let mut pick = vec![0usize; choices.len()];
+            for _ in 0..256 {
+                let exact: Vec<Option<Coef>> = pick.iter().zip(&choices).map(|(&n, c)| c[n]).collect();
+                let shift: Vec<I> = exact.iter().map(|d| d.map_or(I::point(0.0), |d| d.value())).collect();
+                if steps.iter().all(|st| lands(&shift, &st.tube)) {
+                    let mut moves = ups.clone();
+                    moves.extend(s.p.owns().iter().zip(&exact).filter_map(|(&k, d)| Some((k as u32, (*d)?))));
+                    if keeps(&equations, Some((&per.clock, by)), &moves, &ctx) {
+                        return Ok(Some(Fold { exact, shift }));
+                    }
+                }
+                // The next choice of each unknown's, in turn.
+                let Some(j) = (0..pick.len()).find(|&j| pick[j] + 1 < choices[j].len()) else { return Ok(None) };
+                pick[j] += 1;
+                pick[..j].iter_mut().for_each(|n| *n = 0);
+            }
+            Ok(None)
         })();
         let found = found.ok()?;
         path.fold = Some(found.clone());
@@ -441,43 +650,51 @@ impl Follow {
 
     /// `span` (not 0) folded into solve `i`'s first period, where it has
     /// one that holds and the span lies farther than it from 0, either
-    /// way. None: not folded.
+    /// way, its clock not jumping between: the moments from 0 to the
+    /// period's reach where the clock is where it is over the span, moved
+    /// by whole periods. None: not folded.
     fn folded(&self, i: usize, params: &[f64], span: (f64, f64)) -> Option<Folded> {
         if !self.solves[i].followed {
             return None;
         }
         let path = self.path(i, params);
         let mut path = path.lock().unwrap();
-        let p = self.period(i, params, &mut path)?;
-        // Folding is a shortcut: it follows the path to p, so only a span
-        // farther from 0 than that, which following straight there would
-        // pass p for, is folded (a moment near 0 never pays for a long
-        // period, t = -0.1 against a period of 1e17 s).
-        if span.0.abs().min(span.1.abs()) <= p.hi || (span.0 < 0.0) != (span.1 < 0.0) {
+        let per = self.period(i, params, &mut path)?;
+        // Folding is a shortcut: it follows the path to the period's
+        // reach, so only a span farther from 0 than that, which following
+        // straight there would pass it for, is folded (a moment near 0
+        // never pays for a long period, t = -0.1 against a period of 1e17
+        // s).
+        if span.0.abs().min(span.1.abs()) <= per.reach || (span.0 < 0.0) != (span.1 < 0.0) {
             return None;
         }
-        // The whole numbers m with t - m p in the first period for some t
-        // in the span and p in its enclosure: from floor(span / p).
-        let q = interval::bin(BinOp::Div, I::new(span.0, span.1), p).0;
+        let fold = self.fold(i, params, &mut path, &per)?;
+        if !self.continuous_clock(&per.clock, params, (span.0.min(0.0), span.1.max(0.0))) {
+            return None;
+        }
+        // The whole numbers m with the clock moved back by m periods in the
+        // first period, for some moment of the span and p in its enclosure.
+        let g = self.clock(&per.clock, params, span);
+        let along = |x: I| mul_o(I::point(per.way), sub_o(x, per.g0));
+        let q = interval::bin(BinOp::Div, along(g), per.pe).0;
         let (m0, m1) = (q.lo.floor(), q.hi.floor());
         if !(m0.is_finite() && m1.is_finite()) {
             return None;
         }
-        let first = I::new(0.0, p.hi);
-        let back = |m: I| interval::meet(sub_o(I::new(span.0, span.1), mul_o(m, p)), first);
+        let first = interval::hull(per.g0, add_o(per.g0, mul_o(I::point(per.way), per.pe)));
+        let back = |m: I| {
+            let at = interval::meet(sub_o(g, mul_o(I::point(per.way), mul_o(m, per.pe))), first);
+            (at.lo <= at.hi).then(|| self.preimage(&per.clock, params, at, per.reach)).flatten()
+        };
         // Two counts, a piece each; more, and one between them covers the
         // whole period: one piece, every count.
-        let pieces = match m1 - m0 {
+        let pieces: Vec<(Option<I>, I)> = match m1 - m0 {
             0.0 => vec![(back(I::point(m0)), I::point(m0))],
             1.0 => vec![(back(I::point(m0)), I::point(m0)), (back(I::point(m1)), I::point(m1))],
-            _ => vec![(first, I::new(m0, m1))],
+            _ => vec![(Some(I::new(0.0, per.reach)), I::new(m0, m1))],
         };
-        let pieces: Vec<(I, I)> = pieces.into_iter().filter(|(near, _)| near.lo <= near.hi).collect();
-        if pieces.is_empty() {
-            return None;
-        }
-        let shift = self.fold(i, params, &mut path, p)?;
-        Some(Folded { pieces, shift })
+        let pieces: Vec<(I, I)> = pieces.into_iter().filter_map(|(near, m)| Some((near?, m))).collect();
+        (!pieces.is_empty()).then_some(Folded { pieces, shift: fold.shift })
     }
 
     /// Solve `i`'s params at moment t, folded (Follow::folded): its

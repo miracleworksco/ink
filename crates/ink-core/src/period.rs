@@ -34,6 +34,10 @@
 //!
 //! `quotient(tapes, ctx)` asks one period of each range longer than one:
 //! a search over the rest asks the same values again.
+//!
+//! `clocks` finds the expressions of t alone tapes read t through, and
+//! `period_in` their period in one; `keeps` checks, by the same rules,
+//! that a shift of several values at once leaves them unchanged.
 
 use crate::eval::{Ctx, fixed, fixed_value, span_mid};
 use crate::graph::{BinOp, UnOp, Var};
@@ -145,6 +149,43 @@ impl Coef {
     fn by(self, x: Q, over: bool) -> Option<Coef> {
         Some(Coef { q: if over { self.q.div(x)? } else { self.q.mul(x)? }, ..self })
     }
+
+    /// The shift it is the base of, exactly: 2 pi / it.
+    pub fn period(self) -> Option<Coef> {
+        Some(Coef { q: Q { n: 2, d: 1 }.div(self.q)?, pi: 1i8.checked_sub(self.pi)? })
+    }
+
+    /// Its value, enclosed: q pi^k, each factor enclosed.
+    pub fn value(&self) -> I {
+        let pi = I::new(std::f64::consts::PI, std::f64::consts::PI.next_up());
+        let power = (0..self.pi.unsigned_abs()).fold(I::point(1.0), |a, _| mul_o(a, pi));
+        let power = if self.pi < 0 { interval::bin(BinOp::Div, I::point(1.0), power).0 } else { power };
+        mul_o(power, self.q.value())
+    }
+
+    /// The whole number it is of o, where it is one.
+    pub fn whole_of(self, o: Coef) -> Option<i128> {
+        let r = (self.pi == o.pi).then(|| self.q.div(o.q))??;
+        (r.d == 1).then_some(r.n)
+    }
+
+    /// Whether it is a whole multiple of pi (of 2 pi with `twice`).
+    fn turns(&self, twice: bool) -> bool {
+        self.pi == 1 && self.q.d == 1 && (!twice || self.q.n % 2 == 0)
+    }
+}
+
+/// The greatest coefficient each of `cs` is a whole multiple of: the gcd of
+/// their numerators over a common denominator, over it. None where their
+/// powers of pi differ, or it does not fit.
+pub fn common_base(cs: &[Coef]) -> Option<Coef> {
+    let pi = cs.first()?.pi;
+    if cs.iter().any(|c| c.pi != pi) {
+        return None;
+    }
+    let d = cs.iter().try_fold(1i128, |l, c| l.checked_mul(c.q.d / gcd(l.unsigned_abs(), c.q.d.unsigned_abs()) as i128))?;
+    let n = cs.iter().try_fold(0u128, |g, c| Some(gcd(g, c.q.n.checked_mul(d / c.q.d)?.unsigned_abs())))?;
+    Some(Coef { q: Q::new(i128::try_from(n).ok()?, d)?, pi })
 }
 
 fn mul_o(a: I, b: I) -> I {
@@ -199,29 +240,21 @@ pub fn period_kept(tapes: &[&Tape], v: Var, ctx: &Ctx, kept: &[(Var, Option<Coef
     }
     let mut seen: Vec<Coef> = kept.iter().filter_map(|k| k.1).collect();
     for tape in tapes {
-        if matches!(read(tape, v, ctx, kept, &mut seen)?, Is::Lin(_)) {
+        if matches!(read(tape, Of::Var(v), ctx, kept, &mut seen)?, Is::Lin(_)) {
             return None;
         }
     }
     if seen.is_empty() {
         return Some(Shown::Every);
     }
-    // One power of pi, and the greatest rational each is a whole multiple
-    // of: the gcd of their numerators over a common denominator, over it.
-    let pi = seen[0].pi;
-    if seen.iter().any(|c| c.pi != pi) {
-        return None;
-    }
-    let d = seen.iter().try_fold(1i128, |l, c| l.checked_mul(c.q.d / gcd(l.unsigned_abs(), c.q.d.unsigned_abs()) as i128))?;
-    let n = seen.iter().try_fold(0u128, |g, c| Some(gcd(g, c.q.n.checked_mul(d / c.q.d)?.unsigned_abs())))?;
-    Some(Shown::Base(Coef { q: Q::new(i128::try_from(n).ok()?, d)?, pi }))
+    common_base(&seen).map(Shown::Base)
 }
 
 /// A tape's value as a function of v: c v plus what does not read v
 /// (Some(Some(c)), c never 0), or not reading v (Some(None)). None: any
 /// other.
 pub fn form(tape: &Tape, v: Var, ctx: &Ctx) -> Option<Option<Coef>> {
-    match read(tape, v, ctx, &[], &mut Vec::new())? {
+    match read(tape, Of::Var(v), ctx, &[], &mut Vec::new())? {
         Is::Lin(c) => Some(Some(c)),
         Is::Free(_) => Some(None),
         Is::Kept => None,
@@ -231,14 +264,28 @@ pub fn form(tape: &Tape, v: Var, ctx: &Ctx) -> Option<Option<Coef>> {
 /// What the tape's output is as a function of v (the module's rules),
 /// each coefficient sin and cos read pushed to `seen`. None: a use of v
 /// the rules do not read.
-fn read(tape: &Tape, v: Var, ctx: &Ctx, kept: &[(Var, Option<Coef>)], seen: &mut Vec<Coef>) -> Option<Is> {
+fn read(tape: &Tape, v: Of, ctx: &Ctx, kept: &[(Var, Option<Coef>)], seen: &mut Vec<Coef>) -> Option<Is> {
     if !tape.forms.is_empty() {
         return None;
     }
+    let (v, live) = match v {
+        Of::Var(v) => (v, None),
+        // The clock's instruction is v; what it reads is not read.
+        Of::Ins(g) => (Var::T, Some((g, live_cut(tape, Some(g))))),
+    };
     let mut is: Vec<Is> = Vec::with_capacity(tape.ssa.len());
     // The floats the evaluator takes its fixed instructions as.
     let mut floats: Vec<f64> = vec![f64::NAN; tape.ssa.len()];
     for (i, ins) in tape.ssa.iter().enumerate() {
+        if let Some((g, live)) = &live {
+            if !live[i] || i == *g {
+                is.push(if i == *g { Is::Lin(Coef { q: Q { n: 1, d: 1 }, pi: 0 }) } else { Is::Free(None) });
+                continue;
+            }
+            if matches!(ins.op, Op::Var(Var::T)) {
+                return None;
+            }
+        }
         let (args, n) = Tape::reads(&tape.ssa, i);
         let arg = |j: usize| is[args[j] as usize];
         let exact = |j: usize| match arg(j) {
@@ -313,6 +360,265 @@ fn read(tape: &Tape, v: Var, ctx: &Ctx, kept: &[(Var, Option<Coef>)], seen: &mut
         is.push(out);
     }
     Some(is.last().copied().unwrap_or(Is::Free(None)))
+}
+
+/// What `read` reads as v: a var, or an instruction (a clock's).
+#[derive(Clone, Copy)]
+enum Of {
+    Var(Var),
+    Ins(usize),
+}
+
+/// Which instructions the output reads, not reading what `cut` reads.
+fn live_cut(tape: &Tape, cut: Option<usize>) -> Vec<bool> {
+    let n = tape.ssa.len();
+    let mut live = vec![false; n];
+    if n > 0 {
+        live[n - 1] = true;
+    }
+    for i in (0..n).rev() {
+        if live[i] && Some(i) != cut {
+            let (args, k) = Tape::reads(&tape.ssa, i);
+            args[..k].iter().for_each(|&a| live[a as usize] = true);
+        }
+    }
+    live
+}
+
+/// An expression of t alone that a solve's equations read t through: t
+/// itself, or one of t and fixed values (a crank's angle 10 t + t^2 /
+/// 1000), every use of t in each equation passing through it. Its
+/// instruction in each tape (None: the tape does not read t) and the
+/// expression alone, to evaluate it.
+#[derive(Clone)]
+pub struct Clock {
+    pub at: Vec<Option<usize>>,
+    pub cone: Tape,
+    /// The expression, written out (tags and reals read through): two
+    /// tapes' are one function of t where these are equal.
+    shape: String,
+}
+
+/// t itself, written out (`through`).
+const T: &str = "Var(T)()";
+
+impl Clock {
+    /// Whether it is t itself.
+    pub fn is_t(&self) -> bool {
+        self.shape == T
+    }
+
+    /// Whether the two are one function of t.
+    pub fn same(&self, o: &Clock) -> bool {
+        self.shape == o.shape
+    }
+
+    /// The same clock read by other tapes, where every one that reads t
+    /// reads it through this one alone (None: one does not).
+    pub fn in_tapes(&self, tapes: &[&Tape], ctx: &Ctx) -> Option<Clock> {
+        let mut at = Vec::with_capacity(tapes.len());
+        for tape in tapes {
+            at.push(match through(tape, ctx) {
+                None => None,
+                Some(c) => Some(c.into_iter().find(|c| c.0 == self.shape)?.1),
+            });
+        }
+        Some(Clock { at, ..self.clone() })
+    }
+}
+
+/// The expressions of t alone each tape reads t through (`Clock`), t's
+/// first: written out, with their instructions. None where the tape does
+/// not read t; empty where none is an expression of t alone.
+fn through(tape: &Tape, ctx: &Ctx) -> Option<Vec<(String, usize)>> {
+    if !tape.forms.is_empty() {
+        return Some(Vec::new());
+    }
+    let live = live_cut(tape, None);
+    if !tape.ssa.iter().zip(&live).any(|(ins, &l)| l && matches!(ins.op, Op::Var(Var::T))) {
+        return None;
+    }
+    // Each instruction written out, where it reads t and fixed values only.
+    let mut shape: Vec<Option<String>> = Vec::with_capacity(tape.ssa.len());
+    let mut of_t: Vec<bool> = Vec::with_capacity(tape.ssa.len());
+    for (i, ins) in tape.ssa.iter().enumerate() {
+        let (args, k) = Tape::reads(&tape.ssa, i);
+        let args = &args[..k];
+        let pure = match ins.op {
+            Op::Var(Var::T) | Op::Const(_) => true,
+            Op::Var(Var::Param(p)) => ctx.p_spans.get(p).is_none(),
+            Op::Un(_) | Op::Bin(_) | Op::Select | Op::Tag(_) | Op::Real => args.iter().all(|&a| shape[a as usize].is_some()),
+            _ => false,
+        };
+        of_t.push(matches!(ins.op, Op::Var(Var::T)) || args.iter().any(|&a| of_t[a as usize]));
+        shape.push(
+            pure.then(|| match ins.op {
+                Op::Tag(_) | Op::Real => shape[args[0] as usize].clone().expect("pure"),
+                op => format!("{op:?}({})", args.iter().map(|&a| shape[a as usize].as_deref().expect("pure")).collect::<Vec<_>>().join(",")),
+            })
+            .filter(|s| s.len() <= 4096),
+        );
+    }
+    // t itself first, however many instructions read it.
+    let first = tape.ssa.iter().position(|ins| matches!(ins.op, Op::Var(Var::T))).expect("it reads t");
+    let mut out = vec![(T.to_string(), first)];
+    for i in 0..tape.ssa.len() {
+        if matches!(tape.ssa[i].op, Op::Var(Var::T)) {
+            continue;
+        }
+        if let (true, Some(s)) = (of_t[i], &shape[i]) {
+            let cut = live_cut(tape, Some(i));
+            if !tape.ssa.iter().zip(&cut).any(|(ins, &l)| l && matches!(ins.op, Op::Var(Var::T))) && !out.iter().any(|o: &(String, usize)| &o.0 == s) {
+                out.push((s.clone(), i));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The clocks `tapes` read t through, as evaluated in ctx (a ranged param
+/// is not fixed, so a clock reads none), t first. Empty where none reads
+/// t, or no one expression of t alone carries every use of it.
+pub fn clocks(tapes: &[&Tape], ctx: &Ctx) -> Vec<Clock> {
+    let per: Vec<Option<Vec<(String, usize)>>> = tapes.iter().map(|t| through(t, ctx)).collect();
+    let Some((j, first)) = per.iter().enumerate().find_map(|(j, c)| Some((j, c.as_ref()?))) else { return Vec::new() };
+    first
+        .iter()
+        .filter_map(|(shape, g)| {
+            let at =
+                per.iter().map(|c| c.as_ref().map(|c| c.iter().find(|x| &x.0 == shape).map(|x| x.1))).map(|a| a.map_or(Some(None), |a| a.map(Some))).collect::<Option<Vec<_>>>()?;
+            Some(Clock { at, cone: tapes[j].cone(*g), shape: shape.clone() })
+        })
+        .collect()
+}
+
+/// `period` of `tapes` in a clock of theirs: its base, every shift of the
+/// clock by a whole multiple of 2 pi / it keeping them.
+pub fn period_in(tapes: &[&Tape], clock: &Clock, ctx: &Ctx) -> Option<Shown> {
+    let mut seen = Vec::new();
+    for (tape, at) in tapes.iter().zip(&clock.at) {
+        let of = at.filter(|_| !clock.is_t()).map_or(Of::Var(Var::T), Of::Ins);
+        if matches!(read(tape, of, ctx, &[], &mut seen)?, Is::Lin(_)) {
+            return None;
+        }
+    }
+    if seen.is_empty() {
+        return Some(Shown::Every);
+    }
+    common_base(&seen).map(Shown::Base)
+}
+
+/// How an instruction changes under `keeps`' shift: not at all (its real
+/// value, where known exactly), or by an exact amount.
+#[derive(Clone, Copy)]
+enum Mv {
+    Same(Option<Q>),
+    By(Coef),
+}
+
+/// Whether each of `tapes`, as the kernel evaluates it in ctx (the
+/// module's contract), is unchanged by one shift of several values at
+/// once: the clock by its amount (`clock`; it is t's only use) and each
+/// param of `params` by its own, exactly. An instruction linear in them
+/// moves by its coefficients times their shifts, in exact arithmetic; sin
+/// and cos of one moved by a whole multiple of 2 pi are unchanged (tan: of
+/// pi), as is any operation of unchanged values. The joint shift of a
+/// solve's equations its roots repeat under: t's period, the unknowns' and
+/// the params they read from other solves' moves over it (w = 2 th moves
+/// by twice th's turn).
+pub fn keeps(tapes: &[&Tape], clock: Option<(&Clock, Coef)>, params: &[(u32, Coef)], ctx: &Ctx) -> bool {
+    tapes.iter().enumerate().all(|(j, tape)| {
+        // The clock's instruction (None: t itself) and shift.
+        let g = clock.and_then(|(c, by)| Some((c.at.get(j).copied()?.filter(|_| !c.is_t()), by)));
+        matches!(moved(tape, g, params, ctx), Some(Mv::Same(_)))
+    })
+}
+
+/// What the tape's output does under `keeps`' shift (None: a change the
+/// rules do not follow).
+fn moved(tape: &Tape, clock: Option<(Option<usize>, Coef)>, params: &[(u32, Coef)], ctx: &Ctx) -> Option<Mv> {
+    if !tape.forms.is_empty() {
+        return None;
+    }
+    let live = live_cut(tape, clock.and_then(|c| c.0));
+    let mut mv: Vec<Mv> = Vec::with_capacity(tape.ssa.len());
+    let mut floats: Vec<f64> = vec![f64::NAN; tape.ssa.len()];
+    let one = |n: i128| Q { n, d: 1 };
+    for (i, ins) in tape.ssa.iter().enumerate() {
+        if !live[i] {
+            mv.push(Mv::Same(None));
+            continue;
+        }
+        let t = matches!(ins.op, Op::Var(Var::T));
+        if let Some((_, by)) = clock.filter(|c| c.0.map_or(t, |g| g == i)) {
+            mv.push(Mv::By(by));
+            continue;
+        }
+        let (args, n) = Tape::reads(&tape.ssa, i);
+        let arg = |j: usize| mv[args[j] as usize];
+        let exact = |j: usize| match arg(j) {
+            Mv::Same(q) => q,
+            Mv::By(_) => None,
+        };
+        let by = |j: usize| match arg(j) {
+            Mv::By(c) => Some(c),
+            Mv::Same(_) => None,
+        };
+        let out = match ins.op {
+            // t read other than through the clock moves by what is not known.
+            Op::Var(Var::T) => return None,
+            Op::Var(Var::Param(k)) if params.iter().any(|p| p.0 == k) => Mv::By(params.iter().find(|p| p.0 == k).expect("found").1),
+            _ if fixed(tape, ctx, i) => {
+                floats[i] = fixed_value(ins, |a| floats[a as usize], ctx);
+                Mv::Same(Q::of(floats[i]))
+            }
+            _ if (0..n).all(|j| by(j).is_none()) => Mv::Same(match ins.op {
+                Op::Un(UnOp::Neg) => exact(0).and_then(Q::neg),
+                Op::Un(UnOp::Square) => exact(0).and_then(|a| a.mul(a)),
+                Op::Bin(BinOp::Add) => exact(0).zip(exact(1)).and_then(|(a, b)| a.add(b)),
+                Op::Bin(BinOp::Sub) => exact(0).zip(exact(1).and_then(Q::neg)).and_then(|(a, b)| a.add(b)),
+                Op::Bin(BinOp::Mul) => exact(0).zip(exact(1)).and_then(|(a, b)| a.mul(b)),
+                Op::Bin(BinOp::Div) => exact(0).zip(exact(1)).and_then(|(a, b)| a.div(b)),
+                Op::Tag(_) | Op::Real => exact(0),
+                _ => None,
+            }),
+            Op::Un(UnOp::Neg) => Mv::By(by(0)?.by(one(-1), false)?),
+            Op::Un(UnOp::Rad) => {
+                let c = by(0)?;
+                Mv::By(Coef { q: c.q.div(one(180))?, pi: c.pi.checked_add(1)? })
+            }
+            Op::Un(UnOp::Deg) => {
+                let c = by(0)?;
+                Mv::By(Coef { q: c.q.mul(one(180))?, pi: c.pi.checked_sub(1)? })
+            }
+            Op::Tag(_) | Op::Real => arg(0),
+            // A moved value plus an unchanged one moves as it does.
+            Op::Bin(op @ (BinOp::Add | BinOp::Sub)) => {
+                let b = match (op, by(1)) {
+                    (BinOp::Sub, Some(c)) => Some(c.by(one(-1), false)?),
+                    (_, b) => b,
+                };
+                match (by(0), b) {
+                    (Some(c), None) | (None, Some(c)) => Mv::By(c),
+                    (Some(c), Some(e)) => c.plus(e)?.map_or(Mv::Same(None), Mv::By),
+                    (None, None) => unreachable!("one is moved"),
+                }
+            }
+            Op::Bin(BinOp::Mul) => match (by(0), exact(0), by(1), exact(1)) {
+                (Some(c), _, None, Some(x)) | (None, Some(x), Some(c), _) if x.n != 0 => Mv::By(c.by(x, false)?),
+                _ => return None,
+            },
+            Op::Bin(BinOp::Div) => match (by(0), exact(1)) {
+                (Some(c), Some(x)) if x.n != 0 && by(1).is_none() => Mv::By(c.by(x, true)?),
+                _ => return None,
+            },
+            Op::Un(UnOp::Sin | UnOp::Cos) if by(0)?.turns(true) => Mv::Same(None),
+            Op::Un(UnOp::Tan) if by(0)?.turns(false) => Mv::Same(None),
+            _ => return None,
+        };
+        mv.push(out);
+    }
+    mv.last().copied().or(Some(Mv::Same(None)))
 }
 
 /// A form's coefficient (None: not a form).
@@ -478,6 +784,73 @@ mod tests {
         let tau_11 = std::f64::consts::TAU / 1.1;
         assert!(!matches!(pair(&[(1, (-1.0, 1.0))]), Some(Some(p)) if p.lo < 1e16), "{:?}", pair(&[(1, (-1.0, 1.0))]));
         assert!(matches!(pair(&[]), Some(Some(p)) if (p.mid() - tau_11).abs() < 1e-12), "{:?}", pair(&[]));
+    }
+
+    /// Tapes reading t through 10 t + t^2 / 1000 alone repeat every 2 pi
+    /// of it, not of t; t read outside it too, or two tapes through
+    /// different expressions, have no such clock.
+    #[test]
+    fn a_clock_carries_every_use_of_t() {
+        let tape = |f: &dyn Fn(&mut Graph, u32) -> u32| {
+            let mut g = Graph::new();
+            let t = g.var(Var::T);
+            let root = f(&mut g, t);
+            Tape::new(&g, root)
+        };
+        let crank = |g: &mut Graph, t: u32| {
+            let (ten, k) = (g.constant(10.0), g.constant(1000.0));
+            let a = g.mul(ten, t);
+            let s = g.mul(t, t);
+            let s = g.bin(BinOp::Div, s, k);
+            g.add(a, s)
+        };
+        let ctx = Ctx::new(0.0, Vec::new());
+        let (a, b) = (
+            tape(&|g, t| {
+                let c = crank(g, t);
+                g.un(UnOp::Sin, c)
+            }),
+            tape(&|g, t| {
+                let c = crank(g, t);
+                g.un(UnOp::Cos, c)
+            }),
+        );
+        let both = clocks(&[&a, &b], &ctx);
+        assert!(both[0].is_t() && period_in(&[&a, &b], &both[0], &ctx).is_none(), "t itself repeats");
+        let shown: Vec<Option<Shown>> = both.iter().map(|c| period_in(&[&a, &b], c, &ctx)).collect();
+        assert!(matches!(shown.as_slice(), [None, Some(Shown::Base(b))] if (b.period().unwrap().value().mid() - std::f64::consts::TAU).abs() < 1e-12), "{shown:?}");
+        let leak = tape(&|g, t| {
+            let c = crank(g, t);
+            let s = g.un(UnOp::Sin, c);
+            g.add(s, t)
+        });
+        assert!(clocks(&[&leak], &ctx).iter().all(|c| period_in(&[&leak], c, &ctx).is_none()));
+        let other = tape(&|g, t| {
+            let ten = g.constant(10.0);
+            let a = g.mul(ten, t);
+            g.un(UnOp::Sin, a)
+        });
+        assert_eq!(clocks(&[&a, &other], &ctx).len(), 1, "t alone is common");
+    }
+
+    /// A joint shift keeps a tape only where the moves cancel exactly: w -
+    /// 2 th with th moved by 2 pi and w by 4 pi; not w by 4 pi (1 + 2^-50),
+    /// nor sin th with th moved by pi.
+    #[test]
+    fn a_joint_shift_keeps_only_what_it_cancels_exactly() {
+        let mut g = Graph::new();
+        let (w, th) = (g.var(Var::Param(0)), g.var(Var::Param(1)));
+        let two = g.constant(2.0);
+        let twice = g.mul(two, th);
+        let d = g.sub(w, twice);
+        let s = g.un(UnOp::Sin, th);
+        let (lin, sin) = (Tape::new(&g, d), Tape::new(&g, s));
+        let ctx = Ctx { p_spans: crate::eval::ParamSpans::new([(0, (0.0, 0.0)), (1, (0.0, 0.0))]), ..Ctx::new(0.0, vec![0.0, 0.0]) };
+        let turns = |n: i128, d: i128| Coef { q: Q::new(n, d).unwrap(), pi: 1 };
+        assert!(keeps(&[&lin], None, &[(0, turns(4, 1)), (1, turns(2, 1))], &ctx));
+        assert!(!keeps(&[&lin], None, &[(0, turns(4 * (1 << 50) + 4, 1 << 50)), (1, turns(2, 1))], &ctx));
+        assert!(keeps(&[&sin], None, &[(1, turns(2, 1))], &ctx));
+        assert!(!keeps(&[&sin], None, &[(1, turns(1, 1))], &ctx));
     }
 
     /// A turn written in degrees (deg->rad, pi exact) has a period with no

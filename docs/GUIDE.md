@@ -107,8 +107,8 @@ A design passes only what it checks. Ask:
 ## 4. Make
 
 Ask the agent to check what your process cares about: walls and holes it
-can produce, overhangs for printing, and what a cutter can see from each
-setup. ink doesn't check bridges, or whether a cutter of real width
+can produce, overhangs and bridges for printing, and what a cutter can
+see from each setup. ink doesn't check whether a cutter of real width
 fits. Then ask for the file:
 
 - **STL or 3MF** to 3D print; 3MF keeps colours. ink reports whether the

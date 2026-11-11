@@ -156,65 +156,83 @@ pub fn air(tape: &Tape, ctx: &Ctx, b: [I; 3]) -> bool {
 /// that sum is exact), or 0 (pieces meeting on a face each read it). An
 /// instruction is the same in the SSA form and the slot code.
 pub fn levels(tape: &Tape) -> &[(u32, f64)] {
-    tape.levels.get_or_init(|| {
-        use crate::graph::{BinOp, UnOp, Var};
-        let ssa = &tape.ssa;
-        let mut reads = vec![0usize; ssa.len()];
-        let constant = |j: u32| match ssa[j as usize].op {
-            Op::Const(c) => Some(c),
-            _ => None,
-        };
-        let mut found: Vec<(u32, f64)> = Vec::new();
-        for (i, ins) in ssa.iter().enumerate() {
-            let (args, n) = Tape::reads(ssa, i);
-            for &x in &args[..n] {
-                reads[x as usize] += 1;
-            }
-            match ins.op {
-                Op::Bin(BinOp::Sub) => {
-                    if let Some(c) = constant(ins.b) {
-                        found.push((ins.a, c));
-                        // |v - c1| - c2.
-                        let abs = &ssa[ins.a as usize];
-                        if let Op::Un(UnOp::Abs) = abs.op
-                            && let inner = &ssa[abs.a as usize]
-                            && let (Op::Bin(BinOp::Sub), Some(c1)) = (inner.op, constant(inner.b))
-                        {
-                            for at in [c1 - c, c1 + c] {
-                                // Exact: the face is that float.
-                                if (at - c1).abs() == c.abs() {
-                                    found.push((inner.a, at));
-                                }
+    tape.levels.get_or_init(|| found_levels(tape, None))
+}
+
+/// `levels` of the tape simplified by `choices` (Tape::simplify), in the
+/// tape's own numbering: what a region's proofs split at, read from the
+/// unsimplified tape.
+pub fn levels_in(tape: &Tape, choices: &[u8]) -> Vec<(u32, f64)> {
+    found_levels(tape, Some(choices))
+}
+
+/// `levels`, through the branches `choices` pick (each value read as the
+/// simplified tape reads it, `Tape::picked`; the values it no longer
+/// reads left out).
+fn found_levels(tape: &Tape, choices: Option<&[u8]>) -> Vec<(u32, f64)> {
+    use crate::graph::{BinOp, UnOp, Var};
+    let ssa = &tape.ssa;
+    let live = choices.map(|c| tape.live(c));
+    let kept = |i: usize| live.as_ref().is_none_or(|l| l[i]) && choices.is_none_or(|c| tape.picked(c, i) == i);
+    let at = |j: u32| choices.map_or(j, |c| tape.picked(c, j as usize) as u32);
+    let mut reads = vec![0usize; ssa.len()];
+    let constant = |j: u32| match ssa[at(j) as usize].op {
+        Op::Const(c) => Some(c),
+        _ => None,
+    };
+    let mut found: Vec<(u32, f64)> = Vec::new();
+    for (i, ins) in ssa.iter().enumerate() {
+        if !kept(i) {
+            continue;
+        }
+        let (args, n) = Tape::reads(ssa, i);
+        for &x in &args[..n] {
+            reads[at(x) as usize] += 1;
+        }
+        match ins.op {
+            Op::Bin(BinOp::Sub) => {
+                if let Some(c) = constant(ins.b) {
+                    found.push((at(ins.a), c));
+                    // |v - c1| - c2.
+                    let abs = &ssa[at(ins.a) as usize];
+                    if let Op::Un(UnOp::Abs) = abs.op
+                        && let inner = &ssa[at(abs.a) as usize]
+                        && let (Op::Bin(BinOp::Sub), Some(c1)) = (inner.op, constant(inner.b))
+                    {
+                        for v in [c1 - c, c1 + c] {
+                            // Exact: the face is that float.
+                            if (v - c1).abs() == c.abs() {
+                                found.push((at(inner.a), v));
                             }
                         }
-                    } else if let Some(c) = constant(ins.a) {
-                        found.push((ins.b, c));
+                    }
+                } else if let Some(c) = constant(ins.a) {
+                    found.push((at(ins.b), c));
+                }
+            }
+            Op::Bin(BinOp::Add) => {
+                for (v, k) in [(ins.a, ins.b), (ins.b, ins.a)] {
+                    if let Some(c) = constant(k) {
+                        found.push((at(v), -c));
                     }
                 }
-                Op::Bin(BinOp::Add) => {
-                    for (v, k) in [(ins.a, ins.b), (ins.b, ins.a)] {
-                        if let Some(c) = constant(k) {
-                            found.push((v, -c));
-                        }
-                    }
-                }
-                _ => {}
             }
+            _ => {}
         }
-        let shared = |i: usize| match ssa[i].op {
-            Op::Var(Var::X | Var::Y | Var::Z) => true,
-            Op::Const(_) | Op::Var(_) => false,
-            _ => reads[i] >= 2,
-        };
-        found.extend((0..ssa.len()).filter(|&i| shared(i)).map(|i| (i as u32, 0.0)));
-        let mut out: Vec<(u32, f64)> = Vec::new();
-        for (i, c) in found {
-            if shared(i as usize) && c.is_finite() && !out.contains(&(i, c)) {
-                out.push((i, c));
-            }
+    }
+    let shared = |i: usize| match ssa[i].op {
+        Op::Var(Var::X | Var::Y | Var::Z) => true,
+        Op::Const(_) | Op::Var(_) => false,
+        _ => reads[i] >= 2,
+    };
+    found.extend((0..ssa.len()).filter(|&i| kept(i) && shared(i)).map(|i| (i as u32, 0.0)));
+    let mut out: Vec<(u32, f64)> = Vec::new();
+    for (i, c) in found {
+        if shared(i as usize) && c.is_finite() && !out.contains(&(i, c)) {
+            out.push((i, c));
         }
-        out
-    })
+    }
+    out
 }
 
 /// The axis of a coordinate instruction `i` reads.

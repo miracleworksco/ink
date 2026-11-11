@@ -95,7 +95,7 @@ impl Package for Gauge {
     /// any slice (it says no plane_metric).
     fn shape_metric(&self, v: &mut ModelView, _metric: &str, f: u32, _res: Option<f64>, _accuracy: f64) -> Result<ink::lang::Measured, InkError> {
         let value = v.bounds(f).map_or(Ok(0.0), |(lo, hi, _)| Ok(hi[2] - lo[2]));
-        Ok(ink::lang::Measured { value, at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: true, held: None })
+        Ok(ink::lang::Measured { value, at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: true, held: None, band: None })
     }
 }
 

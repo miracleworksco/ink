@@ -5,6 +5,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod banded;
 mod conformance;
 mod geometry;
 mod kernel;

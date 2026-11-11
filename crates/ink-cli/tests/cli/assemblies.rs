@@ -100,6 +100,26 @@ fn check_says_where_it_sought_a_name_it_did_not_see_and_bounds_nothing() {
     assert!(w.len() == 1 && w[0].contains("'cube'") && w[0].contains("where it was sought") && w[0].contains("cells") && !w[0].contains("narrower"), "{w:?}");
 }
 
+/// A moving body's names are judged over its whole motion: one that shapes
+/// the surface only away from the span's start (a displacement swung by
+/// (sin (* 2 pi t)), 0 at t = 0 and 1/2) is seen, and one hidden at every
+/// moment is still proven hidden.
+#[test]
+fn check_judges_a_moving_bodys_names_over_its_motion() {
+    let s = sc("swung");
+    let f = s.model(
+        "swung.ink",
+        "(import \"std\")\n(t-span 0 1)\n(def u (* 2 (sin (* 0.2 y))))\n(def k (sin (* 2 pi t)))\n\
+        (def buried (move (sphere 2) 0 0 (* 2 k)))\n\
+        (body b (shape (min (warp (box 40 20 10) (- x (* k u)) y z) buried)))\n",
+    );
+    let out = run(&s, &["check", &f]);
+    let w = warnings(&out, "'u'");
+    assert!(w.is_empty(), "{w:?}");
+    let w = warnings(&out, "forms none");
+    assert!(w.len() == 1 && w[0].contains("'buried'"), "{w:?}");
+}
+
 /// Check weighs no published mass it need not, and keeps what it knows of
 /// those it does: an inner assembly's, measured because an outer mass
 /// reads its density, says it did not settle (an egg crate's volume, its

@@ -760,9 +760,16 @@ fn planar(v: &ModelView, claim: &Claim, roots: &[u32]) -> bool {
 /// range (validity::outside) and the directions it reads resting on a
 /// solve on t (Doc::check_conditions), over `scope` (`judged_scope`'s, or
 /// one moment measured: motion::validate_at), over `motion` where it spans
-/// one. Some: unknown, saying why, the claim's answer.
+/// one; and that it reads no samples a claim is not decided on
+/// (grid::Source::undecided: a result whose band its form did not measure,
+/// as a metric's claim without its band is unknown). Some: unknown, saying
+/// why, the claim's answer.
 pub(crate) fn validate(v: &mut ModelView, claim: &Claim, roots: &[u32], tol: f64, res: Option<f64>, scope: Ctx, motion: Option<(f64, f64)>) -> Option<Check> {
     if let Err(e) = v.doc.check_conditions(&scope, motion, &v.unsolved_solves(), false, Some(roots)) {
+        return Some(Check { accuracy: None, ..checked(Status::Unknown, Evidence::Unsolved(e)) });
+    }
+    if let Some((what, why)) = v.doc.inexact(roots, &[]).samples.iter().find_map(|s| Some((s.what.clone(), s.undecided.clone()?))) {
+        let e = InkError::msg(format!("it reads {what}, on which no claim is decided: {why}"));
         return Some(Check { accuracy: None, ..checked(Status::Unknown, Evidence::Unsolved(e)) });
     }
     let why = crate::validity::outside(v, claim, roots, tol, res, scope)?;
@@ -1760,6 +1767,8 @@ pub fn grid_error(x: f64, x2: f64, x4: Option<f64>) -> (f64, &'static str) {
 pub struct Ladder {
     /// The finest grid's measurement: the answer.
     pub finest: Measured,
+    /// The two coarser grids' measurements, finer first.
+    pub coarser: [Measured; 2],
     /// The value on each grid, finest first, and its cells.
     pub values: [f64; 3],
     pub cells: [f64; 3],
@@ -1770,6 +1779,20 @@ impl Ladder {
     pub fn error(&self) -> (f64, &'static str) {
         let [x, x2, x4] = self.values;
         grid_error(x, x2, Some(x4))
+    }
+
+    /// The grid error of what the finest grid leaves out under `key`
+    /// (`Measured::excluded`), as the value's is found: from its value
+    /// counted on each grid (a grid that leaves nothing out under it counts
+    /// its own value); 0 where it is unbounded. With the side of the value
+    /// counting it falls on (+1 above, -1 below, 0 on none): the first grid
+    /// whose count differs from its value says.
+    pub fn excluded_error(&self, key: &str) -> (f64, f64) {
+        let grids = [&self.finest, &self.coarser[0], &self.coarser[1]];
+        let counted: Vec<f64> = grids.iter().zip(self.values).map(|(m, x)| m.excluded.iter().find(|e| e.key == key).map_or(x, |e| e.value)).collect();
+        let side = counted.iter().zip(self.values).map(|(c, x)| c - x).find(|d| *d != 0.0).map_or(0.0, f64::signum);
+        let e = if counted.iter().all(|v| v.is_finite()) { grid_error(counted[0], counted[1], Some(counted[2])).0 } else { 0.0 };
+        (e, side)
     }
 }
 
@@ -1789,7 +1812,7 @@ pub fn ladder(v: &mut ModelView, m: &FormMetric, accuracy: Option<f64>, base: &M
     let value = |r: &Measured| r.value.clone().expect("a measurement read");
     let up = read(2.0).and_then(|x2| read(4.0).map(|x4| (x2, x4)));
     let up = match up {
-        Ok((x2, x4)) => return Ok(Ladder { finest: base.clone(), values: [x, value(&x2), value(&x4)], cells: [h, 2.0 * h, 4.0 * h] }),
+        Ok((x2, x4)) => return Ok(Ladder { finest: base.clone(), values: [x, value(&x2), value(&x4)], cells: [h, 2.0 * h, 4.0 * h], coarser: [x2, x4] }),
         Err(why) => why,
     };
     // 2h reads the part (4h does not): h/2, h, 2h; else h/4, h/2, h.
@@ -1797,14 +1820,51 @@ pub fn ladder(v: &mut ModelView, m: &FormMetric, accuracy: Option<f64>, base: &M
     match read(2.0) {
         Ok(x2) => {
             let f = read(0.5).map_err(fail)?;
-            Ok(Ladder { values: [value(&f), x, value(&x2)], cells: [h / 2.0, h, 2.0 * h], finest: f })
+            Ok(Ladder { values: [value(&f), x, value(&x2)], cells: [h / 2.0, h, 2.0 * h], finest: f, coarser: [base.clone(), x2] })
         }
         Err(_) => {
             let f2 = read(0.5).map_err(fail)?;
             let f4 = read(0.25).map_err(fail)?;
-            Ok(Ladder { values: [value(&f4), value(&f2), x], cells: [h / 4.0, h / 2.0, h], finest: f4 })
+            Ok(Ladder { values: [value(&f4), value(&f2), x], cells: [h / 4.0, h / 2.0, h], finest: f4, coarser: [f2, base.clone()] })
         }
     }
+}
+
+/// A claim's status on a metric, the one decision every path of
+/// `metric_claim` takes: unknown where a reason not to decide was found
+/// (`refused`: no value, a part left out that would change it, a grid that
+/// cannot see the part or check it); else on the interval of the value's
+/// band where it has one (a proven value takes none), or of the value
+/// alone, widened on each side by the grid error measured (`margin`, if
+/// any): it holds where both ends hold, fails where both fail, and is
+/// otherwise unknown, saying, of a band, what dominates it.
+fn metric_status(c: Comparison, measured: &Measured, margin: Option<f64>, refused: bool) -> Decided {
+    let (Ok(x), false) = (&measured.value, refused) else { return Decided { status: Status::Unknown, crossing: None } };
+    let e = margin.unwrap_or(0.0);
+    let band = measured.band.as_ref().filter(|_| !measured.proven);
+    let (lo, hi) = band.map_or((x - e, x + e), |b| (b.low - e, b.high + e));
+    let status = match (point_status(c, lo), point_status(c, hi)) {
+        (a, z) if a == z => a,
+        _ => Status::Unknown,
+    };
+    let crossing = band.filter(|_| status == Status::Unknown).map(|b| {
+        let num = |x: f64| if x.is_finite() { format!("{}", (x * 1e4).round() / 1e4) } else { "unbounded".into() };
+        let parts = b.parts.iter().cloned().chain(margin.map(|e| ("grid".to_string(), e)));
+        let dominant = parts.max_by(|a, b| a.1.total_cmp(&b.1)).map_or("its band".to_string(), |p| p.0);
+        let widened = margin.map_or(String::new(), |e| format!(" with its grid error ({} to {} measured, grid error {})", num(b.low), num(b.high), num(e)));
+        (
+            format!("its measured band, {} to {}{widened}, crosses the bound; {dominant} dominates it", num(lo), num(hi)),
+            format!("narrow its {dominant} part ((res r) finer narrows each), or move the bound past the band"),
+        )
+    });
+    Decided { status, crossing }
+}
+
+/// `metric_status`'s answer: the status, and where a band crossing the bound left
+/// it unknown, why and what would decide it.
+struct Decided {
+    status: Status,
+    crossing: Option<(String, String)>,
 }
 
 /// A package's metric against its comparison: an estimate (its accuracy
@@ -1832,9 +1892,11 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
         }
     }
     let mut measured = v.measure(m, opts(res))?;
-    // A value on a grid that holds is checked on a ladder of grids
-    // (`ladder`), and answered on its finest.
-    let holds_on = |m: &Measured| !m.proven && m.unseen.is_none() && m.res.is_some() && m.value.as_ref().is_ok_and(|&x| point_status(c, x) == Status::Holds);
+    // A value on a grid that holds, or that carries a band (whether it
+    // holds or not: its band is widened by the grid's error), is checked on
+    // a ladder of grids (`ladder`), and answered on its finest.
+    let on_grid = |m: &Measured| !m.proven && m.unseen.is_none() && m.res.is_some() && m.value.is_ok();
+    let holds_on = |m: &Measured| on_grid(m) && (m.band.is_some() || m.value.as_ref().is_ok_and(|&x| point_status(c, x) == Status::Holds));
     let ladder = holds_on(&measured).then(|| ladder(v, m, accuracy, &measured));
     if let Some(Ok(l)) = &ladder {
         measured = l.finest.clone();
@@ -1848,6 +1910,12 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
         Ok(x) => point_status(c, x),
         Err(_) => Status::Unknown,
     };
+    // What the answer is decided on (`metric_status`): whether a reason not to
+    // decide was found (a refusal), and the grid error a value is widened
+    // by, where one was measured.
+    let banded = |m: &Measured| !m.proven && m.band.is_some();
+    let mut refused = false;
+    let mut margin: Option<f64> = None;
     // Stopped before cells of h finished: the finest coarser that did.
     let stopped = match limited {
         Some(h) if measured.value.is_err() && ink_kernel::stop::reached() => {
@@ -1863,18 +1931,26 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
                     _ => "the coarsest, so its grid error is not known".into(),
                 };
                 let why = format!("the call's time limit passed before cells of {h} mm finished: {} is its value on cells of {} mm, {said}", num(x), k * h);
+                margin = short.error;
+                refused = short.error.is_none();
+                // (a band, widened by that error, is decided on below)
+                let band = banded(&at);
                 status = match short.error {
+                    _ if band && !refused => point_status(c, x),
                     Some(e) if point_status(c, x - e) == point_status(c, x + e) => point_status(c, x - e),
                     _ => Status::Unknown,
                 };
                 measured = at;
                 match (status, short.error) {
+                    _ if band && !refused => measured.warnings.push(why),
                     (Status::Unknown, Some(_)) => undecided.get_or_insert_with(Default::default).0.push(format!("{why}, more than its margin to the bound")),
                     (Status::Unknown, None) => undecided.get_or_insert_with(Default::default).0.push(why),
                     _ => measured.warnings.push(why),
                 }
+            } else {
+                refused = true;
             }
-            if status == Status::Unknown {
+            if status == Status::Unknown && (refused || !banded(&measured)) {
                 let u = undecided.get_or_insert_with(Default::default);
                 if u.0.is_empty() {
                     u.0.push(format!("the call's time limit passed before any cells finished (cells of {h} mm asked)"));
@@ -1892,13 +1968,28 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
     // A proven value's claim is exact, unless it leaves out on purpose
     // what would change it.
     let mut exact = measured.proven;
-    if measured.value.is_ok() {
+    if let Ok(x) = measured.value.clone() {
         let measured_status = status;
         for ex in &measured.excluded {
-            let counted = point_status(c, ex.value);
+            // Counted with its grid error, as the value is checked: what a
+            // grid leaves out is read on that grid, no truer than the value
+            // (but for a singular one, which has none to carry).
+            let (e, side) = match &ladder {
+                Some(Ok(l)) if !ex.singular => l.excluded_error(ex.key),
+                _ => (0.0, 0.0),
+            };
+            // Counting adds what was left out, on one side of the value: its
+            // error never carries it past the value.
+            let (lo, hi) = match side {
+                s if s > 0.0 => ((ex.value - e).max(x), ex.value + e),
+                s if s < 0.0 => (ex.value - e, (ex.value + e).min(x)),
+                _ => (ex.value, ex.value),
+            };
+            let counted = [ex.value, lo, hi].map(|v| point_status(c, v)).into_iter().find(|&s| s != measured_status).unwrap_or(measured_status);
             if counted == measured_status {
                 continue;
             }
+            let num = |x: f64| if e > 0.0 { format!("{}, its grid error about {}", num(x), num(e)) } else { num(x) };
             let at = ex.at.map_or(String::new(), |p| format!(" at [{:.3}, {:.3}, {:.3}]", p[0], p[1], p[2]));
             if excluding.contains(&ex.key) {
                 exact = false;
@@ -1912,6 +2003,7 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
                 ));
             } else {
                 status = Status::Unknown;
+                refused = true;
                 let u = undecided.get_or_insert_with(Default::default);
                 u.0.push(format!(
                     "it {} on a value that leaves out {}. Counted, that ({}{at}) would make it {}",
@@ -1930,20 +2022,22 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
     // nothing, cannot check it, and leave it unknown.
     let mut grid: Option<String> = None;
     let mut grid_err: Option<(f64, &'static str)> = None;
-    if status == Status::Holds
+    if (status == Status::Holds || banded(&measured) && !refused)
         && let Some(why) = measured.unseen.clone()
     {
         status = Status::Unknown;
+        refused = true;
         let u = undecided.get_or_insert_with(Default::default);
         u.0.push(format!("it holds on a grid that cannot see the part: {why}"));
         u.1.push("refine (res r) to under half the gap's width, or close the gap in the model".into());
     }
-    if status == Status::Holds
+    if (status == Status::Holds || banded(&measured) && !refused)
         && let Some(l) = ladder
     {
         match l {
             Err((h, why)) => {
                 status = Status::Unknown;
+                refused = true;
                 let u = undecided.get_or_insert_with(Default::default);
                 u.0.push(format!(
                     "it holds on cells of {h} mm, but no three grids, each twice as coarse as the last, the coarsest no coarser than four times these, all read the part: {why}"
@@ -1954,9 +2048,10 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
                 let ([x, x2, x4], [h, h2, h4]) = (l.values, l.cells);
                 let (e, how) = l.error();
                 grid_err = Some((e, how));
+                margin = Some(e);
                 let read = format!("{how}: {} on cells of {h2} mm, {} on cells of {h4} mm", num(x2), num(x4));
                 grid = Some(format!("its grid error about {} ({read})", num(e)));
-                if point_status(c, x - e) != Status::Holds || point_status(c, x + e) != Status::Holds {
+                if !banded(&measured) && (point_status(c, x - e) != Status::Holds || point_status(c, x + e) != Status::Holds) {
                     status = Status::Unknown;
                     let u = undecided.get_or_insert_with(Default::default);
                     u.0.push(format!("it holds at {} on cells of {h} mm, but its grid error is about {} ({read}), more than its margin to the bound", num(x), num(e)));
@@ -1965,6 +2060,19 @@ fn metric_claim(v: &mut ModelView, m: &FormMetric, c: Comparison, res: Option<f6
             }
         }
     }
+    // One decision for every path: a refusal is unknown; else the value's
+    // band (or the value), widened on each side by the grid error measured.
+    let decided = metric_status(c, &measured, margin, refused);
+    if decided.status == Status::Unknown
+        && !refused
+        && let Some(why) = decided.crossing
+    {
+        let u = undecided.get_or_insert_with(Default::default);
+        u.0.push(why.0);
+        u.1.push(why.1);
+    }
+    debug_assert!(banded(&measured) || decided.status == status, "decide {:?} against {status:?}", decided.status);
+    status = decided.status;
     let undecided = undecided.map(|(why, how)| (why.join("; "), how.join("; ")));
     let quantity = v.doc.registry.metric_quantity(m.metric);
     let held = measured.held.clone();

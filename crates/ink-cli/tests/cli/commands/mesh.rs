@@ -375,7 +375,7 @@ fn a_film_thinner_than_the_budget_affords_is_reported_and_its_glb_stays_within_t
     let o = &d["objects"][0];
     let u = &o["unresolved"];
     let warned = d["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("could not rule out material"));
-    assert!(f(o, "uniform_triangles") < 4.6e6 && f(u, "undecided") > 0.0 && warned, "{}", pretty(&d));
+    assert!(f(o, "uniform_triangles") < 4.6e6 && f(u, "undecided_at_least") > 0.0 && warned, "{}", pretty(&d));
 }
 
 #[test]

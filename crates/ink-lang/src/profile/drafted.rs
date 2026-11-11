@@ -2499,7 +2499,7 @@ impl Drafted {
 
 impl Drafted {
     /// How arc i is read at its chord's leaf in tree t over heights zr, if
-    /// it can be: lane E's flat construction (`exact::piece`), its reading
+    /// it can be: the flat construction (`exact::piece`), its reading
     /// proven over the heights. Its segment lies out of its piece (the
     /// piece gains it) or into it (loses it); its triangle (chord and apex,
     /// which holds the segment) is proven on the closed inner side of each
@@ -2683,7 +2683,7 @@ impl ConeCone {
 mod cone_cone_tests {
     use super::*;
 
-    /// Arc k's G at u and R0, from lane E's circle (drawn a -> q, bulge b).
+    /// Arc k's G at u and R0, from its circle (drawn a -> q, bulge b).
     fn arc_g(a: P, q: P, b: f64, u: P) -> ([I; 2], I) {
         let c = super::super::exact::circle(a, q, b);
         let g = [ineg(I::new(c[0][0], c[0][1])), ineg(I::new(c[1][0], c[1][1]))];

@@ -1285,7 +1285,17 @@ fn packages_bring_their_own_metrics() {
             None
         }
         fn metric(&self, m: &str) -> Option<Measured> {
-            (m == "reading").then(|| Measured { value: Ok(self.0), at: None, res: None, warnings: Vec::new(), excluded: Vec::new(), unseen: None, proven: false, held: None })
+            (m == "reading").then(|| Measured {
+                value: Ok(self.0),
+                at: None,
+                res: None,
+                warnings: Vec::new(),
+                excluded: Vec::new(),
+                unseen: None,
+                proven: false,
+                held: None,
+                band: None,
+            })
         }
         fn failure(&self) -> Option<String> {
             (self.0 < 0.0).then(|| "the gauge reads below its range".into())
@@ -1329,6 +1339,81 @@ fn packages_bring_their_own_metrics() {
     // The standard distribution has no gauge package.
     let e = ink::load_str(src, "test", Path::new(ROOT)).err().unwrap();
     assert!(e.message.contains("unknown top-level form 'gauge'"), "{e:?}");
+}
+
+#[test]
+fn a_banded_metric_holds_only_where_its_whole_band_does() {
+    // A gauge reads 2p on cells of 1, measured to lie within 1 of it (its
+    // band, "placement"), and 2p + (h - 1) / 2 on cells of h: its ladder
+    // (6, 6.5, 7.5 on cells of 1, 2, 4) gives a grid error of 0.625, so the
+    // claim's band is 4.375 to 7.625. A claim holds where both ends hold,
+    // fails where both fail, and is otherwise unknown, naming what dominates,
+    // whatever its value alone says: the grid's error makes both a claim
+    // that would hold and one that would fail on the band alone unknown.
+    use ink::lang::{Band, Form, Measured, Outcome, Package, Reader, Registry, RunOpts};
+    use ink::sexp::Sexp;
+    use std::sync::Arc;
+    struct Gauge;
+    struct GaugeForm(String, u32);
+    struct Reading(f64, f64);
+    impl Package for Gauge {
+        fn name(&self) -> &'static str {
+            "gauge"
+        }
+        fn forms(&self) -> &'static [&'static str] {
+            &["gauge"]
+        }
+        fn metrics(&self) -> &'static [(&'static str, &'static str)] {
+            &[("reading", "the value a gauge reads")]
+        }
+        fn read(&self, r: &mut Reader, form: &Sexp, _head: &str, args: &[Sexp]) -> Result<Arc<dyn Form>, ink::InkError> {
+            let [name, e] = args else { return Err(r.err(form, "usage: (gauge name expr)")) };
+            Ok(Arc::new(GaugeForm(r.name(name)?, r.field(e)?)))
+        }
+    }
+    impl Form for GaugeForm {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        fn metrics(&self) -> Vec<&'static str> {
+            vec!["reading"]
+        }
+        fn run(&self, doc: &mut Doc, ctx: &Ctx, opts: &RunOpts) -> Result<Box<dyn Outcome>, ink::InkError> {
+            let h = opts.res.unwrap_or(1.0);
+            Ok(Box::new(Reading(doc.scalar(self.1, ctx) + (h - 1.0) / 2.0, h)))
+        }
+    }
+    impl Outcome for Reading {
+        fn metric(&self, m: &str) -> Option<Measured> {
+            let band = Band { low: self.0 - 1.0, high: self.0 + 1.0, parts: vec![("placement".into(), 1.0)], basis: "a test's".into() };
+            (m == "reading").then(|| Measured {
+                value: Ok(self.0),
+                at: None,
+                res: Some(self.1),
+                warnings: Vec::new(),
+                excluded: Vec::new(),
+                unseen: None,
+                proven: false,
+                held: None,
+                band: Some(band),
+            })
+        }
+    }
+    static GAUGES: Registry = Registry::new(&[&Gauge]);
+    let src = "(param p 3)\n(gauge g (* 2 p))\n(assert under (reading g < 8))\n(assert near (reading g < 7.5))\n(assert over (reading g > 8))\n(assert above (reading g > 7.5))";
+    let d = Doc::load_str_in(&GAUGES, src, "test", Path::new(ROOT), &[]).unwrap_or_else(|e| panic!("{e:?}"));
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let mut v = ink::view::ModelView::new(d, ctx);
+    let answers = ink::claims::run_asserts(&mut v, None, false, ink::claims::ClaimOptions::default()).unwrap().asserts;
+    let status: Vec<_> = answers.iter().map(|a| a.check.status).collect();
+    use ink::claims::Status::*;
+    assert_eq!(status, [Holds, Unknown, Fails, Unknown], "{answers:?}");
+    let near = &answers[1].check;
+    assert!(
+        matches!(&near.evidence, ink::claims::Evidence::Metric { undecided: Some((why, _)), grid_error: Some((e, _)), .. }
+            if why.contains("4.375 to 7.625") && why.contains("placement dominates") && (e - 0.625).abs() < 1e-12),
+        "{near:?}"
+    );
 }
 
 #[test]
@@ -4094,19 +4179,21 @@ fn run_claims(src: &str) -> Vec<(String, ink::claims::Check)> {
 }
 
 /// An unknown clearance examined only in the window holds to its
-/// attained accuracy there, not for the shapes: two tiny cubes and two
-/// balls in the default window, each shape also the half-space x > 2000
-/// beyond it, where they overlap (distance 0). The clearance of 3.5 is
-/// unknown, holding to some accuracy in the window only, and `ink
-/// distance`'s lower bound stays 0, not the window's attained bound
-/// (2.998).
+/// attained accuracy there, not for the shapes: two tiny cubes turned 45
+/// degrees about z, corner to corner 4.25 apart (each field reads 3 at the
+/// other), and two balls in the default window, each shape also the
+/// half-space x > 2000 beyond it, where they overlap (distance 0). The
+/// clearance of 3.5 is unknown, holding to some accuracy in the window
+/// only, and `ink distance`'s lower bound stays 0, not the window's
+/// attained bound (2.99).
 #[test]
 fn an_attained_bound_in_the_window_says_nothing_past_it() {
     use ink::claims::{ClaimOptions, Status};
-    let src = "(fn tiny (cx cy) (max (- (abs (- x cx)) .005) (- (abs (- y cy)) .005) (- (abs (- z .345)) .005)))
+    let src =
+        "(fn tiny (cx cy) (max (- (abs (* (+ (- x cx) (- y cy)) .7071067811865476)) .005) (- (abs (* (- (- x cx) (- y cy)) .7071067811865476)) .005) (- (abs (- z .345)) .005)))
 (fn ball (cx) (- (sqrt (+ (square (- x cx)) (square y) (square z))) 1))
 (def a (min (tiny .123 .234) (ball 50) (- 2000 x)))
-(def b (min (tiny 3.133 3.244) (ball 59) (- 2000 x)))";
+(def b (min (tiny 4.387 .234) (ball 59) (- 2000 x)))";
     let doc = ink::load_str(src, "window", Path::new(ROOT)).unwrap_or_else(|e| panic!("{e:?}"));
     let field = |n: &str| match doc.def(n).unwrap() {
         Value::Field(f, _) => *f,
@@ -5008,7 +5095,7 @@ fn motion_models_hold_or_fail_as_declared() {
         let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
         for a in &r.asserts {
             let want = text.lines().find_map(|l| l.strip_prefix(&format!("; expect-status: {} ", a.name))).map(str::trim);
-            // As tests/models.py's verdict: the status, and `estimate` after
+            // As the model rule's verdict: the status, and `estimate` after
             // one that holds or fails with no tolerance.
             let st = a.check.status;
             let estimate = st != ink::claims::Status::Unknown && a.check.accuracy.is_none();

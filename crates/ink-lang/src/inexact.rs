@@ -71,13 +71,19 @@ impl Doc {
         }
         solved.sort_unstable();
         unsettled.sort_unstable();
-        // What a sample found from samples was found from, after it.
+        // What a sample found from samples was found from, after it, and
+        // what that was found from (a bake of a bake), to the first.
         let mut samples = self.g.sources(&all);
-        for (found, from) in &self.found_from {
-            if samples.iter().any(|x| Arc::ptr_eq(x, found)) {
-                for f in from {
-                    if !samples.iter().any(|x| Arc::ptr_eq(x, f)) {
-                        samples.push(f.clone());
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for (found, from) in &self.found_from {
+                if samples.iter().any(|x| Arc::ptr_eq(x, found)) {
+                    for f in from {
+                        if !samples.iter().any(|x| Arc::ptr_eq(x, f)) {
+                            samples.push(f.clone());
+                            grew = true;
+                        }
                     }
                 }
             }
@@ -139,6 +145,7 @@ impl Doc {
             unit: "",
             span: None,
             component: None,
+            undecided: undecided_from(from),
         };
         let data = Arc::new(crate::grid::GridData::new([0.0; 3], 1.0, [6, 2, 2], values).holding().with_source(source));
         if let Some(s) = data.source() {
@@ -191,4 +198,12 @@ impl Doc {
         }
         self.ext_form(Some(metric.package), &metric.form).map(|e| self.form_inputs(e)).unwrap_or_default()
     }
+}
+
+/// Why no claim is decided on what is found from samples `from`: the first
+/// of theirs (grid::Source::undecided), so a grid baked, redistanced or
+/// bounded from a result its form gave no band keeps that refusal as its
+/// own, whatever it is called.
+pub(crate) fn undecided_from(from: &[Arc<crate::grid::Source>]) -> Option<String> {
+    from.iter().find_map(|s| s.undecided.clone())
 }

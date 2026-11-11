@@ -1613,12 +1613,77 @@
 ; unknown. Only signs are read, so it holds for any field of the shape,
 ; and it decides along edges and creases. A ceiling narrower than
 ; 2 h tan a, or a flat overhang reaching out less than h tan a, counts as
-; held. A bridge counts as an overhang; its span is not checked.
+; held. A bridge counts as an overhang here; unbridged checks its span.
 (fn overhangs (f z0 a h)
   (let ((r (* h (tan (deg->rad a))))
         (beside (reduce min (map (lambda (i) (let ((u (deg->rad (* 45 i)))) (move f (* r (cos u)) (* r (sin u)) 0)))
                                  (range 8)))))
     (max (neg f) (ahead f 0 0 1 h) (neg beside) (- z0 z))))
+; (unbridged f z0 a h l w) is where an overhang's ceiling is not a
+; bridge at most l long, read in the ceiling: the points 0.05 to 0.3 mm
+; inside a face with air 0.3 mm under them (and 0.05 inside its sides),
+; over an overhang (as overhangs reads one h below, or 0.3 below), whose
+; row, the line through the point along x or along y, does not run on
+; material to a support within l each way. A support is material with
+; material 0.3 mm under it: a wall that touches the ceiling. A row fails
+; where it reaches air before a support (a break in the ceiling, a
+; cantilever's end) or runs unsupported longer than l; a point fails
+; where its x and y rows both fail. (empty (unbridged part 0 45 1 10
+; 0.8)) holds where every overhang's ceiling bridges at most 10 mm along
+; x or y between walls touching it. The row is read for supports at
+; steps of w, k = floor(l / w) steps in a row read as longer than l, so
+; a failure may be a span over (k - 1) w (at l 10, w 0.8: 8.8), or one
+; resting on a wall thinner than w. Where the row meets air is a param
+; the claim searches (its fraction of l, named after the claim as
+; hidden's are), so a break however narrow is found, to the claim's
+; accuracy. 0.3 mm parts a gap from contact: air reaching 0.3 mm under a
+; point of a flat ceiling is a gap, however close what is under it, and
+; the ceiling over it a bridge (one tilted 30 degrees or more over a gap
+; under h is not read, as overhangs reads it not); air between two
+; points 0.3 apart that are both material is contact, so a ceiling t
+; thick over air thinner than 0.3 - t, over its wall or anywhere, is not
+; read (a 0.12 mm roof 0.15 mm over its walls passes). Otherwise a pass
+; is a proof. A support's own underside, where air is under it, is read
+; as any other. A bridge at an angle to x and y is read along them, so
+; longer, and may fail near an open end: turn the part to read along it,
+; (unbridged (rotate-z part 30) ...). Only signs are read, air where f
+; is at or above 0 as for any shape, so it holds for any field of the
+; shape.
+(fn unbridged (f z0 a h l w)
+  (let ((k (floor (/ l w)))
+        (e 0.05)
+        (c 0.3)
+        ; below 0 where g is air, g at or above 0 (as material is g below 0)
+        (air (lambda (g) (select g 1 -1)))
+        ; d under it, air with nothing within d tan a beside, d above the bed
+        (lean (lambda (d)
+          (let ((r (* d (tan (deg->rad a))))
+                (beside (reduce min (map (lambda (i) (let ((u (deg->rad (* 45 i)))) (move f (* r (cos u)) (* r (sin u)) d)))
+                                         (range 8)))))
+            (max (air (move f 0 0 d)) (air beside) (- (+ z0 d) z)))))
+        ; material here, e under and beside it, air c under it: a ceiling's underside
+        (ceiling (max f (move f 0 0 e) (move f e 0 0) (move f (neg e) 0 0) (move f 0 e 0) (move f 0 (neg e) 0)
+                      (air (move f 0 0 c))))
+        ; an overhang's, as overhangs reads one h below, or c below: a flat
+        ; ceiling over any gap wider than c is a bridge
+        (over (max ceiling (min (lean h) (lean c))))
+        (run (lambda (dx dy)
+          (let ((row (lambda (u dz) (move f (* -1 u dx) (* -1 u dy) dz)))
+                (js (concat (range (neg k) 0) (range 1 (+ k 1))))
+                ; air on step j w along the row, or air c under it: no support.
+                ; Read as air alone, so a seam in f (an atan2's cut) forks its
+                ; own copy, not every copy after it.
+                (bare (map (lambda (j) (min (air (row (* j w) 0)) (air (row (* j w) c)))) js))
+                (pick (lambda (j) (nth bare (if (< j 0) (+ j k) (+ j k -1)))))
+                ; no support at k steps in a row, this point among them (its
+                ; own step none, as a ceiling): longer than l
+                (long (apply min (map (lambda (i) (apply max (map pick (concat (range (- i (- k 1)) 0) (range 1 (+ i 1))))))
+                                      (range k))))
+                ; air on the row at s, no support at the steps before it
+                (s (* l (ranged -1 1)))
+                (before (map (lambda (j) (min (pick j) (if (> j 0) (- s (* j w)) (- (* j w) s)))) js)))
+            (min long (apply max (concat (vec (air (row s 0))) before)))))))
+    (max over (run 1 0) (run 0 1))))
 
 ; ---------------------------------------------------------------- sheet metal
 ;
@@ -1981,10 +2046,17 @@
 ; interval bounds stay tight where tn - atan(tn)'s would not. Its twelve
 ; terms are within 1e-10 rad for tn <= 1 (a tooth's tip, at 6 teeth or
 ; more and 20 degrees) and 1.3e-7 at tn = 1.5, one expression for every tn.
+; (involute-of-tan-squared q) is the same of q = tn^2 (tn >= 0): a flank
+; reads the tangent squared, (r^2 - rb^2) / rb^2 at radius r, whose slope
+; is bounded at the base circle rb, where its square root's is not.
 (fn involute-of-tan (tn)
   (let ((s (sqrt (+ 1 (square tn)))) (u (- 1 (/ 2 (+ 1 s)))) (w (/ tn (+ 1 s))))
     (* 2 w u (fold (lambda (acc j) (+ (* acc u) 1 (/ (if (== (mod j 2) 0) 1 -1) (+ (* 2 j) 3))))
                    0 (range 11 -1 -1)))))
+(fn involute-of-tan-squared (q)
+  (let ((s (sqrt (+ 1 q))) (d (+ 1 s)) (u (/ q (square d))))
+    (* 2 (/ (pow q 1.5) (* d d d)) (fold (lambda (acc j) (+ (* acc u) 1 (/ (if (== (mod j 2) 0) 1 -1) (+ (* 2 j) 3))))
+                                          0 (range 11 -1 -1)))))
 
 ; (involute-gear-shifted-2d z mo pa backlash shift): the same gear cut
 ; with its rack moved out shift modules (profile shift, or addendum
@@ -2005,10 +2077,10 @@
         ; folded inside the gear's material so interval bounds stay tight
         ; in the gaps, where a mating tooth sits.
         (th (- (* 0.5 pitch) (abs (- (mod (atan2 y x) pitch) (* 0.5 pitch)))))
-        (tn (/ (sqrt (- (square r) (square rb))) rb))
+        (q (/ (max 0 (- (square r) (square rb))) (square rb)))
         (psi (- (+ (/ pi (* 2 z)) (involute-of-tan (tan (deg->rad pa)))
                    (/ (* 2 shift (tan (deg->rad pa))) z))
-                (+ (involute-of-tan tn) (/ (* 0.5 backlash) rp))))
+                (+ (involute-of-tan-squared q) (/ (* 0.5 backlash) rp))))
         (tooth (max (* r (- th psi)) (- r ra))))
     (min tooth (- r rf))))
 (fn involute-ring-2d (n mo pa backlash shift)
@@ -2020,8 +2092,8 @@
         ; Angle from the nearest tooth space's centre line, in [0, pitch/2],
         ; folded inside the ring's teeth.
         (th (abs (- (mod (atan2 y x) pitch) (* 0.5 pitch))))
-        (tn (/ (sqrt (- (square r) (square rb))) rb))
-        (psi (- (+ (/ pi (* 2 n)) (involute-of-tan (tan (deg->rad pa))) (/ (* 0.5 backlash) rp)) (involute-of-tan tn)))
+        (q (/ (max 0 (- (square r) (square rb))) (square rb)))
+        (psi (- (+ (/ pi (* 2 n)) (involute-of-tan (tan (deg->rad pa))) (/ (* 0.5 backlash) rp)) (involute-of-tan-squared q)))
         (space (max (* r (- th psi)) (- r (+ rp (* 1.25 mo))))))
     (max (- (- rp mo) r) (neg space))))
 (fn involute-gear-2d (z mo pa backlash) (involute-gear-shifted-2d z mo pa backlash 0))
