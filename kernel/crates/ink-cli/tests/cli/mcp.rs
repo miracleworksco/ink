@@ -714,6 +714,7 @@ fn stop_after_first(srv: &Server, file: &str, by: Instant) -> bool {
 /// A claim that takes about a minute on 4 threads (2026-11-17), however
 /// fast the first: a proof over the surface of 1500 spheres a hair apart,
 /// each read at every point. A call is stopped while it runs.
+#[cfg(target_os = "linux")]
 const SLOW_CLAIM: &str = "(def cloud (fold min inf (map (lambda (k) (sphere (+ 4 (* 0.00001 k)))) (range 1500))))\n\
      (require NAME (subset cloud (- (place cloud (at (rot-z 30))) 0.01)) (accuracy 0.00001))\n";
 
