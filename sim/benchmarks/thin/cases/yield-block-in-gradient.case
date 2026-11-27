@@ -1,0 +1,14 @@
+; The thin corpus's yield-strip bar (40 x 10 x 10, x -20..20, pulled at 10 MPa),
+; its yield graded 250 - 2 x (every cell flagged: its least yield is below its
+; centre's), and a block x 5..10 of yield 10, a whole number of cells wide (read
+; at its cells' centres, nothing between them). The value reads the block, about 1;
+; the graded cells' bound is about 21.
+; truth: safe fails about 1 (statics: 1000 N / 100 mm2 = 10 MPa against the block's 10); master fails it at 1.0
+; truth: unsafe holds about 1 (statics: 10 MPa against the block's 10)
+(import "std")
+(def part (box 40 10 10))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- 5 x) (- x 10)) 10 (- 250 (* 2 x))))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe (min-safety-factor s > 2))
+(require unsafe (min-safety-factor s < 2))

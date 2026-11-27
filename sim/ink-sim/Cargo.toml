@@ -1,0 +1,21 @@
+[package]
+name = "ink-sim"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+# Its build script declares its package to the distribution (ink-ext/build.rs).
+links = "ink-sim"
+description = "ink's simulation package: the study form (strength, stiffness, vibration, heat), its claims and results, `ink solve`, and the setup of its finite element solver (ink-fem)"
+
+[dependencies]
+ink-core = { path = "../../kernel/crates/ink-core" }
+ink-kernel = { path = "../../kernel/crates/ink-kernel" }
+ink-fem = { path = "../ink-fem" }
+ink-lang = { path = "../../kernel/crates/ink-lang" }
+ink-io = { path = "../../kernel/crates/ink-io" }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

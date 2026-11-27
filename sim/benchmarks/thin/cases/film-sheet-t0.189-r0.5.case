@@ -1,0 +1,15 @@
+; The sheet of press-sheet-t0.189-r0.5-wide as a heat fin: 0.01 W in at the block's back (x < 1), convection 25 W/(m2 K)
+; to 20 C over every face above z 0.0945: 149.1 mm2 (the sheet's top 64, the block's top 24, its upper sides 57.7, the
+; sheet's upper sides 3.4). k 50 W/(m K). By the energy balance the surface's mean temperature is 20 + Q / (h A) = 22.68;
+; the sheet conducts with efficiency tanh(m L) / m L = 0.82 (m L 0.82, its top convecting), so the block sits at about
+; 20 + Q / (h (A - 0.18 x 64)) = 22.90, the source's face a few hundredths above. A film missing the sheet's top reads
+; 24.9 (85 mm2).
+; truth: cool holds about 22.92 (energy balance with the sheet's fin efficiency)
+; truth: hot fails about 22.92 (energy balance with the sheet's fin efficiency)
+(import "std")
+(def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.189) 10 0 0.0945)))
+(study s (shape part) (heat (k 50W/m/K))
+  (convection air (- 0.0945 z) (coefficient 25W/m2/K) (ambient 20degC))
+  (source back (power 0.01W) (region (- x 1))) (res 0.5))
+(require cool (max-temperature s < 23.5degC))
+(require hot (max-temperature s > 24degC))

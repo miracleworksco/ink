@@ -1,0 +1,1 @@
+{"pull-out":{"from":"a synthetic torque curve with a narrow dip at 2 deg/s","sizes":true,"ordered":[{"read":"torque","on":"shaft"},{"table":{"x":"deg/s","y":"N*mm","points":[[0,100],[1.9,100],[2,0],[2.1,100],[40,100]],"line":true},"at":{"read":"speed","on":"shaft"}}]}}

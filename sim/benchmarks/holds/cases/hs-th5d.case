@@ -1,0 +1,10 @@
+; bar 8.4 x 2.1 x 2.1, x from 0; held at 20 C over its first 0.5 mm; 0.01 W spread past x = 0+7.0; k 0.5; res 0.35
+; exact 1-D: Tmax = 20 + P (a - w)/(k A) + P (L - a)/(2 k A) = 52.6531 C
+(import "std")
+(body bar (shape (move (box 8.4 2.1 2.1) 4.2 0 0)))
+(study s (shape (shape-of bar)) (heat (k 0.5W/m/K))
+  (temperature cold (- x 0.5) 20degC)
+  (source q (power 0.01W) (region (- 7.0 x)))
+  (res 0.35))
+(require temp (max-temperature s < 1e6degC))
+(require cool-enough (max-temperature s < 52.2531degC))   ; false: the exact peak is 52.6531

@@ -1,0 +1,27 @@
+[package]
+name = "ink-dynamics"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+# Its build script declares its package to the distribution (ink-ext/build.rs).
+links = "ink-dynamics"
+description = "ink's dynamics package: gravity, actuators' effort along a motion (inverse dynamics by projection onto the mechanism's coordinates), effort-limits claims"
+
+[dependencies]
+ink-carried = { path = "../ink-carried" }
+ink-core = { path = "../../kernel/crates/ink-core" }
+ink-kernel = { path = "../../kernel/crates/ink-kernel" }
+ink-lang = { path = "../../kernel/crates/ink-lang" }
+rayon = "1"
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+# The tests too slow for every change (./cpu-test.sh --slow).
+[features]
+slow = []
+# Model::set_mass, for another crate's tests of the model at exact masses:
+# no build that ships turns it on.
+exact-masses = []
+
+[lints]
+workspace = true

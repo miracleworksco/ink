@@ -1,0 +1,36 @@
+[package]
+name = "ink-ext"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+description = "ink with its simulation packages (studies and finite elements, dynamics, topology): the kernel's packages and these, and an `ink` binary of them"
+
+[[bin]]
+name = "ink"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+ink = { path = "../../kernel/crates/ink" }
+ink-cli = { path = "../../kernel/crates/ink-cli" }
+# solvers.rs: the claims core and the solver tools `ink require` asks here
+ink-claims = { path = "../../kernel/crates/ink-claims" }
+ink-effort = { path = "../ink-effort" }
+ink-study = { path = "../ink-study" }
+# The packages it holds, each declaring itself in its build script (build.rs):
+ink-dynamics = { path = "../ink-dynamics" }
+ink-sim = { path = "../ink-sim" }
+ink-topology = { path = "../ink-topology" }
+# withheld.rs: a refused command's answer type
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+[dev-dependencies]
+rayon = "1"
+
+# The tests too slow for every change (./cpu-test.sh --slow).
+[features]
+slow = []
+
+[lints]
+workspace = true

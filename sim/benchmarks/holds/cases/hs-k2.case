@@ -1,0 +1,9 @@
+; solid ball radius 4.3 at (0.17, -0.41, 3.33), 0.05 W spread through it, convection 200 W/m2/K to 20 C all over, k 0.5, res 0.3
+; exact: centre 20 + P/(h 4 pi R^2) + q R^2/(6k), q = P/(4/3 pi R^3): 22.0013 C
+(import "std")
+(body b (shape (move (sphere 4.3) 0.17 -0.41 3.33)))
+(study s (shape (shape-of b)) (heat (k 0.5W/m/K))
+  (convection air (- (len3 x y z) 1000) (coefficient 200W/m2/K) (ambient 20degC))
+  (source q (power 0.05W) (region (- (len3 x y z) 1000)))
+  (res 0.3))
+(require temp (max-temperature s < 1e6degC))

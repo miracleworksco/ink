@@ -1,0 +1,17 @@
+; smoothstep-dip.ink's bar (40 x 10 x 10, pulled at 10 MPa), its yield a
+; smoothstep dip to 10 MPa at x = 0.5, 4 mm each side (yield = 250 - 240 b,
+; b = 3 s^2 - 2 s^3, s = 1 - |x - 0.5| / 4), and 50 MPa for x > 10.
+; The least factor is at the dip: 10 / 10 = 1. The x > 10 end, of one
+; material, reads 50 / 10 = 5. In the cells around the dip the interval of
+; b overshoots 1, so the yield's interval lower bound is negative there.
+; truth: safe fails about 1 (statics: 10 MPa along the bar against the dip's 10 MPa at x 0.5)
+; truth: unsafe holds about 1 (as safe)
+(import "std")
+(def part (box 40 10 10))
+(def sx (max 0 (- 1 (/ (abs (- x 0.5)) 4))))
+(def blend (- (* 3 sx sx) (* 2 sx sx sx)))
+(study s1 (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (- 10 x) 50 (- 250 (* 240 blend))))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe (min-safety-factor s1 > 3))
+(require unsafe (min-safety-factor s1 < 3))

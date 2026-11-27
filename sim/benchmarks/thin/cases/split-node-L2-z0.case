@@ -1,0 +1,7 @@
+; A loaded 2 x 2 x 0.1 bar under an unloaded 2 x 2 x 2 one 0.7 mm above, both held at x < 0.5, 1 mm cells.
+; truth: stiff holds about 2.87e-05 (0.05 mm cells (split-node-L2-r0.05))
+(import "std")
+(def part (min (move (box 2 2 .1) 1.0 0 0.05) (move (box 2 2 2) 1.0 0 1.8)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0))
+ (fix root (- x .5)) (load tip (force 0 0 -.001N) (region (max (- 1.75 x) (- z 0.11)))) (res 1))
+(require stiff (max-displacement s < .005))

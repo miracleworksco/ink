@@ -1,0 +1,13 @@
+; h1 again (bar 7.3 x 2.2 x 1.9, k 0.5 W/m/K, film 200 W/m2/K to 20 C on x=0, 0.01 W over its last mm), written in other units
+; exact 1-D: 64.4976 C = 148.0957 F = 337.6476 K
+(import "std")
+(body bar (shape (move (box 7.3 2.2 1.9) 3.65 0 0)))
+(study s (shape (shape-of bar)) (heat (k 0.5W/m/K))
+  (convection air (- x 0.0001) (coefficient 200W/m2/K) (ambient 293.15K))
+  (source q (power 10mW) (region (- 6.3 x)))
+  (res 0.3))
+(require temp (max-temperature s < 1e6degC))
+(require a (max-temperature s < 150degF))
+(require b (max-temperature s > 146degF))
+(require c (max-temperature s < 338.5K))
+(require d (max-temperature s > 336.5K))

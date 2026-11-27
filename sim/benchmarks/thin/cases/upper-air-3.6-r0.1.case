@@ -1,0 +1,8 @@
+; Two 12 mm cantilevers held together at x < 1: a loaded bar at z 1 to 3 and an unloaded 0.4 mm one at z 3.6 to 4, 0.1 mm cells: the reference.
+; truth: strong holds about 0.317 (this file)
+; test: slow
+(import "std")
+(def part (min (move (box 12 4 2) 6 0 2) (move (box 12 4 .4) 6 0 3.8000000000000003)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 250MPa))
+ (fix root (- x 1)) (load tip (force 0 0 -0.1N) (region (max (- 11 x) (- z 3)))) (res 0.1))
+(require strong (max-stress s < 0.4MPa (excluding support-margin)))

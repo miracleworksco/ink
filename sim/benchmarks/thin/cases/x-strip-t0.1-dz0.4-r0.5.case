@@ -1,0 +1,7 @@
+; A lone 20 x 4 x 0.1 strip at z 0.4, held at x < 1, 1e-5 N at its tip.
+; truth: stiff fails about 0.00032 (cantilever, F L^3 / 3 E I over the free 18.5 mm)
+; truth: strong fails about 0.02625 (beam, 6 M / b t^2 1 mm from the hold)
+(import "std") (def part (move (box 20 4 0.1) 10 0 0.4))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 250MPa)) (fix root (- x 1)) (load tip (force 0 0 -1e-05N) (region (- 19 x))) (res 0.5))
+(require stiff (max-displacement s < 2.5e-4))
+(require strong (max-stress s < 0.0109MPa))

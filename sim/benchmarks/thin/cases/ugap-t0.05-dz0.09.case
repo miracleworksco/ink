@@ -1,0 +1,5 @@
+; A 20 x 4 x 4 steel bar with a slit at x 5.1 leaving a ligament thinner than a cell, 1e-5 N at its tip.
+; truth: stiff fails at least 4.008e-05 (0.05 to 0.0625 mm cells, still rising as they shrink)
+(import "std") (def part (move (subtract (move (box 20 4 4) 10 0 0) (min (move (box 0.4 8 4) 5.1 0 0.25) (- (len2 (- x 5.1) (- z -1.75)) 0.2))) 0 0 0.09))
+(study s (shape part) (elastic (material steel)) (fix root (- x 1)) (load tip (force 0 0 -0.00001N) (region (- 19 x))) (res 0.5))
+(require stiff (max-displacement s < 3.7e-5))

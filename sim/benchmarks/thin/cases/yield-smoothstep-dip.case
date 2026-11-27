@@ -1,0 +1,24 @@
+; The 40 x 10 x 10 bar pulled at 10 MPa (gradient.ink's), its yield 250 MPa
+; but for a heat-affected zone around x = 0, 8 mm each side, where it falls
+; smoothly to 10 MPa: a smoothstep blend, yield = 250 - 240 b,
+; b = 3 s^2 - 2 s^3, s = 1 - |x| / 8. At x = 0 the factor is 10 / 10 = 1.
+; Over a cell, the interval of 3 s^2 - 2 s^3 overshoots 1 near s = 1, so the
+; yield's interval lower bound is negative in the cells near x = 0.
+; truth: safe15 fails about 1 (statics: 10 MPa along the bar against the dip's 10 MPa at x 0)
+; truth: unsafe15 holds about 1 (as safe15)
+; truth: safe2 fails about 1 (statics: 10 MPa along the bar against the dip's 10 MPa at x 0)
+; truth: unsafe2 holds about 1 (as safe2)
+; truth: safe25 fails about 1 (statics: 10 MPa along the bar against the dip's 10 MPa at x 0)
+; truth: unsafe25 holds about 1 (as safe25)
+(import "std")
+(def part (box 40 10 10))
+(def sx (max 0 (- 1 (/ (abs x) 8))))
+(def blend (- (* 3 sx sx) (* 2 sx sx sx)))
+(study s1 (shape part) (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (- 250 (* 240 blend)))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe15 (min-safety-factor s1 > 1.5))
+(require unsafe15 (min-safety-factor s1 < 1.5))
+(require safe2 (min-safety-factor s1 > 2))
+(require unsafe2 (min-safety-factor s1 < 2))
+(require safe25 (min-safety-factor s1 > 2.5))
+(require unsafe25 (min-safety-factor s1 < 2.5))

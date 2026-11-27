@@ -1,0 +1,17 @@
+[package]
+name = "ink-ratings"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "Reads the ratings a design's parts carry (each body's `ratings` attribute) into the claims core's rules and the formula tool's formulas, each placed where its part is"
+
+[dependencies]
+ink-claims.workspace = true
+ink-formula.workspace = true
+ink-lang.workspace = true
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+[lints]
+workspace = true

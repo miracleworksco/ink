@@ -1,0 +1,12 @@
+; A 100 x 10 x 10 cantilever (x -50..50, z -5..5), fixed at x < -49, 100 N down at
+; x > 49; yield 1000 MPa but for a thin interior strip x > -39.95, |y| < 3.95,
+; z 0.90..0.95 of 10 MPa (E uniform). On cells of 1 mm the strip lies inside the
+; cell z 0..1, read only at its centre z 0.5 (strong): flagged, but its bound
+; divides the stress at z 0.5 by 10, while the strip at z 0.95 carries about twice it.
+; truth: safe fails about 0.95 (ink's probe at the strip, -39.9 0 0.95: von Mises 10.57 MPa on cells of 0.5 mm, 10.54 on 1 mm; beam theory 10.25)
+(import "std")
+(def part (box 100 10 10))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- -39.95 x) (- (abs y) 3.95) (- 0.9 z) (- z 0.95)) 10 1000))))
+ (fix root (+ x 49)) (load tip (force 0 0 -100N) (region (- 49 x))) (res 1))
+(require safe (min-safety-factor s > 1.5))

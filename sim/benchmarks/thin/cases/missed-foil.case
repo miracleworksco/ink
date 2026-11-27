@@ -1,0 +1,7 @@
+; true tip displacement about 0.166047 mm by uniform self-weight cantilever theory; a 0.001 mm bound is false.
+; Chord samples at res 0.5 have z on multiples of 0.015625 mm; foil occupies 0.0002875 < z < 0.0153375.
+; truth: stiff fails about 0.166 (cantilever under its own weight, q L^4 / 8 E I: L 16, b 4, t 0.01505, steel)
+(import "std")
+(def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.01505) 10 0 0.0078125)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (density 7800kg/m3)) (fix root (- x 0.5)) (gravity 0 0 -9.81m/s2) (res 0.5))
+(require stiff (max-displacement s < 0.001))

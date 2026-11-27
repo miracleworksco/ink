@@ -1,0 +1,8 @@
+(import "std")
+(def part (move (rotate-z (move (box 204 7.2 4.8) 102.0 0 0) 0.0) 0 0 0))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3))
+  (fix base (- (+ (* 1.0 (- x 0)) (* 0.0 (- y 0))) 1e-06))
+  
+  (load push (force -100.0N -0.0N 0.0N) (region (- 203.999999 (+ (* 1.0 (- x 0)) (* 0.0 (- y 0))))))
+  (res 0.6))
+(require q (min-buckling-factor s > 0))

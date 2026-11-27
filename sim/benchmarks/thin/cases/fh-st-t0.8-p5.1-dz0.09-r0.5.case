@@ -1,0 +1,5 @@
+; A 20 x 4 x 4 steel bar with a 0.4 mm slit at x 5.1 leaving a thin ligament, 1e-5 N at its tip.
+; truth: strong fails at least 0.000338 (beam theory over the ligament; 0.1 mm cells read higher)
+(import "std") (def part (move (subtract (move (box 20 4 4) 10 0 0) (move (box 0.4 8 3.2) 5.1 0 0.4)) 0 0 0.09))
+(study s (shape part) (elastic (material steel)) (fix root (- x 1)) (load tip (force 0 0 -0.00001N) (region (- 19 x))) (res 0.5))
+(require strong (max-stress s < 0.00027MPa))

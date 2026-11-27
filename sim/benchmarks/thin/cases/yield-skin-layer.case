@@ -1,0 +1,12 @@
+; The thin corpus's yield-strip bar (40 x 10 x 10 pulled at 10 MPa, yield 250), its
+; top face moved to z 5.3 (z -5..5.3: a thick bar, 10.3 mm), with a layer of weaker
+; material (yield 10) just under that face, z 5.05..5.25, |x| < 15, |y| < 4. On
+; cells of 1 mm the top cells z 5..6 are 30% material, so neither read nor bounded;
+; the cells under them (z 4..5) hold no weak yield. Not a thin wall: the bar is 10.3 mm.
+; truth: safe fails about 1 (statics: 1000 N / 103 mm2 = 9.7 MPa, uniform, against 10)
+(import "std")
+(def part (move (box 40 10 10.3) 0 0 0.15))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- 5.05 z) (- z 5.25) (- (abs x) 15) (- (abs y) 4)) 10 250))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe (min-safety-factor s > 2))

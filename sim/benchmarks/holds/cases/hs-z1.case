@@ -1,0 +1,9 @@
+; bar 1950 x 65 x 52, mirrors on its low faces, 33800 N spread past x = 1820, E 200000, nu 0, res 13
+; exact: stress 10.0 MPa to x=1820; tip F a/(AE) + F (L-a)/(2AE) = 0.09425 mm
+(import "std")
+(body bar (shape (move (box 1950 65 52) 975.0 32.5 26.0)))
+(study s (shape (shape-of bar)) (elastic (E 200000MPa) (nu 0))
+  (mirror mx x 0) (mirror my y 0) (mirror mz z 0) (load f (force 33800.0N 0 0) (region (- 1820 x))) (res 13))
+(require stress (max-stress s < 100000MPa))
+(require disp (max-displacement s < 100000))
+(require comp (compliance s < 1e9N*mm))

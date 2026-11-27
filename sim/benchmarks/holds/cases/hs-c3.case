@@ -1,0 +1,11 @@
+; block 6.0 x 6.0 x 24 tall on a roller floor, quarter by mirrors x0 y0, own weight, density 7850, E 1 MPa, nu 0, res 0.5
+; exact: stress at the floor rho g L = 0.0018482 MPa; top sinks rho g L^2/(2E) = 0.0221784 mm
+(import "std")
+(body bar (shape (move (box 6.0 6.0 24) 3.0 3.0 12.0)))
+(study s (shape (shape-of bar)) (elastic (E 1MPa) (nu 0) (density 7850kg/m3))
+  (mirror mx x 0) (mirror my y 0) (fix floor (- z 0.01) (dofs z) (support)) (gravity 0 0 -9.81m/s2) (res 0.5))
+(require stress (max-stress s < 100000MPa))
+(require disp (max-displacement s < 100000))
+(require comp (compliance s < 1e9N*mm))
+(require under (max-stress s < 0.00179275788MPa))
+(require sinks (max-displacement s < 0.02184577128))

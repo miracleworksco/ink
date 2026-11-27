@@ -1,0 +1,5 @@
+; The 0.1 mm fin, its mid-plane 0.13 mm off a plane of the cells, on 1 mm cells.
+; truth: strong fails about 0.022 (beam, 6 M / b t^2 at the root)
+(import "std") (def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.1) 10.0 0 0.13)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 250MPa)) (fix root (- x 1)) (load tip (force 0 0 -1e-05N) (region (- 19 x))) (res 1))
+(require strong (max-stress s < 0.0109MPa))

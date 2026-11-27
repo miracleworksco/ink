@@ -1,0 +1,9 @@
+; bar 12.3 x 2.2 x 1.9 along x from 0, turned 0 deg about z, moved (0, 0, 0); clamped over its first 0.5 mm; end face loaded (force 41.8N 0.0N 0); E 1000, nu 0; res 0.3
+; exact: stress 10 MPa everywhere past the clamp (nu 0: exact for any clamp length)
+(import "std")
+(body bar (shape (move (rotate-z (move (box 12.3 2.2 1.9) 6.15 0 0) 0) 0 0 0)))
+(study s (shape (shape-of bar)) (elastic (E 1000MPa) (nu 0))
+  (fix wall (- (+ (* 1.0 (- x 0)) (* 0.0 (- y 0))) 0.5))
+  (load p (force 41.8N 0.0N 0) (region (- 11.3 (+ (* 1.0 (- x 0)) (* 0.0 (- y 0))))))
+  (res 0.3) )
+(require stress (max-stress s < 100000MPa))

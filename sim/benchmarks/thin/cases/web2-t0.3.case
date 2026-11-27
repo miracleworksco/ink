@@ -1,0 +1,6 @@
+; Two 10 x 6 x 6 blocks joined across a gap by a web 0.3 mm thick and 6 wide, 1 mm cells, across 2 mm, pulled apart by 1 N.
+; truth: strong fails at least 0.5556 (statics: the web alone carries 1 N over 1.8 mm2)
+(import "std")
+(def part (min (move (box 10 6 6) 5 0 0) (move (box 10 6 6) 17 0 0) (move (box 3 6 0.3) 11 0 0.5)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 250MPa)) (fix root (- x 1)) (load pull (force 1N 0 0) (region (- 21 x))) (res 1))
+(require strong (max-stress s < 0.4444MPa))

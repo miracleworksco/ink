@@ -1,0 +1,9 @@
+; bar 12.3 x 2.2 x 1.9 along x from 0, turned 7 deg about z, moved (0, 0, 0); clamped over its first 0.5 mm; end face loaded (torque -1.532486681762495N*mm 12.481102432531014N*mm 0); E 1000, nu 0; res 0.3
+; exact: pure bending by an end couple M = k I, away from the ends (Saint-Venant), stress k c = 9.5 MPa on the faces z' = +-0.95 (nu 0: exact for any clamp length)
+(import "std")
+(body bar (shape (move (rotate-z (move (box 12.3 2.2 1.9) 6.15 0 0) 7) 0 0 0)))
+(study s (shape (shape-of bar)) (elastic (E 1000MPa) (nu 0))
+  (fix wall (- (+ (* 0.992546151641322 (- x 0)) (* 0.12186934340514748 (- y 0))) 0.5))
+  (load p (torque -1.532486681762495N*mm 12.481102432531014N*mm 0) (region (- 11.3 (+ (* 0.992546151641322 (- x 0)) (* 0.12186934340514748 (- y 0))))))
+  (res 0.3) )
+(require stress (max-stress s < 100000MPa))

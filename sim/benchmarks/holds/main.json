@@ -1,0 +1,4082 @@
+[
+ {
+  "case": "en-heatband-k0.2-0.1",
+  "claim": "t",
+  "class": "right",
+  "value": 4892.499514346347,
+  "grid_error": 0.1581908317168503,
+  "truth": 4892.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 0.1582 (three grids alike within what the solves resolve: 4892 on cells of 0.2 mm, 4892 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "en-heatband-k0.2-0.2",
+  "claim": "t",
+  "class": "right",
+  "value": 4892.499950005679,
+  "grid_error": 0.1581908317168503,
+  "truth": 4892.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.1582 (three grids alike within what the solves resolve: 4892 on cells of 0.4 mm, 4892 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "en-heatband-step-0.1",
+  "claim": "t",
+  "class": "right",
+  "value": 2527.367242170843,
+  "grid_error": 0.0817182142962177,
+  "truth": 2527.37,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 0.08172 (three grids alike within what the solves resolve: 2527 on cells of 0.2 mm, 2527 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "en-turned-0.125",
+  "claim": "d",
+  "class": "right",
+  "value": 0.26462840237234325,
+  "grid_error": 0.0007089455009329226,
+  "truth": 0.26455,
+  "status": "holds",
+  "estimate": "a value on cells of 0.125 mm, not a bound; its grid error about 7.089e-4 (three grids converging faster than their elements can: 0.2646 on cells of 0.25 mm, 0.2644 on cells of 0.5 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "en-turned-0.25",
+  "claim": "d",
+  "class": "right",
+  "value": 0.2645837468474429,
+  "grid_error": 0.0008613967009473303,
+  "truth": 0.26455,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 8.614e-4 (three grids converging: 0.2644 on cells of 0.5 mm, 0.2641 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "en-turned-0.5",
+  "claim": "d",
+  "class": "right",
+  "value": 0.2645837468474429,
+  "grid_error": 0.0008613967009473303,
+  "truth": 0.26455,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 8.614e-4 (three grids converging: 0.2644 on cells of 0.5 mm, 0.2641 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hd-WRONG1-pinned-column-false-no",
+  "claim": "q",
+  "class": "not settled",
+  "value": 31.418943529244633,
+  "grid_error": 0.04292766445069418,
+  "truth": 31.41722,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.04293 (three grids converging faster than their elements can: 31.42 on cells of 1.2 mm, 31.43 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bal-cf-aligned",
+  "claim": "q",
+  "class": "right",
+  "value": 7.877380944421683,
+  "grid_error": 0.001849187964025667,
+  "truth": 7.877248,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.001849 (three grids, one difference within what the solves resolve: 7.878 on cells of 1.2 mm, 7.878 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bal-cf-shifted",
+  "claim": "q",
+  "class": "right",
+  "value": 7.882037011163526,
+  "grid_error": 0.02744620937035247,
+  "truth": 7.877248,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.02745 (three grids converging: 7.909 on cells of 1.2 mm, 8.017 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bal-cf-shiftz",
+  "claim": "q",
+  "class": "right",
+  "value": 7.87726580264527,
+  "grid_error": 0.05445588692295811,
+  "truth": 7.877248,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.05446 (three grids converging faster than their elements can: 7.878 on cells of 1.2 mm, 7.895 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bal-pp-aligned",
+  "claim": "q",
+  "class": "right",
+  "value": 31.418943529244633,
+  "grid_error": 0.04292766445069418,
+  "truth": 31.41722,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.04293 (three grids converging faster than their elements can: 31.42 on cells of 1.2 mm, 31.43 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bal-pp-shifted",
+  "claim": "q",
+  "class": "right",
+  "value": 31.437379399459008,
+  "grid_error": 1.64063962585141,
+  "truth": 31.41722,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 1.641 (three grids converging faster than their elements can: 31.54 on cells of 1.2 mm, 31.98 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bal-pp-shiftz",
+  "claim": "q",
+  "class": "right",
+  "value": 31.421008592753118,
+  "grid_error": 0.23994555010251872,
+  "truth": 31.41722,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.2399 (three grids, one difference within what the solves resolve: 31.42 on cells of 1.2 mm, 31.5 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bnu-cf-nu0",
+  "claim": "q",
+  "class": "right",
+  "value": 7.865504356047246,
+  "grid_error": 0.0017501686864536126,
+  "truth": 7.865307,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.00175 (three grids, one difference within what the solves resolve: 7.866 on cells of 1.2 mm, 7.866 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bnu-pp-long",
+  "claim": "q",
+  "class": "right",
+  "value": 78.6603158599582,
+  "grid_error": 0.045069561888197995,
+  "truth": 78.64843,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.04507 (three grids oscillating: 78.65 on cells of 1.2 mm, 78.67 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bnu-pp-nu0",
+  "claim": "q",
+  "class": "right",
+  "value": 31.427350916202084,
+  "grid_error": 0.048044314408468125,
+  "truth": 31.42469,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.04804 (three grids converging faster than their elements can: 31.43 on cells of 1.2 mm, 31.44 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bnu-pp-nu045",
+  "claim": "q",
+  "class": "right",
+  "value": 31.41659740549465,
+  "grid_error": 0.004854928004267123,
+  "truth": 31.4141,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.004855 (three grids converging: 31.42 on cells of 1.2 mm, 31.43 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bnu-pp-sq",
+  "claim": "q",
+  "class": "right",
+  "value": 20.94776379179467,
+  "grid_error": 0.017900121449088147,
+  "truth": 20.94427,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.0179 (three grids converging faster than their elements can: 20.95 on cells of 1.2 mm, 20.95 on cells of 2.4 mm)"
+ },
+ {
+  "case": "hd-bsw-cf-r0.3",
+  "claim": "q",
+  "class": "right",
+  "value": 7.355506241171609,
+  "grid_error": 0.06462796954912059,
+  "truth": 7.3524,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.06463 (three grids converging: 7.364 on cells of 0.6 mm, 7.375 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hd-bsw-cf-r0.5",
+  "claim": "q",
+  "class": "right",
+  "value": 7.355043811144279,
+  "grid_error": 0.0035191114093491294,
+  "truth": 7.3524,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.003519 (three grids converging: 7.352 on cells of 1 mm, 7.34 on cells of 2 mm)"
+ },
+ {
+  "case": "hd-bsw-cf-r0.9",
+  "claim": "q",
+  "class": "right",
+  "value": 7.36256945020136,
+  "grid_error": 0.7836173120831047,
+  "truth": 7.3524,
+  "status": "holds",
+  "estimate": "a value on cells of 0.9 mm, not a bound; its grid error about 0.7836 (three grids converging faster than their elements can: 7.405 on cells of 1.8 mm, 7.624 on cells of 3.6 mm)"
+ },
+ {
+  "case": "hd-bsw-cf-r1.1",
+  "claim": "q",
+  "class": "right",
+  "value": 7.362234948971119,
+  "grid_error": 1.6018624952049239,
+  "truth": 7.3524,
+  "status": "holds",
+  "estimate": "a value on cells of 1.1 mm, not a bound; its grid error about 1.602 (three grids converging faster than their elements can: 7.45 on cells of 2.2 mm, 7.896 on cells of 4.4 mm)"
+ },
+ {
+  "case": "hd-bsw-cf-r1.3",
+  "claim": "q",
+  "class": "right",
+  "value": 7.389938569538875,
+  "grid_error": 1.36909788478565,
+  "truth": 7.3524,
+  "status": "holds",
+  "estimate": "a value on cells of 1.3 mm, not a bound; its grid error about 1.369 (three grids oscillating: 7.462 on cells of 2.6 mm, 7.006 on cells of 5.2 mm)"
+ },
+ {
+  "case": "hd-bsw-cf-r1.7",
+  "claim": "q",
+  "class": "right",
+  "value": 7.359256722911773,
+  "grid_error": 0.22046856028975448,
+  "truth": 7.3524,
+  "status": "holds",
+  "estimate": "a value on cells of 0.85 mm, not a bound; its grid error about 0.2205 (three grids oscillating: 7.313 on cells of 1.7 mm, 7.386 on cells of 3.4 mm)"
+ },
+ {
+  "case": "hd-bsw-ff-r0.3",
+  "claim": "q",
+  "class": "not settled",
+  "value": 116.70461532340926,
+  "grid_error": null,
+  "truth": 116.8161,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids moving apart: 116.4 on cells of 0.6 mm, 116.1 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hd-bsw-ff-r0.5",
+  "claim": "q",
+  "class": "right",
+  "value": 116.7330798115648,
+  "grid_error": 7.668745592823271,
+  "truth": 116.8161,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 7.669 (three grids converging faster than their elements can: 116.7 on cells of 1 mm, 114.2 on cells of 2 mm)"
+ },
+ {
+  "case": "hd-bsw-ff-r0.9",
+  "claim": "q",
+  "class": "right",
+  "value": 116.51464981978194,
+  "grid_error": 14.064432466402195,
+  "truth": 116.8161,
+  "status": "holds",
+  "estimate": "a value on cells of 0.9 mm, not a bound; its grid error about 14.06 (three grids converging faster than their elements can: 116.7 on cells of 1.8 mm, 121.2 on cells of 3.6 mm)"
+ },
+ {
+  "case": "hd-bsw-ff-r1.1",
+  "claim": "q",
+  "class": "right",
+  "value": 116.71965814394699,
+  "grid_error": 26.16722173846138,
+  "truth": 116.8161,
+  "status": "holds",
+  "estimate": "a value on cells of 1.1 mm, not a bound; its grid error about 26.17 (three grids converging faster than their elements can: 117.9 on cells of 2.2 mm, 125.4 on cells of 4.4 mm)"
+ },
+ {
+  "case": "hd-bsw-ff-r1.3",
+  "claim": "q",
+  "class": "right",
+  "value": 116.77068870978216,
+  "grid_error": 22.935458954624863,
+  "truth": 116.8161,
+  "status": "holds",
+  "estimate": "a value on cells of 1.3 mm, not a bound; its grid error about 22.94 (three grids oscillating: 118.3 on cells of 2.6 mm, 110.6 on cells of 5.2 mm)"
+ },
+ {
+  "case": "hd-bsw-ff-r1.7",
+  "claim": "q",
+  "class": "right",
+  "value": 115.43781777155169,
+  "grid_error": 2.1859186502847763,
+  "truth": 116.8161,
+  "status": "holds",
+  "estimate": "a value on cells of 0.85 mm, not a bound; its grid error about 2.186 (three grids oscillating: 114.7 on cells of 1.7 mm, 115.1 on cells of 3.4 mm)"
+ },
+ {
+  "case": "hd-bsw-fp-r0.3",
+  "claim": "q",
+  "class": "right",
+  "value": 59.974712521591265,
+  "grid_error": 0.18112207841363123,
+  "truth": 59.944,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.1811 (three grids converging: 60.04 on cells of 0.6 mm, 60.13 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hd-bsw-fp-r0.5",
+  "claim": "q",
+  "class": "no truth",
+  "value": 59.972789214954034,
+  "grid_error": 0.02236120150644183,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.02236 (three grids converging: 59.95 on cells of 1 mm, 59.88 on cells of 2 mm)"
+ },
+ {
+  "case": "hd-bsw-fp-r0.9",
+  "claim": "q",
+  "class": "right",
+  "value": 60.04961104957335,
+  "grid_error": 6.596978426146016,
+  "truth": 59.944,
+  "status": "holds",
+  "estimate": "a value on cells of 0.9 mm, not a bound; its grid error about 6.597 (three grids converging faster than their elements can: 60.4 on cells of 1.8 mm, 62.25 on cells of 3.6 mm)"
+ },
+ {
+  "case": "hd-bsw-fp-r1.1",
+  "claim": "q",
+  "class": "right",
+  "value": 60.04249547355613,
+  "grid_error": 13.321391017712486,
+  "truth": 59.944,
+  "status": "holds",
+  "estimate": "a value on cells of 1.1 mm, not a bound; its grid error about 13.32 (three grids converging faster than their elements can: 60.76 on cells of 2.2 mm, 64.48 on cells of 4.4 mm)"
+ },
+ {
+  "case": "hd-bsw-fp-r1.3",
+  "claim": "q",
+  "class": "right",
+  "value": 60.27012866378538,
+  "grid_error": 9.915029108241171,
+  "truth": 59.944,
+  "status": "holds",
+  "estimate": "a value on cells of 1.3 mm, not a bound; its grid error about 9.915 (three grids oscillating: 60.88 on cells of 2.6 mm, 57.58 on cells of 5.2 mm)"
+ },
+ {
+  "case": "hd-bsw-fp-r1.7",
+  "claim": "q",
+  "class": "right",
+  "value": 60.0119948053544,
+  "grid_error": 2.0038145967328163,
+  "truth": 59.944,
+  "status": "holds",
+  "estimate": "a value on cells of 0.85 mm, not a bound; its grid error about 2.004 (three grids oscillating: 59.64 on cells of 1.7 mm, 60.31 on cells of 3.4 mm)"
+ },
+ {
+  "case": "hd-bsw-pp-r0.3",
+  "claim": "q",
+  "class": "not settled",
+  "value": 29.339936081201703,
+  "grid_error": null,
+  "truth": 29.32767,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids moving apart: 29.37 on cells of 0.6 mm, 29.4 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hd-bsw-pp-r0.5",
+  "claim": "q",
+  "class": "right",
+  "value": 29.3462782639652,
+  "grid_error": 0.02640894670131571,
+  "truth": 29.32767,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.02641 (three grids converging: 29.33 on cells of 1 mm, 29.28 on cells of 2 mm)"
+ },
+ {
+  "case": "hd-bsw-pp-r0.9",
+  "claim": "q",
+  "class": "right",
+  "value": 29.371505395443513,
+  "grid_error": 3.0707795619597853,
+  "truth": 29.32767,
+  "status": "holds",
+  "estimate": "a value on cells of 0.9 mm, not a bound; its grid error about 3.071 (three grids converging faster than their elements can: 29.54 on cells of 1.8 mm, 30.4 on cells of 3.6 mm)"
+ },
+ {
+  "case": "hd-bsw-pp-r1.1",
+  "claim": "q",
+  "class": "right",
+  "value": 29.36515315445789,
+  "grid_error": 6.438791503397098,
+  "truth": 29.32767,
+  "status": "holds",
+  "estimate": "a value on cells of 1.1 mm, not a bound; its grid error about 6.439 (three grids converging faster than their elements can: 29.7 on cells of 2.2 mm, 31.51 on cells of 4.4 mm)"
+ },
+ {
+  "case": "hd-bsw-pp-r1.3",
+  "claim": "q",
+  "class": "right",
+  "value": 29.476867970600654,
+  "grid_error": 4.896551401103608,
+  "truth": 29.32767,
+  "status": "holds",
+  "estimate": "a value on cells of 1.3 mm, not a bound; its grid error about 4.897 (three grids oscillating: 29.76 on cells of 2.6 mm, 28.13 on cells of 5.2 mm)"
+ },
+ {
+  "case": "hd-bsw-pp-r1.7",
+  "claim": "q",
+  "class": "right",
+  "value": 29.35864541374385,
+  "grid_error": 0.8922582506459484,
+  "truth": 29.32767,
+  "status": "holds",
+  "estimate": "a value on cells of 0.85 mm, not a bound; its grid error about 0.8923 (three grids oscillating: 29.17 on cells of 1.7 mm, 29.47 on cells of 3.4 mm)"
+ },
+ {
+  "case": "hd-buck-cf-offaxis",
+  "claim": "q",
+  "class": "right",
+  "value": 7.360211767302075,
+  "grid_error": 0.4481677525104626,
+  "truth": 7.35251,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 0.4482 (three grids converging faster than their elements can: 7.368 on cells of 1.4 mm, 7.51 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-cf-tension",
+  "claim": "q",
+  "class": "no truth",
+  "value": null,
+  "grid_error": 0.0,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 0 (three grids alike: unbounded on cells of 1.4 mm, unbounded on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-cf-tilt",
+  "claim": "q",
+  "class": "right",
+  "value": 7.356584956188076,
+  "grid_error": 0.07233320569882196,
+  "truth": 7.367875,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 0.07233 (three grids oscillating: 7.381 on cells of 1.4 mm, 7.365 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-cf",
+  "claim": "q",
+  "class": "right",
+  "value": 7.360173941972526,
+  "grid_error": 0.4484873363088848,
+  "truth": 7.35251,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 0.4485 (three grids converging faster than their elements can: 7.368 on cells of 1.4 mm, 7.51 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-ff-tilt",
+  "claim": "q",
+  "class": "right",
+  "value": 116.27428027102026,
+  "grid_error": 3.325820109470513,
+  "truth": 117.0601,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 3.326 (three grids oscillating: 115.6 on cells of 1.4 mm, 116.7 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-ff",
+  "claim": "q",
+  "class": "right",
+  "value": 116.81254494001935,
+  "grid_error": 7.412732250444364,
+  "truth": 116.8161,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 7.413 (three grids oscillating: 116.6 on cells of 1.4 mm, 119 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-fp-tilt",
+  "claim": "q",
+  "class": "right",
+  "value": 59.98014538312302,
+  "grid_error": 0.6321992516067709,
+  "truth": 60.06991,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 0.6322 (three grids oscillating: 60.19 on cells of 1.4 mm, 60.12 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-fp",
+  "claim": "q",
+  "class": "right",
+  "value": 60.01161918206193,
+  "grid_error": 3.8708603229692997,
+  "truth": 59.94469,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 3.871 (three grids converging faster than their elements can: 60.1 on cells of 1.4 mm, 61.3 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-pp-tilt",
+  "claim": "q",
+  "class": "right",
+  "value": 29.346625965661357,
+  "grid_error": 0.29976714289659157,
+  "truth": 29.38893,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 0.2998 (three grids oscillating: 29.45 on cells of 1.4 mm, 29.41 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-buck-pp",
+  "claim": "q",
+  "class": "right",
+  "value": 29.356717217855408,
+  "grid_error": 1.9439117572604836,
+  "truth": 29.32767,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 1.944 (three grids converging faster than their elements can: 29.4 on cells of 1.4 mm, 30 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hd-mal-cf-nu0.0-shift",
+  "claim": "q",
+  "class": "right",
+  "value": 94.02869103561558,
+  "grid_error": 0.11358072701682431,
+  "truth": 94.01197,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.1136 (three grids converging: 94.14 on cells of 1.2 mm, 94.55 on cells of 2.4 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-mal-cf-nu0.0",
+  "claim": "q",
+  "class": "right",
+  "value": 94.01176975666363,
+  "grid_error": 0.012888753563942146,
+  "truth": 94.01197,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.01289 (three grids converging faster than their elements can: 94.01 on cells of 1.2 mm, 94.01 on cells of 2.4 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-mal-cf-nu0.3",
+  "claim": "q",
+  "class": "right",
+  "value": 94.15148486290518,
+  "grid_error": 0.030360724883450985,
+  "truth": 94.15236,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.03036 (three grids oscillating: 94.16 on cells of 1.2 mm, 94.15 on cells of 2.4 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-mal-ffm-nu0.0",
+  "claim": "q",
+  "class": "right",
+  "value": 596.6675615812661,
+  "grid_error": 0.07398134587333516,
+  "truth": 596.6414,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.07398 (three grids converging: 596.7 on cells of 1.2 mm, 597 on cells of 2.4 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-mal-ffm-nu0.3",
+  "claim": "q",
+  "class": "right",
+  "value": 598.0654395693917,
+  "grid_error": 0.35913005148573146,
+  "truth": 598.03,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.3591 (three grids converging: 598.2 on cells of 1.2 mm, 598.4 on cells of 2.4 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-mal-ppm-nu0.0",
+  "claim": "q",
+  "class": "right",
+  "value": 263.7881054892672,
+  "grid_error": 0.01629105705052325,
+  "truth": 263.7873,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.01629 (three grids alike within what the solves resolve: 263.8 on cells of 1.2 mm, 263.8 on cells of 2.4 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-mal-ppm-nu0.3",
+  "claim": "q",
+  "class": "right",
+  "value": 263.7570102908863,
+  "grid_error": 0.023111707832867978,
+  "truth": 263.7559,
+  "status": "holds",
+  "estimate": "a value on cells of 0.6 mm, not a bound; its grid error about 0.02311 (three grids alike within what the solves resolve: 263.8 on cells of 1.2 mm, 263.8 on cells of 2.4 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-modal-cf-tilt",
+  "claim": "q",
+  "class": "right",
+  "value": 96.39457596534672,
+  "grid_error": 0.31253852607753174,
+  "truth": 96.37801,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 0.3125 (three grids oscillating: 96.5 on cells of 1.4 mm, 96.43 on cells of 2.8 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-modal-cf",
+  "claim": "q",
+  "class": "right",
+  "value": 96.40827110829926,
+  "grid_error": 1.7144812570251275,
+  "truth": 96.37801,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 1.714 (three grids converging faster than their elements can: 96.45 on cells of 1.4 mm, 96.98 on cells of 2.8 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-modal-ffm-tilt",
+  "claim": "q",
+  "class": "right",
+  "value": 612.118637125929,
+  "grid_error": 2.3039077947586293,
+  "truth": 611.9891,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 2.304 (three grids oscillating: 612.9 on cells of 1.4 mm, 612.2 on cells of 2.8 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-modal-ffm",
+  "claim": "q",
+  "class": "right",
+  "value": 612.0847716403416,
+  "grid_error": 15.829054210800564,
+  "truth": 611.9891,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 15.83 (three grids oscillating: 610.4 on cells of 1.4 mm, 615.7 on cells of 2.8 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-modal-ppm-tilt",
+  "claim": "q",
+  "class": "right",
+  "value": 270.03730288860095,
+  "grid_error": 0.022817158378630794,
+  "truth": 270.0316,
+  "status": "holds",
+  "estimate": "a value on cells of 0.175 mm, not a bound; its grid error about 0.02282 (three grids converging: 270.1 on cells of 0.35 mm, 270.1 on cells of 0.7 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-modal-ppm",
+  "claim": "q",
+  "class": "right",
+  "value": 270.11968916742893,
+  "grid_error": 5.601607599033628,
+  "truth": 270.0316,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 5.602 (three grids converging faster than their elements can: 270.2 on cells of 1.4 mm, 272 on cells of 2.8 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-scale-cf-large",
+  "claim": "q",
+  "class": "right",
+  "value": 0.9401175233412914,
+  "grid_error": 0.0001283655872876821,
+  "truth": 0.9401196,
+  "status": "holds",
+  "estimate": "a value on cells of 60 mm, not a bound; its grid error about 1.284e-4 (three grids converging faster than their elements can: 0.9401 on cells of 120 mm, 0.9401 on cells of 240 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-scale-cf-small",
+  "claim": "q",
+  "class": "right",
+  "value": 9401.176576077845,
+  "grid_error": 1.2876881476695416,
+  "truth": 9401.197,
+  "status": "holds",
+  "estimate": "a value on cells of 0.006 mm, not a bound; its grid error about 1.288 (three grids converging faster than their elements can: 9401 on cells of 0.012 mm, 9401 on cells of 0.024 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-scale-pp-large",
+  "claim": "q",
+  "class": "right",
+  "value": 31.444625263656633,
+  "grid_error": 1.6439042406161377,
+  "truth": 31.42469,
+  "status": "holds",
+  "estimate": "a value on cells of 60 mm, not a bound; its grid error about 1.644 (three grids converging faster than their elements can: 31.54 on cells of 120 mm, 31.99 on cells of 240 mm)"
+ },
+ {
+  "case": "hd-scale-pp-small",
+  "claim": "q",
+  "class": "right",
+  "value": 31.444421383943546,
+  "grid_error": 1.6445158699315456,
+  "truth": 31.42469,
+  "status": "holds",
+  "estimate": "a value on cells of 0.006 mm, not a bound; its grid error about 1.645 (three grids converging faster than their elements can: 31.55 on cells of 0.012 mm, 31.99 on cells of 0.024 mm)"
+ },
+ {
+  "case": "hd-scale-ppm-large",
+  "claim": "q",
+  "class": "right",
+  "value": 2.6383774482226303,
+  "grid_error": 0.043985304179547935,
+  "truth": 2.637873,
+  "status": "holds",
+  "estimate": "a value on cells of 60 mm, not a bound; its grid error about 0.04399 (three grids converging faster than their elements can: 2.641 on cells of 120 mm, 2.653 on cells of 240 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hd-scale-ppm-small",
+  "claim": "q",
+  "class": "right",
+  "value": 26383.775763064234,
+  "grid_error": 439.84919479327436,
+  "truth": 26378.73,
+  "status": "holds",
+  "estimate": "a value on cells of 0.006 mm, not a bound; its grid error about 439.8 (three grids converging faster than their elements can: 26410 on cells of 0.012 mm, 26530 on cells of 0.024 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hs-b1",
+  "claim": "stress",
+  "class": "right",
+  "value": 9.664439598175575,
+  "grid_error": 0.9098553042988762,
+  "truth": 9.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9099 (three grids oscillating: 9.684 on cells of 0.6 mm, 9.381 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-b2",
+  "claim": "stress",
+  "class": "right",
+  "value": 10.563548418309798,
+  "grid_error": 1.591521286082699,
+  "truth": 9.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.592 (three grids converging faster than their elements can: 10.43 on cells of 0.6 mm, 10.03 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-b3",
+  "claim": "stress",
+  "class": "right",
+  "value": 10.133177116799772,
+  "grid_error": 0.9624862030072077,
+  "truth": 9.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9625 (three grids oscillating: 10.19 on cells of 0.6 mm, 9.87 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-b4",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 9.2552655754655,
+  "grid_error": null,
+  "truth": 9.0,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids moving apart: 9.108 on cells of 0.6 mm, 9 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-b5",
+  "claim": "stress",
+  "class": "right",
+  "value": 9.727285253755845,
+  "grid_error": 0.3869386350093791,
+  "truth": 9.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.3869 (three grids converging faster than their elements can: 9.738 on cells of 0.6 mm, 9.856 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-c1",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.00034422793295140787,
+  "grid_error": 1.113003649876219e-08,
+  "truth": 0.000344231845425,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.113e-8 (three grids alike within what the solves resolve: 3.442e-4 on cells of 0.6 mm, 3.442e-4 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-c1",
+  "claim": "sinks",
+  "class": "right",
+  "value": 0.00034422793295140787,
+  "grid_error": 1.113003649876219e-08,
+  "truth": 0.000344231845425,
+  "status": "fails",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.113e-8 (three grids alike within what the solves resolve: 3.442e-4 on cells of 0.6 mm, 3.442e-4 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-c1",
+  "claim": "stress",
+  "class": "right",
+  "value": 0.0002071258574271186,
+  "grid_error": 0.00020786219338274188,
+  "truth": 0.000230255415,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.079e-4 (three grids converging faster than their elements can: 1.84e-4 on cells of 0.6 mm, 1.378e-4 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-c1",
+  "claim": "under",
+  "class": "not settled",
+  "value": 0.0002071258574271186,
+  "grid_error": 0.00020786219338274188,
+  "truth": 0.000230255415,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.079e-4 (three grids converging faster than their elements can: 1.84e-4 on cells of 0.6 mm, 1.378e-4 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-c2",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.0001524767965827051,
+  "grid_error": null,
+  "truth": 0.000152480680425,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.25 mm, not a bound"
+ },
+ {
+  "case": "hs-c2",
+  "claim": "sinks",
+  "class": "not settled",
+  "value": 0.0001524767965827051,
+  "grid_error": null,
+  "truth": 0.000152480680425,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.25 mm, not a bound"
+ },
+ {
+  "case": "hs-c2",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 0.00013396240356317406,
+  "grid_error": null,
+  "truth": 0.000153246915,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.25 mm, not a bound"
+ },
+ {
+  "case": "hs-c2",
+  "claim": "under",
+  "class": "not settled",
+  "value": 0.00013396240356317406,
+  "grid_error": null,
+  "truth": 0.000153246915,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.25 mm, not a bound"
+ },
+ {
+  "case": "hs-c3",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.022159965055591955,
+  "grid_error": null,
+  "truth": 0.022159969810424996,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-c3",
+  "claim": "sinks",
+  "class": "not settled",
+  "value": 0.022159965055591955,
+  "grid_error": null,
+  "truth": 0.022159969810424996,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-c3",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 0.001808910217299023,
+  "grid_error": null,
+  "truth": 0.001847433915,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-c3",
+  "claim": "under",
+  "class": "not settled",
+  "value": 0.001808910217299023,
+  "grid_error": null,
+  "truth": 0.001847433915,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-f1",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 9.99013864208036,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids swinging wider: 9.953 on cells of 0.6 mm, 9.964 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-f2",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.645345261565394,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids swinging wider: 10.99 on cells of 0.6 mm, 10.96 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-f3",
+  "claim": "stress",
+  "class": "right",
+  "value": 10.545442413299915,
+  "grid_error": 2.634835549396291,
+  "truth": 10,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.635 (three grids converging faster than their elements can: 10.78 on cells of 0.6 mm, 11.42 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-f4",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.50218223171798,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids moving apart: 10.92 on cells of 0.6 mm, 10.94 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-f5",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.901364971914324,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids moving apart: 10.39 on cells of 0.6 mm, 10.24 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-g1",
+  "claim": "comp",
+  "class": "right",
+  "value": 3.955119845834752e-06,
+  "grid_error": 2.8456780728889795e-09,
+  "truth": 3.956338462909693e-06,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.846e-9 (three grids converging: 3.952e-6 on cells of 0.6 mm, 3.945e-6 on cells of 1.2 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hs-g1",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.002520025974051489,
+  "grid_error": 3.103380019478302e-05,
+  "truth": 0.002520030004425,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 3.103e-5 (three grids oscillating: 0.00253 on cells of 0.6 mm, 0.00252 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-g1",
+  "claim": "stress",
+  "class": "right",
+  "value": 0.0005998683945348494,
+  "grid_error": 0.00020786179043863972,
+  "truth": 0.000622998765,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.079e-4 (three grids converging faster than their elements can: 5.768e-4 on cells of 0.6 mm, 5.306e-4 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-g2",
+  "claim": "comp",
+  "class": "right",
+  "value": 3.2026034355080977e-06,
+  "grid_error": 8.874577154627591e-08,
+  "truth": 3.2012157153645095e-06,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 8.875e-8 (three grids converging faster than their elements can: 3.208e-6 on cells of 0.6 mm, 3.232e-6 on cells of 1.2 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hs-g2",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.0020491197874498244,
+  "grid_error": 5.028961671916816e-06,
+  "truth": 0.002046273712425,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 5.029e-6 (three grids converging: 0.002054 on cells of 0.6 mm, 0.002069 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-g2",
+  "claim": "stress",
+  "class": "right",
+  "value": 0.0005407908120536187,
+  "grid_error": 0.00021818385708197147,
+  "truth": 0.000561391965,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.182e-4 (three grids oscillating: 5.441e-4 on cells of 0.6 mm, 4.714e-4 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-g3",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 4.030060077554804e-06,
+  "grid_error": null,
+  "truth": 4.033261704512993e-06,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-g3",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.0024581110320849872,
+  "grid_error": null,
+  "truth": 0.0024581151704250004,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-g3",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 0.0005767767318424542,
+  "grid_error": null,
+  "truth": 0.000615297915,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-h1",
+  "claim": "temp",
+  "class": "right",
+  "value": 64.59125159609574,
+  "grid_error": 0.9642798066062852,
+  "truth": 64.49760765550239,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-h2",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 64.5057366029366,
+  "grid_error": null,
+  "truth": 64.49760765550239,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.35 mm, not a bound; no grid error read from its grids (three grids moving apart: 65.13 on cells of 0.7 mm, 65.58 on cells of 1.4 mm)"
+ },
+ {
+  "case": "hs-h3",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 64.51523251322253,
+  "grid_error": null,
+  "truth": 64.49760765550239,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids moving apart: 65.19 on cells of 0.6 mm, 65.61 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-h4",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 64.54838396548298,
+  "grid_error": null,
+  "truth": 64.49760765550239,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.15 mm, not a bound; no grid error read from its grids (three grids moving apart: 64.69 on cells of 0.3 mm, 64.78 on cells of 0.6 mm)"
+ },
+ {
+  "case": "hs-h5",
+  "claim": "temp",
+  "class": "right",
+  "value": 48.585666415661805,
+  "grid_error": 0.4203450639152777,
+  "truth": 48.56459330143541,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.4203 (three grids oscillating: 48.58 on cells of 0.6 mm, 48.72 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-h6",
+  "claim": "temp",
+  "class": "right",
+  "value": 47.19877534757153,
+  "grid_error": 0.02892943833614936,
+  "truth": 47.175925925925924,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.02893 (three grids converging: 47.23 on cells of 0.6 mm, 47.34 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-h7",
+  "claim": "temp",
+  "class": "right",
+  "value": 35.237152489418214,
+  "grid_error": 0.5678408856383683,
+  "truth": 35.21531100478469,
+  "status": "holds",
+  "estimate": "a value on cells of 0.03 mm, not a bound; its grid error about 0.5678 (three grids converging faster than their elements can: 35.26 on cells of 0.06 mm, 35.43 on cells of 0.12 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-h8",
+  "claim": "temp",
+  "class": "right",
+  "value": 752.9322576225214,
+  "grid_error": 6.590709934788606,
+  "truth": 753.3333333333334,
+  "status": "holds",
+  "estimate": "a value on cells of 6.5 mm, not a bound; its grid error about 6.591 (three grids oscillating: 753 on cells of 13 mm, 750.8 on cells of 26 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-k1",
+  "claim": "temp",
+  "class": "right",
+  "value": 22.005526297851432,
+  "grid_error": 0.0077593487174496545,
+  "truth": 22.001272269814258,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.007759 (three grids converging: 22.01 on cells of 1 mm, 22.04 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-k2",
+  "claim": "temp",
+  "class": "right",
+  "value": 22.001789205144856,
+  "grid_error": 0.01685888863293883,
+  "truth": 22.001272269814258,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.01686 (three grids oscillating: 22 on cells of 0.6 mm, 22.01 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-k3",
+  "claim": "temp",
+  "class": "right",
+  "value": 22.242538099593006,
+  "grid_error": 0.014422057237837294,
+  "truth": 22.238116387229777,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.01442 (three grids converging: 22.26 on cells of 1 mm, 22.3 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-l1",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 19.146946538226917,
+  "grid_error": null,
+  "truth": 19.157523622428936,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.25 mm, not a bound; no grid error read from its grids (three grids moving apart: 18.26 on cells of 0.5 mm, 17.87 on cells of 1 mm)"
+ },
+ {
+  "case": "hs-l1",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.1222718283127052,
+  "grid_error": 0.001838704228308105,
+  "truth": 0.12215197415102427,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.001839 (three grids converging: 0.1213 on cells of 0.5 mm, 0.1197 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-l1",
+  "claim": "stress",
+  "class": "right",
+  "value": 28.802646710989887,
+  "grid_error": 3.356208257834389,
+  "truth": 27.776677654925187,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 3.356 (three grids converging faster than their elements can: 28.61 on cells of 0.5 mm, 27.68 on cells of 1 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-l2",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 19.061277629172785,
+  "grid_error": null,
+  "truth": 19.157523622428936,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-l2",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.12201882600599219,
+  "grid_error": null,
+  "truth": 0.12215197415102427,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-l2",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 28.52216185356975,
+  "grid_error": null,
+  "truth": 27.776677654925187,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-l3",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 21.054836984225997,
+  "grid_error": null,
+  "truth": 21.07327598467183,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.7 mm, not a bound"
+ },
+ {
+  "case": "hs-l3",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.12274441006887642,
+  "grid_error": null,
+  "truth": 0.12219212814795881,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.7 mm, not a bound"
+ },
+ {
+  "case": "hs-l3",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 28.296205998540227,
+  "grid_error": null,
+  "truth": 27.776677654925187,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.7 mm, not a bound"
+ },
+ {
+  "case": "hs-l4",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 49.99168549136475,
+  "grid_error": null,
+  "truth": 50.240663555229425,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-l4",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.3225051496483957,
+  "grid_error": null,
+  "truth": 0.3213006437160865,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-l4",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 69.12150280679046,
+  "grid_error": null,
+  "truth": 66.53442526063586,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-m1",
+  "claim": "comp",
+  "class": "right",
+  "value": 1.54991339999989,
+  "grid_error": 0.00047358682666098496,
+  "truth": 1.5498000000000003,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 4.736e-4 (three grids converging: 1.55 on cells of 0.6 mm, 1.55 on cells of 1.2 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hs-m1",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.041003000000112255,
+  "grid_error": 1.6478568780009528e-05,
+  "truth": 0.041,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.648e-5 (three grids converging faster than their elements can: 0.041 on cells of 0.6 mm, 0.04101 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-m1",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.000000017328261,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids swinging wider: 10 on cells of 0.6 mm, 10 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-m2",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 1.5196733999998857,
+  "grid_error": null,
+  "truth": 1.5195600000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-m2",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.04020300000005753,
+  "grid_error": null,
+  "truth": 0.0402,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-m2",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.000000003364667,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-m3",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 10.621913399999938,
+  "grid_error": null,
+  "truth": 10.621800000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-m3",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.2810030000028816,
+  "grid_error": null,
+  "truth": 0.281,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-m3",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.00000002044148,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-q0",
+  "claim": "temp",
+  "class": "right",
+  "value": 70.02092293753982,
+  "grid_error": 0.024499578587196424,
+  "truth": 70.0,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 70.05 on cells of 0.5 mm, 70.11 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q1",
+  "claim": "temp",
+  "class": "right",
+  "value": 70.27092293736834,
+  "grid_error": 0.024499578758494067,
+  "truth": 70.25,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 70.3 on cells of 0.5 mm, 70.36 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q10",
+  "claim": "temp",
+  "class": "right",
+  "value": 32.895701572534094,
+  "grid_error": 0.024567402483398837,
+  "truth": 32.875,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.02457 (three grids converging: 32.92 on cells of 0.5 mm, 32.98 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q11",
+  "claim": "temp",
+  "class": "right",
+  "value": 62.52092293091286,
+  "grid_error": 0.024499585213874298,
+  "truth": 62.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 62.55 on cells of 0.5 mm, 62.61 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q2",
+  "claim": "temp",
+  "class": "right",
+  "value": 70.6459229355575,
+  "grid_error": 0.024499580569383284,
+  "truth": 70.625,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 70.67 on cells of 0.5 mm, 70.74 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q3",
+  "claim": "temp",
+  "class": "right",
+  "value": 71.02092293238823,
+  "grid_error": 0.024499583738816,
+  "truth": 71.0,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 71.05 on cells of 0.5 mm, 71.11 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q4",
+  "claim": "temp",
+  "class": "right",
+  "value": 71.24592293176684,
+  "grid_error": 0.024499584359929827,
+  "truth": 71.22500000000001,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 71.27 on cells of 0.5 mm, 71.34 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q5",
+  "claim": "temp",
+  "class": "right",
+  "value": 70.64597343809191,
+  "grid_error": 0.02450156574434459,
+  "truth": 70.625,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 70.67 on cells of 0.5 mm, 70.74 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q6",
+  "claim": "temp",
+  "class": "right",
+  "value": 70.27092293736834,
+  "grid_error": 0.024499578758494067,
+  "truth": 70.25,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 70.3 on cells of 0.5 mm, 70.36 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q7",
+  "claim": "temp",
+  "class": "right",
+  "value": 68.14592293071537,
+  "grid_error": 0.02449958541126307,
+  "truth": 68.125,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.0245 (three grids converging: 68.17 on cells of 0.5 mm, 68.24 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q8",
+  "claim": "temp",
+  "class": "right",
+  "value": 182.70722392452942,
+  "grid_error": 0.24561529566219065,
+  "truth": 182.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.2456 (three grids converging: 183 on cells of 0.5 mm, 183.6 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-q9",
+  "claim": "temp",
+  "class": "right",
+  "value": 70.00989004962814,
+  "grid_error": 0.011298675617932796,
+  "truth": 70.0,
+  "status": "holds",
+  "estimate": "a value on cells of 0.125 mm, not a bound; its grid error about 0.0113 (three grids converging: 70.02 on cells of 0.25 mm, 70.05 on cells of 0.5 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-r1",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 3.0035061224489614,
+  "grid_error": null,
+  "truth": 3.0133333333333336,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound; no grid error read from its grids (three grids moving apart: 2.969 on cells of 1 mm, 2.945 on cells of 2 mm)"
+ },
+ {
+  "case": "hs-r1",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.07650499999999959,
+  "grid_error": 0.0007557142857140264,
+  "truth": 0.0765,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 7.557e-4 (three grids oscillating: 0.07651 on cells of 1 mm, 0.07626 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-r1",
+  "claim": "stress",
+  "class": "right",
+  "value": 10.000000000000021,
+  "grid_error": 5.861977570020827e-14,
+  "truth": 10,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 5.862e-14 (three grids converging faster than their elements can: 10 on cells of 1 mm, 10 on cells of 2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-r2",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 3.137704618953483,
+  "grid_error": null,
+  "truth": 3.148933333333333,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-r2",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.07648163453546429,
+  "grid_error": null,
+  "truth": 0.0765,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-r2",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 9.998974458094368,
+  "grid_error": null,
+  "truth": 10,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-r3",
+  "claim": "comp",
+  "class": "right",
+  "value": 2.9251999999999714,
+  "grid_error": 0.030999999999937192,
+  "truth": 2.9333333333333336,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.031 (three grids converging: 2.9 on cells of 1 mm, 2.851 on cells of 2 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hs-r3",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.07500499999999934,
+  "grid_error": 0.0006842857142851239,
+  "truth": 0.07500000000000001,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 6.843e-4 (three grids oscillating: 0.07501 on cells of 1 mm, 0.07478 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-r3",
+  "claim": "stress",
+  "class": "right",
+  "value": 10.000000000000004,
+  "grid_error": 0.0003233333333333335,
+  "truth": 10,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 3.233e-4 (three grids alike within what the solves resolve: 10 on cells of 1 mm, 10 on cells of 2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-s1",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 18.22840971078639,
+  "grid_error": null,
+  "truth": 18.530765607846767,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound; no grid error read from its grids (three grids swinging wider: 18.56 on cells of 1 mm, 18.56 on cells of 2 mm)"
+ },
+ {
+  "case": "hs-s1",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 0.047691044004812846,
+  "grid_error": null,
+  "truth": 0.04718820713225765,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound; no grid error read from its grids (three grids moving apart: 0.04822 on cells of 1 mm, 0.0486 on cells of 2 mm)"
+ },
+ {
+  "case": "hs-s1",
+  "claim": "stress",
+  "class": "right",
+  "value": 20.516019730788646,
+  "grid_error": 1.8920087083274773,
+  "truth": 19.19663060921647,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 1.892 (three grids converging faster than their elements can: 20.69 on cells of 1 mm, 21.15 on cells of 2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-s2",
+  "claim": "comp",
+  "class": "right",
+  "value": 18.458220557975785,
+  "grid_error": 1.056512892412691,
+  "truth": 18.530765607846767,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.057 (three grids oscillating: 18.14 on cells of 0.6 mm, 18.49 on cells of 1.2 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hs-s2",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.047889103203904264,
+  "grid_error": 0.003498649214981754,
+  "truth": 0.04718820713225765,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.003499 (three grids oscillating: 0.04785 on cells of 0.6 mm, 0.04901 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-s2",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 20.594637791004278,
+  "grid_error": null,
+  "truth": 19.19663060921647,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; no grid error read from its grids (three grids moving apart: 19.89 on cells of 0.6 mm, 19.62 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-t1",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 87.0550556467606,
+  "grid_error": null,
+  "truth": 86.97264168722467,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound"
+ },
+ {
+  "case": "hs-t2",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 87.06917817247512,
+  "grid_error": null,
+  "truth": 86.97264168722467,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.7 mm, not a bound"
+ },
+ {
+  "case": "hs-t3",
+  "claim": "temp",
+  "class": "right",
+  "value": 91.62696899482368,
+  "grid_error": 1.1308430321581255,
+  "truth": 91.55536739186964,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.131 (three grids oscillating: 91.61 on cells of 0.6 mm, 91.99 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-t4",
+  "claim": "temp",
+  "class": "right",
+  "value": 87.2284780688521,
+  "grid_error": 5.058585589586826,
+  "truth": 87.14083524946085,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 5.059 (three grids oscillating: 87.44 on cells of 1 mm, 85.75 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th1",
+  "claim": "temp",
+  "class": "right",
+  "value": 55.00000002554468,
+  "grid_error": 1.566250109874545e-05,
+  "truth": 55.00000000000001,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 1.566e-5 (three grids converging faster than their elements can: 55 on cells of 0.5 mm, 55 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th2",
+  "claim": "temp",
+  "class": "right",
+  "value": 55.99999868304623,
+  "grid_error": 0.0018106666240851616,
+  "truth": 56.0,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.001811 (three grids alike within what the solves resolve: 56 on cells of 0.5 mm, 56 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th3",
+  "claim": "temp",
+  "class": "right",
+  "value": 56.84999867834952,
+  "grid_error": 0.0018381499572666347,
+  "truth": 56.85,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.001838 (three grids alike within what the solves resolve: 56.85 on cells of 0.5 mm, 56.85 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th4",
+  "claim": "temp",
+  "class": "right",
+  "value": 51.49999749969993,
+  "grid_error": 0.0016651665858236314,
+  "truth": 51.5,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.001665 (three grids alike within what the solves resolve: 51.5 on cells of 0.5 mm, 51.5 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5",
+  "claim": "cool-enough",
+  "class": "right",
+  "value": 52.65305921896115,
+  "grid_error": 0.0017024489147464106,
+  "truth": 52.653061224489804,
+  "status": "fails",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001702 (three grids alike within what the solves resolve: 52.65 on cells of 0.7 mm, 52.65 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5",
+  "claim": "temp",
+  "class": "right",
+  "value": 52.65305921896115,
+  "grid_error": 0.0017024489147464106,
+  "truth": 52.653061224489804,
+  "status": "holds",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001702 (three grids alike within what the solves resolve: 52.65 on cells of 0.7 mm, 52.65 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5a",
+  "claim": "cool-enough",
+  "class": "right",
+  "value": 51.74603009685892,
+  "grid_error": 0.0016731216397984385,
+  "truth": 51.74603174603175,
+  "status": "fails",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001673 (three grids alike within what the solves resolve: 51.75 on cells of 0.7 mm, 51.75 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5a",
+  "claim": "temp",
+  "class": "right",
+  "value": 51.74603009685892,
+  "grid_error": 0.0016731216397984385,
+  "truth": 51.74603174603175,
+  "status": "holds",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001673 (three grids alike within what the solves resolve: 51.75 on cells of 0.7 mm, 51.75 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5b",
+  "claim": "cool-enough",
+  "class": "right",
+  "value": 53.33333174412376,
+  "grid_error": 0.0017244443930600018,
+  "truth": 53.333333333333336,
+  "status": "fails",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001724 (three grids alike within what the solves resolve: 53.33 on cells of 0.7 mm, 53.33 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5b",
+  "claim": "temp",
+  "class": "right",
+  "value": 53.33333174412376,
+  "grid_error": 0.0017244443930600018,
+  "truth": 53.333333333333336,
+  "status": "holds",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001724 (three grids alike within what the solves resolve: 53.33 on cells of 0.7 mm, 53.33 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5c",
+  "claim": "cool-enough",
+  "class": "not settled",
+  "value": 52.95282697053291,
+  "grid_error": 11.616441921419927,
+  "truth": 52.653061224489804,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 11.62 (three grids oscillating: 53.16 on cells of 1.4 mm, 49.29 on cells of 2.8 mm)"
+ },
+ {
+  "case": "hs-th5c",
+  "claim": "temp",
+  "class": "right",
+  "value": 52.95282697053291,
+  "grid_error": 11.616441921419927,
+  "truth": 52.653061224489804,
+  "status": "holds",
+  "estimate": "a value on cells of 0.7 mm, not a bound; its grid error about 11.62 (three grids oscillating: 53.16 on cells of 1.4 mm, 49.29 on cells of 2.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5d",
+  "claim": "cool-enough",
+  "class": "right",
+  "value": 52.65305921896115,
+  "grid_error": 0.0017024489147464106,
+  "truth": 52.653061224489804,
+  "status": "fails",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001702 (three grids alike within what the solves resolve: 52.65 on cells of 0.7 mm, 52.65 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5d",
+  "claim": "temp",
+  "class": "right",
+  "value": 52.65305921896115,
+  "grid_error": 0.0017024489147464106,
+  "truth": 52.653061224489804,
+  "status": "holds",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001702 (three grids alike within what the solves resolve: 52.65 on cells of 0.7 mm, 52.65 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5e",
+  "claim": "cool-enough",
+  "class": "right",
+  "value": 50.83899990010917,
+  "grid_error": 0.00164379433010353,
+  "truth": 50.8390022675737,
+  "status": "fails",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001644 (three grids alike within what the solves resolve: 50.84 on cells of 0.7 mm, 50.84 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5e",
+  "claim": "temp",
+  "class": "right",
+  "value": 50.83899990010917,
+  "grid_error": 0.00164379433010353,
+  "truth": 50.8390022675737,
+  "status": "holds",
+  "estimate": "a value on cells of 0.35 mm, not a bound; its grid error about 0.001644 (three grids alike within what the solves resolve: 50.84 on cells of 0.7 mm, 50.84 on cells of 1.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th5f",
+  "claim": "cool-enough",
+  "class": "not settled",
+  "value": 52.653040276393824,
+  "grid_error": 2.00368640009615,
+  "truth": 52.653061224489804,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.004 (three grids converging faster than their elements can: 52.65 on cells of 0.6 mm, 51.99 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-th5f",
+  "claim": "temp",
+  "class": "right",
+  "value": 52.653040276393824,
+  "grid_error": 2.00368640009615,
+  "truth": 52.653061224489804,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 2.004 (three grids converging faster than their elements can: 52.65 on cells of 0.6 mm, 51.99 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-th6",
+  "claim": "temp",
+  "class": "right",
+  "value": 53.75000002366013,
+  "grid_error": 0.0017379166674316778,
+  "truth": 53.75,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.001738 (three grids alike within what the solves resolve: 53.75 on cells of 0.5 mm, 53.75 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-tm1",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 85.89894044414663,
+  "grid_error": null,
+  "truth": 85.81481546555774,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-tm2",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 90.0508230341435,
+  "grid_error": null,
+  "truth": 90.07860082309963,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.25 mm, not a bound"
+ },
+ {
+  "case": "hs-tm3",
+  "claim": "temp",
+  "class": "not settled",
+  "value": 92.94242476738127,
+  "grid_error": null,
+  "truth": 92.9681195192725,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "hs-u1",
+  "claim": "a",
+  "class": "not settled",
+  "value": 6.897000198671301,
+  "grid_error": 0.4605281567433561,
+  "truth": 6.894757,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.4605 (three grids oscillating: 7.051 on cells of 1 mm, 6.923 on cells of 2 mm)"
+ },
+ {
+  "case": "hs-u1",
+  "claim": "b",
+  "class": "not settled",
+  "value": 6.897000198671301,
+  "grid_error": 0.4605281567433561,
+  "truth": 6.894757,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.4605 (three grids oscillating: 7.051 on cells of 1 mm, 6.923 on cells of 2 mm)"
+ },
+ {
+  "case": "hs-u1",
+  "claim": "c",
+  "class": "right",
+  "value": 0.0024132111770103866,
+  "grid_error": 3.297952292429613e-05,
+  "truth": 0.002413,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 3.298e-5 (three grids oscillating: 0.002424 on cells of 1 mm, 0.002415 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u1",
+  "claim": "d",
+  "class": "right",
+  "value": 0.0024132111770103866,
+  "grid_error": 3.297952292429613e-05,
+  "truth": 0.002413,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 3.298e-5 (three grids oscillating: 0.002424 on cells of 1 mm, 0.002415 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u1",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.0024132111770103866,
+  "grid_error": 3.297952292429613e-05,
+  "truth": 0.002413,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 3.298e-5 (three grids oscillating: 0.002424 on cells of 1 mm, 0.002415 on cells of 2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u1",
+  "claim": "stress",
+  "class": "right",
+  "value": 6.897000198671301,
+  "grid_error": 0.4605281567433561,
+  "truth": 6.894757,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.4605 (three grids oscillating: 7.051 on cells of 1 mm, 6.923 on cells of 2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-u2",
+  "claim": "a",
+  "class": "not settled",
+  "value": 64.59125718641991,
+  "grid_error": 0.9642798713965703,
+  "truth": 64.4976,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-u2",
+  "claim": "b",
+  "class": "right",
+  "value": 64.59125718641991,
+  "grid_error": 0.9642798713965703,
+  "truth": 64.4976,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u2",
+  "claim": "c",
+  "class": "not settled",
+  "value": 64.59125718641991,
+  "grid_error": 0.9642798713965703,
+  "truth": 64.4976,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-u2",
+  "claim": "d",
+  "class": "right",
+  "value": 64.59125718641991,
+  "grid_error": 0.9642798713965703,
+  "truth": 64.4976,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u2",
+  "claim": "temp",
+  "class": "right",
+  "value": 64.59125718641991,
+  "grid_error": 0.9642798713965703,
+  "truth": 64.4976,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u3",
+  "claim": "a",
+  "class": "not settled",
+  "value": 64.59125159609574,
+  "grid_error": 0.9642798066062852,
+  "truth": 64.4976,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-u3",
+  "claim": "b",
+  "class": "right",
+  "value": 64.59125159609574,
+  "grid_error": 0.9642798066062852,
+  "truth": 64.4976,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u3",
+  "claim": "c",
+  "class": "not settled",
+  "value": 64.59125159609574,
+  "grid_error": 0.9642798066062852,
+  "truth": 64.4976,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-u3",
+  "claim": "d",
+  "class": "right",
+  "value": 64.59125159609574,
+  "grid_error": 0.9642798066062852,
+  "truth": 64.4976,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-u3",
+  "claim": "temp",
+  "class": "right",
+  "value": 64.59125159609574,
+  "grid_error": 0.9642798066062852,
+  "truth": 64.4976,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.9643 (three grids converging faster than their elements can: 64.61 on cells of 0.6 mm, 64.91 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-x1",
+  "claim": "hi",
+  "class": "right",
+  "value": 12.07478175985941,
+  "grid_error": 1.1603800853803694,
+  "truth": 11.906465725554302,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.16 (three grids oscillating: 12.06 on cells of 0.6 mm, 12.45 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-x1",
+  "claim": "lo",
+  "class": "not settled",
+  "value": 12.07478175985941,
+  "grid_error": 1.1603800853803694,
+  "truth": 11.906465725554302,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.16 (three grids oscillating: 12.06 on cells of 0.6 mm, 12.45 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-x1",
+  "claim": "stress",
+  "class": "right",
+  "value": 12.07478175985941,
+  "grid_error": 1.1603800853803694,
+  "truth": 11.906465725554302,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.16 (three grids oscillating: 12.06 on cells of 0.6 mm, 12.45 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-x2",
+  "claim": "hi",
+  "class": "right",
+  "value": 12.492303424170368,
+  "grid_error": 1.5242386481189651,
+  "truth": 11.906465725554302,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.524 (three grids converging faster than their elements can: 12.62 on cells of 0.6 mm, 13 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-x2",
+  "claim": "lo",
+  "class": "not settled",
+  "value": 12.492303424170368,
+  "grid_error": 1.5242386481189651,
+  "truth": 11.906465725554302,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.524 (three grids converging faster than their elements can: 12.62 on cells of 0.6 mm, 13 on cells of 1.2 mm)"
+ },
+ {
+  "case": "hs-x2",
+  "claim": "stress",
+  "class": "right",
+  "value": 12.492303424170368,
+  "grid_error": 1.5242386481189651,
+  "truth": 11.906465725554302,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 1.524 (three grids converging faster than their elements can: 12.62 on cells of 0.6 mm, 13 on cells of 1.2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-x3",
+  "claim": "hi",
+  "class": "not settled",
+  "value": 14.15419413155618,
+  "grid_error": 4.943112710519982,
+  "truth": 13.783222385544802,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 4.943 (three grids converging faster than their elements can: 14.54 on cells of 1 mm, 15.8 on cells of 2 mm)"
+ },
+ {
+  "case": "hs-x3",
+  "claim": "lo",
+  "class": "not settled",
+  "value": 14.15419413155618,
+  "grid_error": 4.943112710519982,
+  "truth": 13.783222385544802,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 4.943 (three grids converging faster than their elements can: 14.54 on cells of 1 mm, 15.8 on cells of 2 mm)"
+ },
+ {
+  "case": "hs-x3",
+  "claim": "stress",
+  "class": "right",
+  "value": 14.15419413155618,
+  "grid_error": 4.943112710519982,
+  "truth": 13.783222385544802,
+  "status": "holds",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 4.943 (three grids converging faster than their elements can: 14.54 on cells of 1 mm, 15.8 on cells of 2 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-z1",
+  "claim": "comp",
+  "class": "right",
+  "value": 3148.8722199975273,
+  "grid_error": 0.5334441949971733,
+  "truth": 3149.0333333333333,
+  "status": "holds",
+  "estimate": "a value on cells of 13 mm, not a bound; its grid error about 0.5334 (three grids converging: 3148 on cells of 26 mm, 3147 on cells of 52 mm); and its read's error (the solve's residual)"
+ },
+ {
+  "case": "hs-z1",
+  "claim": "disp",
+  "class": "right",
+  "value": 0.09425065000002394,
+  "grid_error": 4.249793584251704e-06,
+  "truth": 0.09425,
+  "status": "holds",
+  "estimate": "a value on cells of 13 mm, not a bound; its grid error about 4.25e-6 (three grids alike within what the solves resolve: 0.09425 on cells of 26 mm, 0.09425 on cells of 52 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "hs-z1",
+  "claim": "stress",
+  "class": "right",
+  "value": 10.000000001533206,
+  "grid_error": 0.013441197976366226,
+  "truth": 10.0,
+  "status": "holds",
+  "estimate": "a value on cells of 13 mm, not a bound; its grid error about 0.01344 (three grids, one difference within what the solves resolve: 10 on cells of 26 mm, 10 on cells of 52 mm); and its read's error (a peak stress may lie over its read by 22% over the cells its peak's radius spans (at least 4%), and under it by 10%, beyond its grid error: twice and 1.2 times the worst of 150 reads with known answers; over, of the most its solve's field reaches on the surface between its reads where that is more)"
+ },
+ {
+  "case": "hs-z2",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 1.4661646167375011e-05,
+  "grid_error": null,
+  "truth": 1.4688e-05,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.03 mm, not a bound"
+ },
+ {
+  "case": "hs-z2",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 3.450149715543963e-05,
+  "grid_error": null,
+  "truth": 3.45e-05,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.03 mm, not a bound"
+ },
+ {
+  "case": "hs-z2",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.000000076647758,
+  "grid_error": null,
+  "truth": 10.0,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.03 mm, not a bound"
+ },
+ {
+  "case": "hs-z3",
+  "claim": "comp",
+  "class": "not settled",
+  "value": 209924814.6665988,
+  "grid_error": null,
+  "truth": 209935555.55555555,
+  "status": "unknown",
+  "estimate": "a value on cells of 13 mm, not a bound"
+ },
+ {
+  "case": "hs-z3",
+  "claim": "disp",
+  "class": "not settled",
+  "value": 6283.376666671134,
+  "grid_error": null,
+  "truth": 6283.333333333334,
+  "status": "unknown",
+  "estimate": "a value on cells of 13 mm, not a bound"
+ },
+ {
+  "case": "hs-z3",
+  "claim": "stress",
+  "class": "not settled",
+  "value": 10.000000001535245,
+  "grid_error": null,
+  "truth": 10.0,
+  "status": "unknown",
+  "estimate": "a value on cells of 13 mm, not a bound"
+ },
+ {
+  "case": "kt-corner0.1-S0.25-above",
+  "claim": "d",
+  "class": "no truth",
+  "value": 0.44779096759159037,
+  "grid_error": 0.09648178373005706,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 0.09648 (three grids oscillating: 0.4492 on cells of 0.2 mm, 0.4171 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "kt-corner0.1-S0.25-below",
+  "claim": "d",
+  "class": "no truth",
+  "value": 0.4432696991531625,
+  "grid_error": 0.15682044529532246,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 0.1568 (three grids oscillating: 0.4488 on cells of 0.2 mm, 0.3965 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "kt-corner0.1-S0.45-above",
+  "claim": "d",
+  "class": "no truth",
+  "value": 0.3381266106084024,
+  "grid_error": 0.02237062767058917,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 0.02237 (three grids converging faster than their elements can: 0.337 on cells of 0.2 mm, 0.3307 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "kt-corner0.1-S0.45-below",
+  "claim": "d",
+  "class": "no truth",
+  "value": 0.33646229667179967,
+  "grid_error": 0.004021753326542643,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 0.004022 (three grids oscillating: 0.3367 on cells of 0.2 mm, 0.3354 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "pl-guides-test",
+  "claim": "b",
+  "class": "not settled",
+  "value": 2.261176788011043,
+  "grid_error": null,
+  "truth": null,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "pl-points-0.25",
+  "claim": "b",
+  "class": "not settled",
+  "value": 2.854612426248189,
+  "grid_error": null,
+  "truth": 2.252,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.25 mm, not a bound; no grid error read from its grids (three grids swinging wider: 2.199 on cells of 0.5 mm, 2.21 on cells of 1 mm)"
+ },
+ {
+  "case": "pl-points-0.5",
+  "claim": "b",
+  "class": "right",
+  "value": 2.201496794539623,
+  "grid_error": 0.19956409767579453,
+  "truth": 2.252,
+  "status": "fails",
+  "estimate": "a value on cells of 0.5 mm, not a bound; its grid error about 0.1996 (three grids converging: 2.218 on cells of 1 mm, 2.236 on cells of 2 mm)"
+ },
+ {
+  "case": "rv-corner-S0.4-above",
+  "claim": "d",
+  "class": "right",
+  "value": 0.3594302576363911,
+  "grid_error": 0.05744479495308452,
+  "truth": 0.35955,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.05744 (three grids converging faster than their elements can: 0.3582 on cells of 0.4 mm, 0.3403 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-corner-S0.4-below",
+  "claim": "d",
+  "class": "right",
+  "value": 0.3594305809977285,
+  "grid_error": 0.05744521648898354,
+  "truth": 0.35955,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.05745 (three grids converging faster than their elements can: 0.3582 on cells of 0.4 mm, 0.3403 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-corner-S0.45-above",
+  "claim": "d",
+  "class": "right",
+  "value": 0.3367960737624826,
+  "grid_error": 0.006289814004914018,
+  "truth": 0.33709,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.00629 (three grids converging: 0.3305 on cells of 0.4 mm, 0.3146 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-corner-S0.45-below",
+  "claim": "d",
+  "class": "right",
+  "value": 0.3365174234668554,
+  "grid_error": 0.06585104252285462,
+  "truth": 0.33709,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.06585 (three grids converging faster than their elements can: 0.3352 on cells of 0.4 mm, 0.3146 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-corner-S0.5-above",
+  "claim": "d",
+  "class": "right",
+  "value": 0.31315384235108806,
+  "grid_error": 0.1281472386910424,
+  "truth": 0.31551,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.1281 (three grids oscillating: 0.3159 on cells of 0.4 mm, 0.2732 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-corner-S0.5-below",
+  "claim": "d",
+  "class": "right",
+  "value": 0.3070291219217102,
+  "grid_error": 0.06926332838427463,
+  "truth": 0.31551,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.06926 (three grids oscillating: 0.3152 on cells of 0.4 mm, 0.2921 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-cylinder",
+  "claim": "d",
+  "class": "no truth",
+  "value": 0.23962007061594306,
+  "grid_error": 0.004601641578553334,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.004602 (three grids converging faster than their elements can: 0.2393 on cells of 0.5 mm, 0.2381 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-moved",
+  "claim": "d",
+  "class": "right",
+  "value": 0.2400000008769638,
+  "grid_error": 7.760000028355163e-06,
+  "truth": 0.24,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 7.76e-6 (three grids alike within what the solves resolve: 0.24 on cells of 0.5 mm, 0.24 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.0001",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1900004935380226,
+  "grid_error": 6.143365669023682e-06,
+  "truth": 0.19000050000000002,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.143e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.001",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19000499344204524,
+  "grid_error": 6.143494787959463e-06,
+  "truth": 0.19000499999999998,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.143e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.003",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19001499345090372,
+  "grid_error": 6.143818121579221e-06,
+  "truth": 0.19001500000000002,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.144e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.01",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19004999356159968,
+  "grid_error": 6.144949791825058e-06,
+  "truth": 0.19005,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.145e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.02",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19009999372140962,
+  "grid_error": 6.146566463658912e-06,
+  "truth": 0.19010000000000002,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.147e-6 (three grids alike within what the solves resolve: 0.1901 on cells of 0.5 mm, 0.1901 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.05",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1902499942253543,
+  "grid_error": 6.151416479953123e-06,
+  "truth": 0.19025,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.151e-6 (three grids alike within what the solves resolve: 0.1902 on cells of 0.5 mm, 0.1902 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.1",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1904999949633803,
+  "grid_error": 6.159499837149297e-06,
+  "truth": 0.1905,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.159e-6 (three grids alike within what the solves resolve: 0.1905 on cells of 0.5 mm, 0.1905 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.25",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1912499965863806,
+  "grid_error": 6.183749889626306e-06,
+  "truth": 0.19125,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.184e-6 (three grids alike within what the solves resolve: 0.1912 on cells of 0.5 mm, 0.1912 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.5",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19250000000405718,
+  "grid_error": 6.22416666679785e-06,
+  "truth": 0.1925,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.224e-6 (three grids alike within what the solves resolve: 0.1925 on cells of 0.5 mm, 0.1925 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.75",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1937499965744412,
+  "grid_error": 6.264583222573599e-06,
+  "truth": 0.19375,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.265e-6 (three grids alike within what the solves resolve: 0.1937 on cells of 0.5 mm, 0.1937 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f0.9",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1944999973669363,
+  "grid_error": 6.288833248197608e-06,
+  "truth": 0.1945,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.289e-6 (three grids alike within what the solves resolve: 0.1945 on cells of 0.5 mm, 0.1945 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f1e-05",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1900001000102363,
+  "grid_error": 6.1433365669976405e-06,
+  "truth": 0.19000005000000003,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.143e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f1e-06",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1900000100087529,
+  "grid_error": 6.143333656949678e-06,
+  "truth": 0.190000005,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.143e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f1e-07",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19000000100874984,
+  "grid_error": 6.143333365949579e-06,
+  "truth": 0.19000000050000002,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.143e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f1e-08",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1900000001087629,
+  "grid_error": 6.143333336850001e-06,
+  "truth": 0.19000000005,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.143e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-onesided-f1e-09",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19000000001876668,
+  "grid_error": 6.143333333940123e-06,
+  "truth": 0.19000000000500003,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.143e-6 (three grids alike within what the solves resolve: 0.19 on cells of 0.5 mm, 0.19 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-res0.3-bar",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19002616295968777,
+  "grid_error": 0.0017192873321825175,
+  "truth": 0.19,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 0.001719 (three grids converging faster than their elements can: 0.19 on cells of 0.6 mm, 0.1895 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-res0.3-heat",
+  "claim": "t",
+  "class": "right",
+  "value": 4564.587035928365,
+  "grid_error": 395.667261294735,
+  "truth": 4570.0,
+  "status": "holds",
+  "estimate": "a value on cells of 0.3 mm, not a bound; its grid error about 395.7 (three grids converging faster than their elements can: 4560 on cells of 0.6 mm, 4433 on cells of 1.2 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-s140-5.0001-0.0175",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149824,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.002-0.0468",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14946907706049176,
+  "grid_error": null,
+  "truth": 0.14951200000000003,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.002-0.19",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14776097331671406,
+  "grid_error": null,
+  "truth": 0.14808000000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0113-0.0548",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14933899937221393,
+  "grid_error": null,
+  "truth": 0.149339,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0115-0.3323",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1462336690150983,
+  "grid_error": null,
+  "truth": 0.146562,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0128-0.2506",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14697826935219346,
+  "grid_error": null,
+  "truth": 0.147366,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.014-0.028",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14958000000000002,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0187-0.0494",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14931899936822088,
+  "grid_error": null,
+  "truth": 0.149319,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0196-0.1173",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14840598169197747,
+  "grid_error": null,
+  "truth": 0.14863099999999999,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.029-0.0648",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14906199914227733,
+  "grid_error": null,
+  "truth": 0.149062,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0295-0.1695",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1478361031641704,
+  "grid_error": null,
+  "truth": 0.14801000000000003,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0298-0.0214",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149488,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0303-0.1326",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1481417681129486,
+  "grid_error": null,
+  "truth": 0.148371,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0311-0.0128",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149561,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0349-0.014",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149511,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0403-0.0523",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14907399916066325,
+  "grid_error": null,
+  "truth": 0.14907399999999998,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0424-0.114",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14843599864026438,
+  "grid_error": null,
+  "truth": 0.14843599999999998,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0429-0.0146",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149425,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0507-0.0382",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14909853710342583,
+  "grid_error": null,
+  "truth": 0.14911100000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0518-0.1035",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1484469986480026,
+  "grid_error": null,
+  "truth": 0.148447,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0531-0.0788",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1486809987448878,
+  "grid_error": null,
+  "truth": 0.148681,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0619-0.0228",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149153,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0635-0.0175",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14919,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0647-0.0249",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149104,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0655-0.0105",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14924,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0655-0.2858",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.146056772739841,
+  "grid_error": null,
+  "truth": 0.146487,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0721-0.0154",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149125,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0731-0.2101",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14716799743998127,
+  "grid_error": null,
+  "truth": 0.147168,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.076-0.0606",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1486139617946613,
+  "grid_error": null,
+  "truth": 0.148634,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0835-0.1718",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14744699749850199,
+  "grid_error": null,
+  "truth": 0.147447,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.084-0.0154",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.149006,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0862-0.0572",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14852104338589892,
+  "grid_error": null,
+  "truth": 0.148566,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0881-0.0235",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148884,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.0893-0.1831",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14727599747289635,
+  "grid_error": null,
+  "truth": 0.14727600000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0904-0.0852",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14823967496650764,
+  "grid_error": null,
+  "truth": 0.14824400000000001,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.0984-0.0212",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148804,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1044-0.0182",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148774,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1102-0.0231",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14866700000000002,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1134-0.0673",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14813785983904684,
+  "grid_error": null,
+  "truth": 0.148193,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1167-0.0597",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1481735892774116,
+  "grid_error": null,
+  "truth": 0.148236,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1203-0.0868",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1478654650623056,
+  "grid_error": null,
+  "truth": 0.147929,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.122-0.083",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1478787340746169,
+  "grid_error": null,
+  "truth": 0.14795,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1242-0.0277",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14844072983161768,
+  "grid_error": null,
+  "truth": 0.148481,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1259-0.0294",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14840072376686014,
+  "grid_error": null,
+  "truth": 0.148447,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1261-0.036",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1483332648766074,
+  "grid_error": null,
+  "truth": 0.148379,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1296-0.1282",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14741694312238773,
+  "grid_error": null,
+  "truth": 0.147422,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1297-0.0468",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14819647422991933,
+  "grid_error": null,
+  "truth": 0.148235,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1306-0.0386",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14825910001631284,
+  "grid_error": null,
+  "truth": 0.148308,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1392-0.0462",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14813613047893687,
+  "grid_error": null,
+  "truth": 0.148146,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1542-0.2022",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14643599683872482,
+  "grid_error": null,
+  "truth": 0.146436,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1571-0.0865",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14753474259708352,
+  "grid_error": null,
+  "truth": 0.147564,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1619-0.0174",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148207,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.163-0.0675",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14769499891622387,
+  "grid_error": null,
+  "truth": 0.147695,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1648-0.0227",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148125,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1663-0.1911",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14642599682561708,
+  "grid_error": null,
+  "truth": 0.146426,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.17-0.0121",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148179,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1713-0.0265",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14802200000000001,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1752-0.0755",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14749295501739984,
+  "grid_error": null,
+  "truth": 0.147493,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1769-0.0541",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.147689998904686,
+  "grid_error": null,
+  "truth": 0.14769000000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1778-0.0111",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148111,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1794-0.2598",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14560799524693335,
+  "grid_error": null,
+  "truth": 0.145608,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1821-0.0157",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.148022,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.1846-0.0806",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14732973771546562,
+  "grid_error": null,
+  "truth": 0.147348,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1929-0.1174",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14670594670527995,
+  "grid_error": null,
+  "truth": 0.146897,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1955-0.2479",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14556599513698448,
+  "grid_error": null,
+  "truth": 0.14556600000000003,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.1962-0.0435",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.147566691822751,
+  "grid_error": null,
+  "truth": 0.14760299999999998,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2007-0.3272",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14472099497911103,
+  "grid_error": null,
+  "truth": 0.144721,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2091-0.1627",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14622319108066997,
+  "grid_error": null,
+  "truth": 0.14628200000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2103-0.294",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1449569949995118,
+  "grid_error": null,
+  "truth": 0.144957,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2123-0.2104",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14576849828136917,
+  "grid_error": null,
+  "truth": 0.145773,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2169-0.2482",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1453489945214503,
+  "grid_error": null,
+  "truth": 0.145349,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2201-0.0196",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14760299999999998,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.2266-0.0302",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14743199999999998,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.233-0.0594",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14693421236474666,
+  "grid_error": null,
+  "truth": 0.14707599999999998,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.237-0.1155",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1463414231738818,
+  "grid_error": null,
+  "truth": 0.146475,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2508-0.0709",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14669411290939002,
+  "grid_error": null,
+  "truth": 0.146783,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2561-0.1283",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1459631346304253,
+  "grid_error": null,
+  "truth": 0.146156,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2577-0.0973",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14637839412209813,
+  "grid_error": null,
+  "truth": 0.14645,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2618-0.0107",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.147275,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.2626-0.2513",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1448529259585646,
+  "grid_error": null,
+  "truth": 0.14486100000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2633-0.3117",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14424999484637457,
+  "grid_error": null,
+  "truth": 0.14425,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2641-0.0172",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.147187,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.2641-0.3678",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14368099451380248,
+  "grid_error": null,
+  "truth": 0.143681,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2663-0.1764",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14541673228126722,
+  "grid_error": null,
+  "truth": 0.145573,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2679-0.0385",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14693599999999998,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.2716-0.011",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14717400000000003,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.2739-0.0126",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.147135,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.2747-0.2591",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14461739677162272,
+  "grid_error": null,
+  "truth": 0.144662,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2777-0.1798",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14528349222144177,
+  "grid_error": null,
+  "truth": 0.145425,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2809-0.1644",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14537285676468656,
+  "grid_error": null,
+  "truth": 0.145547,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2886-0.0431",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14668299929144868,
+  "grid_error": null,
+  "truth": 0.146683,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2899-0.0537",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14656399914540463,
+  "grid_error": null,
+  "truth": 0.14656400000000003,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2917-0.2798",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14411368311607375,
+  "grid_error": null,
+  "truth": 0.14428500000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.2946-0.0263",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.146791,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.3063-0.0644",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14629299848984514,
+  "grid_error": null,
+  "truth": 0.146293,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.307-0.0173",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.146757,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.312-0.2757",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14388388537576194,
+  "grid_error": null,
+  "truth": 0.14412299999999997,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3137-0.3283",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1435799944327555,
+  "grid_error": null,
+  "truth": 0.14357999999999999,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3195-0.0394",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1463634866793594,
+  "grid_error": null,
+  "truth": 0.146411,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3236-0.3881",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14288299369175578,
+  "grid_error": null,
+  "truth": 0.142883,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3255-0.0131",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.146614,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.3265-0.1903",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14482031630454126,
+  "grid_error": null,
+  "truth": 0.14483200000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3381-0.0122",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.146497,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.3402-0.0483",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14608867268636352,
+  "grid_error": null,
+  "truth": 0.14611500000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3476-0.0893",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14562070638558933,
+  "grid_error": null,
+  "truth": 0.145631,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3624-0.0187",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14618899999999999,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.3626-0.0777",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14554592805335645,
+  "grid_error": null,
+  "truth": 0.145597,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3647-0.0289",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.146064,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.3751-0.0582",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14557965521073682,
+  "grid_error": null,
+  "truth": 0.14566700000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3823-0.0826",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1452635618397047,
+  "grid_error": null,
+  "truth": 0.145351,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3861-0.0649",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1453779647448554,
+  "grid_error": null,
+  "truth": 0.14549,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.3972-0.1313",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14468263061097122,
+  "grid_error": null,
+  "truth": 0.144715,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4058-0.3766",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14212976077114306,
+  "grid_error": null,
+  "truth": 0.14217600000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4092-0.1527",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14424692236685602,
+  "grid_error": null,
+  "truth": 0.144381,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4096-0.2412",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14298898252540534,
+  "grid_error": null,
+  "truth": 0.143492,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.411-0.0285",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.145605,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.4131-0.0218",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.145651,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.4144-0.0181",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.145675,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.42-0.3247",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14243100299751793,
+  "grid_error": null,
+  "truth": 0.142553,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4202-0.0585",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14521299895646148,
+  "grid_error": null,
+  "truth": 0.14521299999999998,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4245-0.3881",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14180503373201794,
+  "grid_error": null,
+  "truth": 0.141874,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4263-0.1949",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1434033378855468,
+  "grid_error": null,
+  "truth": 0.143788,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4292-0.0291",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14541700000000002,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.4317-0.13",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14424967380537715,
+  "grid_error": null,
+  "truth": 0.144383,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4373-0.1891",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14332938847786655,
+  "grid_error": null,
+  "truth": 0.143736,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4377-0.0318",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14526025835778772,
+  "grid_error": null,
+  "truth": 0.145305,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4498-0.177",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14370184429244615,
+  "grid_error": null,
+  "truth": 0.143732,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4524-0.1952",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14351139984310857,
+  "grid_error": null,
+  "truth": 0.14352399999999998,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4549-0.1785",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14362721384832283,
+  "grid_error": null,
+  "truth": 0.14366600000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4562-0.0512",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14492142900919996,
+  "grid_error": null,
+  "truth": 0.14492600000000003,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4685-0.3809",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14132225265389517,
+  "grid_error": null,
+  "truth": 0.14150600000000002,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4765-0.1273",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14385415837685472,
+  "grid_error": null,
+  "truth": 0.143962,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4775-0.0383",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14484200000000003,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.4783-0.0519",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1446022602710335,
+  "grid_error": null,
+  "truth": 0.144698,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4789-0.0174",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.145037,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.4854-0.1095",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1439267696633638,
+  "grid_error": null,
+  "truth": 0.14405099999999998,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4858-0.043",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14470620641725015,
+  "grid_error": null,
+  "truth": 0.144712,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-s140-5.4881-0.0119",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.145,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.4901-0.0154",
+  "claim": "d",
+  "class": "refused",
+  "value": null,
+  "grid_error": null,
+  "truth": 0.14494500000000002,
+  "status": null,
+  "estimate": null
+ },
+ {
+  "case": "rv-s140-5.4902-0.1126",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14383039051657523,
+  "grid_error": null,
+  "truth": 0.143972,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-slab-5.0893",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.14727599747289635,
+  "grid_error": null,
+  "truth": 0.147276,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-sphere",
+  "claim": "d",
+  "class": "no truth",
+  "value": 0.24491250042718368,
+  "grid_error": 0.001061552221318568,
+  "truth": null,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 0.001062 (three grids converging: 0.2439 on cells of 0.5 mm, 0.2402 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-tilt-0.0001",
+  "claim": "d",
+  "class": "right",
+  "value": 0.24445800672746368,
+  "grid_error": 0.0006128900162711934,
+  "truth": 0.2447758419611409,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.129e-4 (three grids converging: 0.2439 on cells of 0.5 mm, 0.2427 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-tilt-1e-06",
+  "claim": "d",
+  "class": "right",
+  "value": 0.24445813131483735,
+  "grid_error": 0.0006127658563298105,
+  "truth": 0.2447758419611409,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.128e-4 (three grids converging: 0.2439 on cells of 0.5 mm, 0.2427 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-tilt-1e-08",
+  "claim": "d",
+  "class": "right",
+  "value": 0.24445813254974066,
+  "grid_error": 0.0006127646430087529,
+  "truth": 0.2447758419611409,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.128e-4 (three grids converging: 0.2439 on cells of 0.5 mm, 0.2427 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-tilt-1e-10",
+  "claim": "d",
+  "class": "right",
+  "value": 0.2444581325618229,
+  "grid_error": 0.0006127646304356244,
+  "truth": 0.2447758419611409,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.128e-4 (three grids converging: 0.2439 on cells of 0.5 mm, 0.2427 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-tilt-1e-12",
+  "claim": "d",
+  "class": "right",
+  "value": 0.24445813256291554,
+  "grid_error": 0.0006127646308191472,
+  "truth": 0.2447758419611409,
+  "status": "holds",
+  "estimate": "a value on cells of 0.25 mm, not a bound; its grid error about 6.128e-4 (three grids converging: 0.2439 on cells of 0.5 mm, 0.2427 on cells of 1 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-two-bars",
+  "claim": "d",
+  "class": "not settled",
+  "value": 0.1984693846457055,
+  "grid_error": null,
+  "truth": 0.1989,
+  "status": "unknown",
+  "estimate": "a value on cells of 0.5 mm, not a bound"
+ },
+ {
+  "case": "rv-vanish-0.025",
+  "claim": "d",
+  "class": "right",
+  "value": 0.1997738378869831,
+  "grid_error": 0.00023083050889957657,
+  "truth": 0.19975,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 2.308e-4 (three grids oscillating: 0.1999 on cells of 0.2 mm, 0.1998 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-vanish-0.05",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19960062354151112,
+  "grid_error": 0.0016263018934970785,
+  "truth": 0.1995,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.001626 (three grids oscillating: 0.1995 on cells of 0.4 mm, 0.2001 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-vanish-0.1",
+  "claim": "d",
+  "class": "right",
+  "value": 0.19910030848657367,
+  "grid_error": 0.001625797350469721,
+  "truth": 0.19899999999999998,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.001626 (three grids oscillating: 0.199 on cells of 0.4 mm, 0.1996 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-vanish-heat-0.025",
+  "claim": "t",
+  "class": "right",
+  "value": 4813.749518428241,
+  "grid_error": 0.15564458171614037,
+  "truth": 4813.75,
+  "status": "holds",
+  "estimate": "a value on cells of 0.1 mm, not a bound; its grid error about 0.1556 (three grids alike within what the solves resolve: 4814 on cells of 0.2 mm, 4814 on cells of 0.4 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-vanish-heat-0.05",
+  "claim": "t",
+  "class": "right",
+  "value": 4807.4999498137895,
+  "grid_error": 0.15544249837731255,
+  "truth": 4807.499999999999,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.1554 (three grids alike within what the solves resolve: 4807 on cells of 0.4 mm, 4807 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ },
+ {
+  "case": "rv-vanish-heat-0.1",
+  "claim": "t",
+  "class": "right",
+  "value": 4794.999948079849,
+  "grid_error": 0.1550383316545818,
+  "truth": 4794.999999999999,
+  "status": "holds",
+  "estimate": "a value on cells of 0.2 mm, not a bound; its grid error about 0.155 (three grids alike within what the solves resolve: 4795 on cells of 0.4 mm, 4795 on cells of 0.8 mm); and its read's error (the solver's precision: the stiffness it keeps in void and held material, 1e-6 of the material's, over its cells' share of the part, and its solve's residual, of the field's span over the part (not of an offset it carries whole))"
+ }
+]

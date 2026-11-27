@@ -1,0 +1,7 @@
+; A 40 x 10 x 10 bar pulled at 10 MPa (1000 N), yield 250 MPa but for a strip 0.05 mm wide across it at x 1.17, 10 MPa; 2 mm cells. The material is resolved; only the yield varies inside a cell.
+; truth: safe fails about 1 (statics: 1000 N over 100 mm2 against the strip's 10 MPa)
+(import "std")
+(def part (box 40 10 10))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- 1.17 x) (- x (+ 1.17 0.05))) 10 250))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 2))
+(require safe (min-safety-factor s > 2))

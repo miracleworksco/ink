@@ -1,0 +1,24 @@
+; NO GRADIENT (cells of one material, a value). A 100 x 10 x 16.6 beam bent by a couple (about 50 MPa at its top and bottom
+; faces), its top face at z 8.3: on cells of 1, 2 and 4 mm the cells holding
+; that face are under half material, so its points are read from the cells
+; under them, outside those cells' boxes, on every grid of the ladder. E is
+; graded slightly along the beam (2.5% end to end), so no cell is of one
+; material and min-safety-factor is a band from its bound. A layer
+; z 8.2..8.3 under the top face (|x| < 40), of the same E, has yield 25
+; (else 250): it carries the full bending stress at the face, so the factor
+; there is about 25 / 50 = 0.5 (master reads it: the face read is its cells'
+; peak). The bound takes the least yield over each cell's box, which never
+; holds the layer.
+; truth: safe fails about 0.465 (this model: 0.446, 0.464, 0.465 on 4, 2 and 1 mm cells, converging)
+; truth: unsafe holds about 0.465 (as safe)
+(import "std")
+(def part (box 100 10 16.6))
+(def layer (max (- 8.2 z) (- z 8.5) (- (abs x) 40)))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select layer 25 250))))
+ (fix root (+ x 49))
+ (load top (force 2000N 0 0) (region (max (- 49 x) (- 4 z))))
+ (load bottom (force -2000N 0 0) (region (max (- 49 x) (+ z 4))))
+ (res 1))
+(require safe (min-safety-factor s > 1))
+(require unsafe (min-safety-factor s < 1))

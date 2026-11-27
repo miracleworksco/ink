@@ -1,0 +1,23 @@
+[package]
+name = "ink-topology"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+# Its build script declares its package to the distribution (ink-ext/build.rs).
+links = "ink-topology"
+description = "ink's topology package: the topology form, the stiffest layout of a study's shape within a volume budget (SIMP, by ink-mma), on ink-sim's solver"
+
+[dependencies]
+ink-core = { path = "../../kernel/crates/ink-core" }
+ink-kernel = { path = "../../kernel/crates/ink-kernel" }
+ink-lang = { path = "../../kernel/crates/ink-lang" }
+ink-sim = { path = "../ink-sim" }
+ink-mma = { path = "../../kernel/crates/ink-mma" }
+libm = "0.2.16"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+[lints]
+workspace = true

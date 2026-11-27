@@ -1,0 +1,5 @@
+; The 0.1 mm fin at z 0, heated for 300 s (its time constant about 11 s).
+; truth: cool fails about 20.78 (1-D conduction at steady state, 20 + P L / k A)
+(import "std") (def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.1) 10.0 0 0)))
+(study s (shape part) (heat (k 50W/m/K) (density 7800kg/m3) (capacity 500J/kg/K)) (temperature base (- x 1) 20degC) (source tip (power 0.001W) (region (- 19 x))) (transient (duration 300s) (steps 30) (initial 20degC)) (res 0.5))
+(require cool (max-temperature s < 20.5degC))

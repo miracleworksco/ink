@@ -1,0 +1,17 @@
+[package]
+name = "ink-fem"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+description = "ink's field-based finite element solver: the finite cell method on a regular grid, over tapes"
+
+[dependencies]
+ink-core = { path = "../../kernel/crates/ink-core" }
+ink-kernel = { path = "../../kernel/crates/ink-kernel" }
+libm = "0.2.16"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

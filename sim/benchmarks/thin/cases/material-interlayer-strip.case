@@ -1,0 +1,14 @@
+; A 40 x 10 x 10 bar (x -20..20) pulled at 1000 N, root fixed. Outer layers |z| > 2.6 of A (E 200000, yield 250),
+; a core |z| < 2.4 of B (E 70000, yield 50), and between them, at 2.4 < |z| < 2.6, |y| < 4, |x| < 15, an
+; interlayer strip (E 150000, yield 60): its E and its yield both between A's and B's. Elsewhere at
+; 2.4 < |z| < 2.6, B. Symmetric in z: no bending.
+; truth: safe fails about 5.40 (a laminate pulled along its layers, one nu: strain 1000 / (200000 x 48 + 70000 x 48.8 + 150000 x 3.2) = 7.41e-5; the strip 11.11 MPa against its yield 60: 5.40; B 5.19 MPa: 9.64; A 14.82: 16.9)
+(import "std")
+(def part (box 40 10 10))
+(def strip (max (- 2.4 (abs z)) (- (abs z) 2.6) (- (abs y) 4) (- (abs x) 15)))
+(def outer (- 2.6 (abs z)))
+(study s (shape part)
+ (elastic (E (* 1MPa (select strip 150000 (select outer 200000 70000)))) (nu 0.3)
+          (yield (* 1MPa (select strip 60 (select outer 250 50)))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe (min-safety-factor s > 7))

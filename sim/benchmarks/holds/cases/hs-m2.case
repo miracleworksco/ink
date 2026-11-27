@@ -1,0 +1,9 @@
+; bar 8.1 x 2.1 x 1.8, mirror at x 0, pulled 10 MPa on its end; E 1000 to x=3.0, 5000 past it; nu 0; res 0.3
+; exact: stress 10; tip s xi/E1 + s (L-xi)/E2 = 0.0402 mm; compliance s^2 A (xi/E1 + (L-xi)/E2) = 1.51956
+(import "std")
+(body bar (shape (move (box 8.1 2.1 1.8) 4.05 1.05 0.9)))
+(study s (shape (shape-of bar)) (elastic (E (select (- x 3.0) 1000MPa 5000MPa)) (nu 0))
+  (mirror mx x 0) (mirror my y 0) (mirror mz z 0) (load p (pressure -10MPa) (region (- 8.0999 x))) (res 0.3))
+(require stress (max-stress s < 100000MPa))
+(require disp (max-displacement s < 100000))
+(require comp (compliance s < 1e9N*mm))

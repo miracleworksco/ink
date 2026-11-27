@@ -1,0 +1,4 @@
+(import "std")
+(def part (move (box 20 2 2) 10 0 0))
+(study hot (shape part) (heat (k 0.2W/m/K)) (temperature cold (- x 0.1) 20degC) (source chip (power 0.2W) (region (- 18.4 x))) (res 0.4))
+(require t (max-temperature hot < 1e6degC))

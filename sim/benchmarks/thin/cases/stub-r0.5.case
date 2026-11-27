@@ -1,0 +1,5 @@
+; A 4 x 6 x 6 block held at x < 1, E 200 GPa, nu 0, 1e-5 N over 3.5 < x < 4, a stub 0.05 mm thick lying on its top and standing 0.1 mm past its end: thinner than the floor (0.0625 mm cells) but within two floor cells of the block.
+; truth: still holds at most 1e-09 (the block as a cantilever and in shear, 4e-12 and 1e-11; the stub carries no load)
+(import "std") (def part (min (move (box 4 6 6) 2 0 0) (move (box 4.1 4 0.05) 2.05 0 3.025)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix root (- x 1)) (load tip (force 0 0 -1e-05N) (region (max (- 3.5 x) (- x 4)))) (res 0.5))
+(require still (max-displacement s < 1e-6))

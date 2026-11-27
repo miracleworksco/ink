@@ -1,0 +1,12 @@
+; A stocky 2 x 2 mm column (x 6 to 20) on a neck 0.4 x 0.4 mm, 2 mm long (x 4 to 6), out of a 4 x 6 x 6 block held
+; at x < 1; pushed 27.83 N along its axis over its last mm. The neck is a hinge: a rigid bar on a rotational spring
+; E I / L_n buckles at about E I / (L_n (14 + 4/3)) = 13.91 N (the loads twice it); ink's own eigensolve agrees (about 0.53).
+; Statically the neck carries 173.9 MPa against a yield of 1043 (factor 6).
+; truth: safe fails at most 1 (it buckles at about half the load; a static safety factor says nothing of that)
+; truth: stiff fails at least 1 (past its buckling load: no stable position near the unloaded one)
+(import "std")
+(def part (min (move (box 4 6 6) 2 0 0) (move (box 2 0.4 0.4) 5 0 0) (move (box 14 2 2) 13 0 0)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3) (yield 1043MPa)) (fix root (- x 1))
+  (load push (force -27.8261N 0 0) (region (- 19 x))) (res 0.5))
+(require safe (min-safety-factor s > 2 (excluding support-margin)))
+(require stiff (max-displacement s < 1))

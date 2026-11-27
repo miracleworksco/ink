@@ -1,0 +1,11 @@
+; A strip 60 x 10 x 0.8 mm along x, clamped at x < 1, pushed 5 N along -x at its free end (x > 59).
+; E 2000 MPa, nu 0.3, yield 50 MPa. Clamped-free Euler: Pcr = pi^2 E I / (4 L^2), I = 10 * 0.8^3 / 12 = 0.4267 mm4,
+; L 59 mm: Pcr = 0.605 N (0.66 N as a wide plate, / (1 - nu^2)), so 5 N is about 8 times its buckling load.
+; Membrane stress 0.625 MPa (SF 80 if it did not buckle).
+; truth: safe fails at most 0.125 (it buckles at 0.125 of the load: Euler, clamped-free, pi^2 E I / 4 L^2 = 0.605 N against 5 N)
+; truth: unbuckled holds about 0.125 (Euler, clamped-free; 0.132 as a wide plate)
+(import "std")
+(def part (move (box 60 10 0.8) 30 0 0))
+(study s (shape part) (elastic (E 2000MPa) (nu 0.3) (yield 50MPa)) (fix root (- x 1)) (load push (force -5N 0 0) (region (- 59 x))) (res 0.6))
+(require safe (min-safety-factor s > 10))
+(require unbuckled (min-buckling-factor s > 0.05))

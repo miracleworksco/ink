@@ -1,0 +1,5 @@
+(import "std")
+(body b (shape (rotate-z (move (box 20 2 2) 10 0 0) 30)))
+(study s (shape (shape-of b)) (elastic (E 68900MPa) (nu 0.33))
+  (fix wall (- (+ (* x 0.8660254037844387) (* y 0.5)) 0.5)) (load tip (force 0 0 -10N) (region (- 19.5 (+ (* x 0.8660254037844387) (* y 0.5))))) (res 0.5))
+(require d (max-displacement s < 1000mm))

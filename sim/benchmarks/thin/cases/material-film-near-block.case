@@ -1,0 +1,12 @@
+; A 20 x 10 x 2 bar (x 0..20) held at 20 C over its first 0.01 mm, 1 W spread over its last millimetre
+; (x 19..20), on 0.2 mm cells. Every datum is uniform over the section and the other faces are insulated, so
+; it is exactly one-dimensional: T = 20 + the integral of the flux over k A (k in W/(m K), A 20 mm2).
+; An insulating block (k 0.2) at x 8.8..10.4, 0.12 mm of the conductor (k 200), then a 0.07 mm film of
+; the block's material at x 10.52..10.59: a film near another body of its material, not beside it.
+; truth: cool fails about 441.96 (1-D series: the block 1.6 mm / (0.2 x 20 mm2) = 400 K/W, the film 17.5, the conductor's 17.32 mm 4.33, half the source's millimetre 0.125; 424.47 without the film)
+(import "std")
+(def part (move (box 20 10 2) 10 0 0))
+(study hot (shape part) (heat (k (* 1W/m/K (select (min (max (- 10.52 x) (- x 10.59)) (max (- 8.8 x) (- x 10.4))) 0.2 200))))
+ (temperature cold (- x 0.01) 20degC)
+ (source chip (power 1W) (region (- 19 x))) (res 0.2))
+(require cool (max-temperature hot < 435degC))

@@ -1,0 +1,13 @@
+; The thin corpus's yield-strip bar (40 x 10 x 10, x -20..20, pulled at 10 MPa,
+; yield 250), with a strip along the pull instead of across it: z 0.1..0.3 inside
+; the cell z 0..1 (its centre z 0.5 outside), |y| < 4, of a stiffer, weaker material
+; (E 600000, yield 25), |x| < 15. Along the pull the strain is shared, so the strip carries
+; 3 times the stress of the rest; the cell's element averages E over the cell.
+; truth: safe fails about 0.86 (a laminate pulled along its layers, one nu: the strain is shared and exact, 1000 N / (200000 x 98.4 + 600000 x 1.6) N = 4.845e-5, so 29.07 MPa in the strip, 9.69 in the rest; 25 / 29.07 = 0.86)
+(import "std")
+(def part (box 40 10 10))
+(def strip (max (- 0.1 z) (- z 0.3) (- (abs y) 4) (- (abs x) 15)))
+(study s (shape part)
+ (elastic (E (* 1MPa (select strip 600000 200000))) (nu 0.3) (yield (* 1MPa (select strip 25 250))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe (min-safety-factor s > 1.5))

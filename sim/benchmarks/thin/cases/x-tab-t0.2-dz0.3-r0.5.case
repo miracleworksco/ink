@@ -1,0 +1,5 @@
+; A 0.2 mm tab 1.5 mm long on a 4 x 6 x 6 block, at z 0.3, 1e-3 N at its tip.
+; truth: strong fails about 0.0356 (beam, 6 F a / b t^2 0.5 mm from the root)
+(import "std") (def part (min (move (box 4 6 6) 2 0 0) (move (box 5.5 4 0.2) 2.75 0 0.3)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 250MPa)) (fix root (- x 1)) (load tip (force 0 0 -1e-03N) (region (- 5.4 x))) (res 0.5))
+(require strong (max-stress s < 0.03MPa))

@@ -1,0 +1,7 @@
+; A 1 mm steel tab, 100 mm free, on a 20 mm block, 0.1 N at its tip.
+; truth: stiff fails about 0.0962 (cantilever, F L^3 / 3 E I)
+; truth: strong fails about 2.78 (beam, 6 M / b t^2 5 mm from the root)
+(import "std") (def part (min (move (box 20 30 30) 10 0 0) (rotate-x (move (box 120 20 1) 60 0 0.3) 0)))
+(study s (shape part) (elastic (material steel)) (fix root (- x 5)) (load tip (force 0 0 -0.1N) (region (- 115 x))) (res 2))
+(require stiff (max-displacement s < 0.08))
+(require strong (max-stress s < 1.4MPa))

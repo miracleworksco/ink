@@ -1,0 +1,19 @@
+[package]
+name = "ink-effort"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+description = "ink's effort plug: the torque or force an actuator needs through a motion, read off one run of ink-dynamics as facts for the claims core"
+
+[dependencies]
+ink-claims = { path = "../../kernel/crates/ink-claims" }
+ink-dynamics = { path = "../ink-dynamics" }
+ink-lang = { path = "../../kernel/crates/ink-lang" }
+
+[dev-dependencies]
+# tests/plug.rs: a part's rating answered by the solver
+ink-ratings = { path = "../../kernel/crates/ink-ratings" }
+
+[lints]
+workspace = true

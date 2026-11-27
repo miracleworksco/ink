@@ -1,0 +1,12 @@
+; A 40 x 20 x 4 plate (x -20..20) with a 6 mm hole through it at the origin, pulled
+; along x by 1000 N (12.5 MPa gross, 17.9 net). Yield 250 but 60 in a strip
+; x 0.10..0.12 across the plate, through the hole's edge where the stress
+; concentrates. On cells of 1 mm the strip is between reads (flagged and bounded);
+; the hole's peak is under-read on cells that coarse.
+; truth: safe fails about 1.41 (60 / 42.65 MPa read at the strip on 0.25 and 0.125 mm cells; Peterson's net Kt 2.36 x 17.9 = 42.1)
+(import "std")
+(def part (max (box 40 20 4) (- 3 (sqrt (+ (* x x) (* y y))))))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- 0.10 x) (- x 0.12)) 60 250))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe (min-safety-factor s > 1.5))

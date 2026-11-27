@@ -1,0 +1,12 @@
+; A sheet 20 x 4 x 0.189 mm lying on z = 0 (z 0 to 0.189) from a 4 x 6 x 6 block, held at x < 1; a pressure 0.001 MPa
+; on every face above z 0.0945: the sheet's top (64 mm2) and the block's top (24 mm2), 0.088 N down, and the upper
+; sides, balanced. At res 0.5 the sheet splits to 0.0625 mm cells; a mesh of the surface at half the grid's cells has
+; its planes at z 0 and 0.25 and draws no facet on the sheet.
+; truth: stiff fails about 0.0728 (beam q L^4 / 8 E I, q 0.004 N/mm, L 16)
+; truth: strong fails at least 20.18 (beam 6 M / b t^2 at x 4.5)
+(import "std")
+(def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.189) 10 0 0.0945)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix root (- x 1))
+  (load top (pressure 0.001MPa) (region (- 0.0945 z))) (res 0.5))
+(require stiff (max-displacement s < 0.0364))
+(require strong (max-stress s < 10.09MPa (excluding support-margin)))

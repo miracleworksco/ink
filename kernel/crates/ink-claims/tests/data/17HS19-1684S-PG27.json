@@ -1,0 +1,8 @@
+{
+  "mpn": "17HS19-1684S-PG27",
+  "gearbox": {
+    "type": "planetary",
+    "shaft-axial-load-N-max": 50,
+    "shaft-radial-load-N-max": 100
+  }
+}

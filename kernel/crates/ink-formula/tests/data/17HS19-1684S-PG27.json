@@ -1,0 +1,79 @@
+{
+  "mpn": "17HS19-1684S-PG27",
+  "motor": {
+    "curves": [
+      {
+        "kind": "pull-out",
+        "x": "speed-rpm",
+        "y": "torque-Nm",
+        "points": [
+          [
+            2.7932,
+            6.964
+          ],
+          [
+            5.5863,
+            7.182
+          ],
+          [
+            8.3795,
+            7.182
+          ],
+          [
+            11.1727,
+            6.857
+          ],
+          [
+            13.9658,
+            6.747
+          ],
+          [
+            16.759,
+            6.53
+          ],
+          [
+            19.5522,
+            6.313
+          ],
+          [
+            22.3453,
+            5.878
+          ],
+          [
+            25.1385,
+            5.442
+          ],
+          [
+            27.9317,
+            4.789
+          ]
+        ],
+        "at": {
+          "voltage-V": 24,
+          "current-A": 1.68,
+          "steps-per-revolution": 400,
+          "shaft": "output",
+          "condition": "half step"
+        },
+        "source": "17HS19-1684S-PG27/www.omc-stepperonline.com",
+        "location": "chart markers read from its embedded image, to a pixel (0.0098 N m); at the gearbox output: its speed and torque"
+      }
+    ]
+  },
+  "gearing": {
+    "ratio": 26.85123966942149,
+    "ratio-exact": "3249/121",
+    "efficiency": 0.81,
+    "rated-torque-Nm": 3,
+    "momentary-torque-Nm": 5,
+    "backlash-arcmin": 60,
+    "backlash-arcmin-at": {
+      "condition": "maximum, no load"
+    }
+  },
+  "gearbox": {
+    "type": "planetary",
+    "shaft-axial-load-N-max": 50,
+    "shaft-radial-load-N-max": 100
+  }
+}

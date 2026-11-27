@@ -1,0 +1,185 @@
+{
+  "no-ordered": {
+    "r": {
+      "from": "x"
+    }
+  },
+  "no-from": {
+    "r": {
+      "ordered": [
+        {
+          "number": 1,
+          "unit": "N"
+        }
+      ]
+    }
+  },
+  "no-unit": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "number": 1
+        }
+      ]
+    }
+  },
+  "no-points": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N*m"
+          },
+          "at": {
+            "read": "speed"
+          }
+        }
+      ]
+    }
+  },
+  "bad-point": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N*m",
+            "points": [
+              [
+                1,
+                2
+              ],
+              [
+                3
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed"
+          }
+        }
+      ]
+    }
+  },
+  "no-units": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "table": {
+            "points": [
+              [
+                1,
+                2
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed"
+          }
+        }
+      ]
+    }
+  },
+  "table-at-number": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N*m",
+            "points": [
+              [
+                1,
+                2
+              ]
+            ]
+          },
+          "at": {
+            "number": 1,
+            "unit": "rpm"
+          }
+        }
+      ]
+    }
+  },
+  "bad-unit": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "number": 1,
+          "unit": "N.m"
+        }
+      ]
+    }
+  },
+  "bad-table-unit": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "table": {
+            "x": "rpm",
+            "y": "Nm",
+            "points": [
+              [
+                1,
+                2
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed"
+          }
+        }
+      ]
+    }
+  },
+  "too-big": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "number": 1e+308,
+          "unit": "kN"
+        },
+        {
+          "number": 100,
+          "unit": "N"
+        }
+      ]
+    }
+  },
+  "too-big-point": {
+    "r": {
+      "from": "x",
+      "ordered": [
+        {
+          "table": {
+            "x": "rpm",
+            "y": "kN",
+            "points": [
+              [
+                0,
+                1
+              ],
+              [
+                2,
+                1e+308
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed"
+          }
+        }
+      ]
+    }
+  }
+}

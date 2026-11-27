@@ -1,0 +1,61 @@
+# Packages built on the kernel (../kernel/crates), in a workspace of their own, as
+# a third party ships packages: the kernel names none of them. ink-ext is
+# the distribution: an `ink` binary whose registry is the kernel's packages
+# and the packages it depends on (target/<profile>/ink here).
+[workspace]
+# Every crate here: a new package crate (ink-NAME) is a member as it
+# is made, and joins a distribution by its dependency line in that
+# distribution's Cargo.toml.
+members = ["ink-*"]
+resolver = "3"
+
+# What every crate here states: rust-version is the kernel's
+# (../kernel/Cargo.toml), the oldest toolchain these build and test with, and
+# clippy lints for no method newer.
+[workspace.package]
+version = "0.2.0"
+rust-version = "1.95"
+
+# Lints, for every crate here (each says `[lints] workspace = true`).
+# Clippy's default set stays at warn: `cargo clippy --workspace
+# --all-targets -- -D warnings` is the gate, run by CI on the
+# rust-version toolchain only (a newer clippy's new lints warn, not fail).
+# Those allowed below are wrong for this code, not merely noisy:
+[workspace.lints.clippy]
+# !(a < b) is the NaN guard here: true where either side is NaN, where the
+# lint's a >= b is false. Every site it flagged means that.
+neg_cmp_op_on_partial_ord = "allow"
+# Index loops over small matrices and vectors (a[r][k] -= f * a[c][k])
+# read as the formula; zipped iterators hide it.
+needless_range_loop = "allow"
+# A numeric routine takes its point, box, tolerance and context as they
+# are: a struct made to pass them would name nothing.
+too_many_arguments = "allow"
+# Tuples and closures of the numeric types, spelled where they are used:
+# an alias would name nothing either.
+type_complexity = "allow"
+# The size lints: the enums and errors they flag are answers and
+# continuations made once per question or load, never held in bulk.
+# Boxing to their thresholds (200 and 128 bytes) is an allocation for
+# nothing (motion::Search, at 3 KB, is boxed).
+large_enum_variant = "allow"
+result_large_err = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.test]
+opt-level = 3
+# No debug info: a failed assertion names its line without it, and the
+# build and link are quicker (a hosted machine builds from nothing each time).
+debug = false
+
+# As the kernel's (../kernel/Cargo.toml): the dev loop's build (target/fast/ink).
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+overflow-checks = true

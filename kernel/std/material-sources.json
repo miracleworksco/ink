@@ -1,0 +1,1492 @@
+{
+  "description": "Individual material-property facts and explicit gaps. Numeric values live in materials.ink; no source tables or downloads are vendored.",
+  "sources": {
+    "prusa-pla": {
+      "title": "Technical datasheet: Prusament PLA by Prusa Polymers",
+      "maker": "Prusa Polymers",
+      "revision": "v1.1, 16-02-2022",
+      "url": "https://prusament.com/wp-content/uploads/2022/10/PLA_Prusament_TDS_2021_10_EN.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "68c8298b9329a7b0e5f8d35cf4cb0172708184f7d4f95491643163e4f140b1b7",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "prusa-petg": {
+      "title": "Technical datasheet: Prusament PETG by Prusa Polymers",
+      "maker": "Prusa Polymers",
+      "revision": "v1.1, 16-02-2022",
+      "url": "https://storage.googleapis.com/prusa3d-content-prod-14e8-wordpress-prusament-prod/2023/10/9f8d2165-tds_prusament-petg_n_en.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "040164092e1986ed6a7daea37367ddcdfedc55105f9b7a01a23a4dc7682f34e9",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ensinger-manual": {
+      "title": "Engineering plastics — The Manual",
+      "maker": "Ensinger",
+      "revision": "10/12, E9911075A011GB",
+      "url": "https://www.ensingerplastics.com/en-us/-/media/ensinger/files/document-teaser-files/brochures/shapes/engineering-plastics-manual-english.ashx",
+      "retrieved": "2026-11-12",
+      "sha256": "9b46c0ae1e7253fcbd39da6a36cfc2e7f00abbb3bba4e882795c2e18b86b7b4c",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ensinger-pet": {
+      "title": "TECAPET white material data",
+      "maker": "Ensinger",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.ensingerplastics.com/en/shapes/tecapet-white",
+      "retrieved": "2026-11-12",
+      "sha256": "f1c9264f46535ee62980c41cd3c6874c3dd75d70fe6da686ad75e7ddefaf7238",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ensinger-peek": {
+      "title": "TECAPEEK natural material data",
+      "maker": "Ensinger",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.ensingerplastics.com/en/shapes/peek-tecapeek-natural",
+      "retrieved": "2026-11-12",
+      "sha256": "d0a8e1e9ddf736262b3de2c38b1410cff0c232fc0d2b0322ed366e10d87bdd3c",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ensinger-pp": {
+      "title": "TECAFINE PP natural material data",
+      "maker": "Ensinger",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.ensingerplastics.com/en-gb/shapes/tecafine-pp-natural",
+      "retrieved": "2026-11-12",
+      "sha256": "b2eb474b249890cf9099406a048fbd279bc25fa2c5790bb37122e293bee62508",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ensinger-hdpe": {
+      "title": "TECAFINE PE 300 natural material data",
+      "maker": "Ensinger",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.ensingerplastics.com/en-sg/shapes/polyethylene-tecafine-pe-300-natural",
+      "retrieved": "2026-11-12",
+      "sha256": "23bac71726af3552f78d96eca8ef56a67013a15cfd96848cef4422061beb257d",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ensinger-ptfe": {
+      "title": "TECAFLON PTFE natural material data",
+      "maker": "Ensinger",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.ensingerplastics.com/en-gb/shapes/tecaflon-ptfe-natural",
+      "retrieved": "2026-11-12",
+      "sha256": "3081605f6edd77a750135f78a2497eb37d693cf300f32005974495837110b35b",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "khk-plastic": {
+      "title": "Gear Technical Reference: Design of Plastic Gears",
+      "maker": "KHK",
+      "revision": "Undated live page; retrieved 2026-11-12",
+      "url": "https://khkgears.net/new/gear_knowledge/gear_technical_reference/design-of-plastic-gears.html",
+      "retrieved": "2026-11-12",
+      "sha256": "122900b5cb3bc832e99fc18c9d7d9cb0a00d9add5871cf5a9a64c8b37405a097",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "polymaker-tds-tpu95": {
+      "title": "PolyFlex TPU95 Technical Data Sheet",
+      "maker": "Polymaker",
+      "revision": "v5.5, 2025-12-29",
+      "url": "https://polymaker.com/wp-content/uploads/TDS_Polymaker_PolyFlex-TPU95_V5.5_2025_12_29_EN.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "b7c4419e76553beabee0455b577316269a03618d4fea8302d171aaa90efa7e72",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "hydro-6061": {
+      "title": "Alloy 6061",
+      "maker": "Hydro",
+      "revision": "2019/01 (2/2019)",
+      "url": "https://www.hydro.com/Document/Index?id=560718&name=Alloy+6061.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "cc3cc79ef34d7ccd2a69fe5216f726be23d23d0b07e12c2ea1091adbba7fd009",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "nasa-6061": {
+      "title": "Materials data handbook: Aluminum alloy 6061",
+      "maker": "NASA / R. F. Muraca and J. S. Whittick",
+      "revision": "NASA CR-123772, 2nd edition, May 1972",
+      "url": "https://ntrs.nasa.gov/api/citations/19720022808/downloads/19720022808.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "2d85000ee9ea72c4cc25821c142c118097c96462d779c4c13526cbb63ca47bb7",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "hydro-6005a-en": {
+      "title": "Werkstoffdatenblatt: EN AW-6005A, Stranggepresste Profile",
+      "maker": "Hydro",
+      "revision": "Rev.4, 03/2023",
+      "url": "https://www.hydro.com/globalassets/08-about-hydro/hydro-worldwide/austria/nenzing/datenblatter-legierungen/hydro-en-aw-6005a/",
+      "retrieved": "2026-11-12",
+      "sha256": "2dec28c5d7bf9cdf2c8e2b5bac1142d456963da210aef2d081d19273ba66195f",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "hydro-6005a-na": {
+      "title": "Alloy 6005A",
+      "maker": "Hydro",
+      "revision": "2019/02 (3/2019)",
+      "url": "https://www.hydro.com/globalassets/01-products--services/extruded-profiles/americas/ena-resources/alloy-data-sheets/hydro_2019_data_sheet_6005a_revise_1.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "fe225f0e18d21050714cee09db3a1b4cd7f31124cc6ea5a1685e46e4088b255d",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "hydro-6063-en": {
+      "title": "Werkstoffdatenblatt: EN AW-6063, Stranggepresste Profile",
+      "maker": "Hydro",
+      "revision": "Rev.4, 03/2023",
+      "url": "https://www.hydro.com/globalassets/08-about-hydro/hydro-worldwide/austria/nenzing/datenblatter-legierungen/hydro-en-aw-6063/",
+      "retrieved": "2026-11-12",
+      "sha256": "45cdc9c1410d4e318bf5afe38feb4701a8c1ee4896001d09eeaeddfe6caf0ffd",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "bluescope-5052": {
+      "title": "Aluminium 5052 Data Sheet",
+      "maker": "BlueScope Distribution",
+      "revision": "Undated; October 2022 URL edition",
+      "url": "https://www.bluescopedistribution.com.au/wp-content/uploads/2022/10/Aluminium-5052-Data-Sheet-BlueScope-Distribution.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "56b0bc22ef8de5430a5b653728a698ac29d043f947b015c75a8ea6e672ac9202",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "kaiser-sheet-plate": {
+      "title": "Aluminum Sheet & Plate",
+      "maker": "Kaiser Aluminum",
+      "revision": "KA-SP-AA5/6-1.09, January 2009",
+      "url": "https://online.kaiseraluminum.com/depot/PublicProductInformation/Document/1010/Kaiser_Aluminum_Sheet___Plate.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "2731265ff78cb16372545ac37c3581cbeac14ce591180a3bb7700a6b0d34f927",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "kaiser-7075": {
+      "title": "Sheet Coil & Plate Alloy 7075 — Technical Data",
+      "maker": "Kaiser Aluminum",
+      "revision": "Rev.05/06",
+      "url": "https://online.kaiseraluminum.com/depot/PublicProductInformation/Document/1017/Kaiser_Aluminum_7075_Sheet_Coil_and_Plate.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "d25360f06b1a0a9b125a36998606c08612aae7c54f1c8d1069dd87cebed2423d",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ssab-a36": {
+      "title": "ASTM A36 — Mechanical Properties",
+      "maker": "SSAB",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.ssab.com/en-us/brands-and-products/commercial-steel/structural-steel/astm-a36",
+      "retrieved": "2026-11-12",
+      "sha256": "2794ec0973cd40d42d562a87f387808fc85762c3ca7f3f17b8eb8a6ae1dbe423",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "outokumpu-core": {
+      "title": "Core range datasheet",
+      "maker": "Outokumpu",
+      "revision": "1560EN:4, November2022",
+      "url": "https://www.outokumpu.com/-/media/files/products/core/outokumpu-core-range-datasheet.pdf?modified=20251117111909&revision=025e9931-a1d5-4c8f-8ff5-f881d38916da",
+      "retrieved": "2026-11-12",
+      "sha256": "91d2f4b1340562b0d692a3921a5b0ea2518ddcb6cbdcc9ec97a3d7ad886d7ad9",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "kme-c110": {
+      "title": "Cu-ETP: Material data sheet",
+      "maker": "KME",
+      "revision": "01/2021",
+      "url": "https://www.kme.com/fileadmin/DOWNLOADCENTER/COPPER%20DIVISON/4%20Industrial%20Rolled/3_Datasheets/Datasheets_NEW_2021/Cu-ETP_01_2021_e.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "2ae3db78e17ed8c512df2de411399bd3a164e5dc74358ed0e4ae5cf858ae0586",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "wieland-c260": {
+      "title": "Alloy C26000: 70/30 Brass",
+      "maker": "Wieland Concast",
+      "revision": "Mechanical properties per ASTM B927/B927M-23",
+      "url": "https://www.concast.com/files/C26000.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "8785b3dc65839c0a9234f386893793dcda325c302d06f3cb1564f8d3388bccac",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "kipp-iron": {
+      "title": "EN-GJL-200 material properties",
+      "maker": "KIPP",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.kippusa.com/en-us/en-gjl-200",
+      "retrieved": "2026-11-12",
+      "sha256": "faa4f525ec817f9a0b914ac73fc8c764c173667fe31a5ff40f0a60a555f144b4",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "goodfellow-wc6co": {
+      "title": "Tungsten Carbide-Cobalt Rod | WC94-Co6",
+      "maker": "Goodfellow",
+      "revision": "Undated live maker page; retrieved 2026-11-12",
+      "url": "https://www.goodfellow.com/usa/tungsten-carbide-cobalt-rod-group",
+      "retrieved": "2026-11-12",
+      "sha256": "91484a590f5d8f5247fa19d6efa1b1109a7f833e811868e65c41a5088be5305c",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "agc-soda-lime": {
+      "title": "SUNMAX Premium: Product factsheet",
+      "maker": "AGC Glass Europe",
+      "revision": "08/2020",
+      "url": "https://www.agc-yourglass.com/sites/default/files/agc_docs/Factsheet_Sunmax_0820_EN.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "117bf77e7de9967eef79c19aa2abd9e9a4ce6fc485a695de6d5f642cc857cb59",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "schott-borofloat-pdf": {
+      "title": "BOROFLOAT 33 — Technical Data",
+      "maker": "SCHOTT",
+      "revision": "Undated PDF mirrored by Edmund Optics; retrieved 2026-11-12",
+      "url": "https://www.edmundoptics.com/ViewDocument/schott-borofloat-technical-data-sheet-english.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "52591e4aaf8bb75ade427c6e2df5a17317883ca69bee8d197cefaadc110291b7",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "nist-water": {
+      "title": "NIST Chemistry WebBook SRD69: water, thermophysical properties",
+      "maker": "NIST",
+      "revision": "Live query293.15K,1bar; retrieved2026-11-12",
+      "url": "https://webbook.nist.gov/cgi/fluid.cgi?Action=Data&Wide=on&ID=C7732185&Type=IsoBar&Digits=6&P=1&TLow=293.15&THigh=293.15&TInc=1&RefState=DEF&TUnit=K&PUnit=bar&DUnit=kg%2Fm3&HUnit=kJ%2Fkg&WUnit=m%2Fs&VisUnit=Pa*s&STUnit=N%2Fm",
+      "retrieved": "2026-11-12",
+      "sha256": "07e538552c3ead3ac7a9aa3d75955c86c776841d2c9ff604833b6e4b30eff176",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "ssab-questions": {
+      "title": "20 questions about steel",
+      "maker": "SSAB",
+      "revision": "Undated live maker reference; retrieved 2026-11-12",
+      "url": "https://www.ssab.com/en/support/product-material-data/steel/20-questions",
+      "retrieved": "2026-11-12",
+      "sha256": "55d3362f8d9390d82c8d37ab3f6dabbf68de9a3ece9a9747f849a4ca83ba7a60",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "nasa-7075": {
+      "title": "Materials data handbook: Aluminum alloy7075",
+      "maker": "NASA / R. F. Muraca and J. S. Whittick",
+      "revision": "NASA CR-123773, 2nd edition, May1972",
+      "url": "https://ntrs.nasa.gov/api/citations/19720022809/downloads/19720022809.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "ad60f5450b30a7935f7f9635f87166d7dd54ee9f042f3c953b2cc5d7635b58b1",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "nasa-snp": {
+      "title": "Space Nuclear Propulsion Material Property Handbook",
+      "maker": "NASA",
+      "revision": "SNP-HDBK-0008, revision3.1, 08/05/2024",
+      "url": "https://ntrs.nasa.gov/api/citations/20240004217/downloads/SNP-HDBK-0008_SNP-Material-Handbook.pdf?attachment=true",
+      "retrieved": "2026-11-12",
+      "sha256": "acab337e7dcf88cc01ab15a70abab0978a0d2c94c827ffcd709bcfb54c305021",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "nist-thermal": {
+      "title": "Data Sources for Parameters Used in Predictive Modeling of Fire Growth and Smoke Spread",
+      "maker": "NBS / Daniel Gross",
+      "revision": "NBSIR85-3223, September1985",
+      "url": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=101567",
+      "retrieved": "2026-11-12",
+      "sha256": "261741206fbbd4ddb39d6bd4c40118af3582d9aff45a5d4ab9048e7ecb48bd63",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    },
+    "kaiser-6061": {
+      "title": "Sheet Coil & Plate Alloy 6061 — Technical Data",
+      "maker": "Kaiser Aluminum",
+      "revision": "Rev. 05/06",
+      "url": "https://online.kaiseraluminum.com/depot/PublicProductInformation/Document/1015/Kaiser_Aluminum_5052_Sheet_Coil_and_Plate.pdf",
+      "retrieved": "2026-11-12",
+      "sha256": "93bf49f80542098953171c9fb72e4af72505aa8204ae39a4afb97102a69eec05",
+      "terms": "Individual factual values with attribution; no source table, text or layout reproduced."
+    }
+  },
+  "materials": {
+    "pla-prusament-fff-horizontal": {
+      "aliases": [
+        "pla"
+      ],
+      "condition": "Prusament PLA, FFF horizontal ISO 527-1 specimens; MK3, 0.20 mm layers, 100% rectilinear infill, 2 perimeters. See source p3 for full process; not across-layer Z strength.",
+      "properties": {
+        "E": {
+          "source": "prusa-pla",
+          "kind": "typical",
+          "note": "p2, tensile modulus; E ±100 MPa; yield ±3 MPa"
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "prusa-pla",
+          "kind": "typical",
+          "note": "p2, ISO 1183; filament/material density, not infill-adjusted."
+        },
+        "yield": {
+          "source": "prusa-pla",
+          "kind": "datasheet typical",
+          "note": "p2, tensile yield; E ±100 MPa; yield ±3 MPa"
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "petg-prusament-fff-horizontal": {
+      "aliases": [
+        "petg"
+      ],
+      "condition": "Prusament PETG, FFF horizontal ISO 527-1 specimens; MK3, 0.20 mm layers, 100% rectilinear infill, 2 perimeters. See source p3 for full process; not across-layer Z strength.",
+      "properties": {
+        "E": {
+          "source": "prusa-petg",
+          "kind": "typical",
+          "note": "p2, tensile modulus; E ±100 MPa; yield ±2 MPa"
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "prusa-petg",
+          "kind": "typical",
+          "note": "p2, ISO 1183; filament/material density, not infill-adjusted."
+        },
+        "yield": {
+          "source": "prusa-petg",
+          "kind": "datasheet typical",
+          "note": "p2, tensile yield; E ±100 MPa; yield ±2 MPa"
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "abs-tecaran-stock": {
+      "aliases": [
+        "abs"
+      ],
+      "condition": "Ensinger TECARAN ABS grey, machined stock shapes; specimens directly after machining under German standard climate. Datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p88; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p88; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "yield": {
+          "source": "ensinger-manual",
+          "kind": "datasheet typical",
+          "note": "p88, ISO 527-2; maker explicitly says these are not minimum values."
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "pa12-tecamid12-stock": {
+      "aliases": [
+        "nylon-pa12"
+      ],
+      "condition": "Ensinger TECAMID 12 natural, machined stock shapes; specimens directly after machining under German standard climate. Datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p91; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p91; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "yield": {
+          "source": "ensinger-manual",
+          "kind": "datasheet typical",
+          "note": "p91, ISO 527-2; maker explicitly says these are not minimum values."
+        },
+        "k": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p91, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        },
+        "capacity": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p91, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        }
+      }
+    },
+    "pc-tecanat-stock": {
+      "aliases": [
+        "polycarbonate"
+      ],
+      "condition": "Ensinger TECANAT natural, machined stock shapes; specimens directly after machining under German standard climate. Datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p92; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p92; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "yield": {
+          "source": "ensinger-manual",
+          "kind": "datasheet typical",
+          "note": "p92, ISO 527-2; maker explicitly says these are not minimum values."
+        },
+        "k": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p92, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        },
+        "capacity": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p92, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        }
+      }
+    },
+    "polypropylene-tecafine-pp-stock": {
+      "aliases": [
+        "polypropylene"
+      ],
+      "condition": "Ensinger tecafine-pp, unfilled machined stock shapes; datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-pp",
+          "kind": "typical",
+          "note": "ISO 527-2 tensile modulus"
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-pp",
+          "kind": "typical",
+          "note": "ISO 1183"
+        },
+        "yield": {
+          "source": "ensinger-pp",
+          "kind": "datasheet typical",
+          "note": "ISO 527-2 tensile strength at yield; no guaranteed minimum."
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "hdpe-tecafine-pe300-stock": {
+      "aliases": [
+        "hdpe"
+      ],
+      "condition": "Ensinger tecafine-pe300, unfilled machined stock shapes; datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-hdpe",
+          "kind": "typical",
+          "note": "ISO 527-2 tensile modulus"
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-hdpe",
+          "kind": "typical",
+          "note": "ISO 1183"
+        },
+        "yield": {
+          "source": "ensinger-hdpe",
+          "kind": "datasheet typical",
+          "note": "ISO 527-2 tensile strength at yield; no guaranteed minimum."
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "pet-tecapet-white-stock": {
+      "aliases": [
+        "pet"
+      ],
+      "condition": "Ensinger tecapet-white, unfilled machined stock shapes; datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-pet",
+          "kind": "typical",
+          "note": "ISO 527-2 tensile modulus"
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-pet",
+          "kind": "typical",
+          "note": "ISO 1183"
+        },
+        "yield": {
+          "source": "ensinger-pet",
+          "kind": "datasheet typical",
+          "note": "ISO 527-2 tensile strength at yield; no guaranteed minimum."
+        },
+        "k": {
+          "source": "ensinger-pet",
+          "kind": "typical",
+          "note": "ISO 22007-4:2008"
+        },
+        "capacity": {
+          "source": "ensinger-pet",
+          "kind": "typical",
+          "note": "ISO 22007-4:2008; J/g K converted to J/kg K."
+        }
+      }
+    },
+    "pa66-tecamid66-stock": {
+      "aliases": [
+        "nylon-pa66"
+      ],
+      "condition": "Ensinger TECAMID 66 natural, machined stock shapes; specimens directly after machining under German standard climate. Datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p90; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p90; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "yield": {
+          "source": "ensinger-manual",
+          "kind": "datasheet typical",
+          "note": "p90, ISO 527-2; maker explicitly says these are not minimum values."
+        },
+        "k": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p90, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        },
+        "capacity": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p90, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        }
+      }
+    },
+    "pom-c-tecaform-ah-stock": {
+      "aliases": [
+        "pom"
+      ],
+      "condition": "Ensinger TECAFORM AH natural, machined stock shapes; specimens directly after machining under German standard climate. Datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p88; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p88; tensile modulus ISO 527-2, density ISO 1183."
+        },
+        "yield": {
+          "source": "ensinger-manual",
+          "kind": "datasheet typical",
+          "note": "p88, ISO 527-2; maker explicitly says these are not minimum values."
+        },
+        "k": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p88, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        },
+        "capacity": {
+          "source": "ensinger-manual",
+          "kind": "typical",
+          "note": "p88, ISO 22007-4:2008; specific heat converted J/g K to J/kg K."
+        }
+      }
+    },
+    "ptfe-tecaflon-ptfe-stock": {
+      "aliases": [
+        "ptfe"
+      ],
+      "condition": "Ensinger tecaflon-ptfe, unfilled machined stock shapes; datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-ptfe",
+          "kind": "typical",
+          "note": "ISO 1183"
+        },
+        "k": {
+          "source": "ensinger-ptfe",
+          "kind": "typical",
+          "note": "ISO 22007-4:2008"
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "peek-tecapeek-natural-stock": {
+      "aliases": [
+        "peek"
+      ],
+      "condition": "Ensinger tecapeek-natural, unfilled machined stock shapes; datasheet values, not valid for prints.",
+      "properties": {
+        "E": {
+          "source": "ensinger-peek",
+          "kind": "typical",
+          "note": "ISO 527-2 tensile modulus"
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "ensinger-peek",
+          "kind": "typical",
+          "note": "ISO 1183"
+        },
+        "yield": {
+          "source": "ensinger-peek",
+          "kind": "datasheet typical",
+          "note": "ISO 527-2 tensile strength at yield; no guaranteed minimum."
+        },
+        "k": {
+          "source": "ensinger-peek",
+          "kind": "typical",
+          "note": "ISO 22007-4:2008"
+        },
+        "capacity": {
+          "source": "ensinger-peek",
+          "kind": "typical",
+          "note": "ISO 22007-4:2008; J/g K converted to J/kg K."
+        }
+      }
+    },
+    "nylon-pa6-mc901": {
+      "aliases": [],
+      "condition": "MC901 cast PA6, absolutely dry reference values; KHK Tables 11.1–11.2. Not printed.",
+      "properties": {
+        "E": {
+          "source": "khk-plastic",
+          "kind": "typical",
+          "note": "Table 11.1: ASTM D638 E, D792 density, nu no standard; Table 11.2: ASTM C177 k, capacity 1.67 kJ/kg K converted to J/kg K."
+        },
+        "nu": {
+          "source": "khk-plastic",
+          "kind": "typical",
+          "note": "Table 11.1: ASTM D638 E, D792 density, nu no standard; Table 11.2: ASTM C177 k, capacity 1.67 kJ/kg K converted to J/kg K."
+        },
+        "density": {
+          "source": "khk-plastic",
+          "kind": "typical",
+          "note": "Table 11.1: ASTM D638 E, D792 density, nu no standard; Table 11.2: ASTM C177 k, capacity 1.67 kJ/kg K converted to J/kg K."
+        },
+        "k": {
+          "source": "khk-plastic",
+          "kind": "typical",
+          "note": "Table 11.1: ASTM D638 E, D792 density, nu no standard; Table 11.2: ASTM C177 k, capacity 1.67 kJ/kg K converted to J/kg K."
+        },
+        "capacity": {
+          "source": "khk-plastic",
+          "kind": "typical",
+          "note": "Table 11.1: ASTM D638 E, D792 density, nu no standard; Table 11.2: ASTM C177 k, capacity 1.67 kJ/kg K converted to J/kg K."
+        }
+      }
+    },
+    "tpu-polyflex95-reference": {
+      "aliases": [
+        "tpu"
+      ],
+      "condition": "Polymaker PolyFlex TPU95 filament reference density. Small-strain E and other legacy properties remain unsourced; no as-printed strength is supplied.",
+      "properties": {
+        "E": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "polymaker-tds-tpu95",
+          "kind": "typical",
+          "note": "ISO 1183"
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "polystyrene-unfilled-unspecified": {
+      "aliases": [
+        "polystyrene"
+      ],
+      "condition": "Unfilled polystyrene, unspecified grade/process; legacy physical values are unsourced.",
+      "properties": {
+        "E": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "nist-thermal",
+          "kind": "typical",
+          "note": "p19, solid polystyrene at 20 C; unspecified grade. Not foam."
+        },
+        "k": {
+          "source": "nist-thermal",
+          "kind": "typical",
+          "note": "p19, solid polystyrene at 20 C; unspecified grade. Not foam."
+        },
+        "capacity": {
+          "source": "nist-thermal",
+          "kind": "typical",
+          "note": "p19, solid polystyrene at 20 C; unspecified grade. Not foam."
+        }
+      }
+    },
+    "aluminum-6061-t6-extrusion": {
+      "aliases": [
+        "aluminum-6061"
+      ],
+      "condition": "6061-T6 extrusion, Hydro specified mechanical limits, wall <=25 mm. Physical properties typical; capacity at 100 C, other physical values at 20–25 C.",
+      "properties": {
+        "E": {
+          "source": "nasa-6061",
+          "kind": "typical",
+          "note": "Summary density 2.70 g/cm3; §7.21 nu; §7.222 modulus 10 million psi converted and rounded to 68.9 GPa."
+        },
+        "nu": {
+          "source": "nasa-6061",
+          "kind": "typical",
+          "note": "Summary density 2.70 g/cm3; §7.21 nu; §7.222 modulus 10 million psi converted and rounded to 68.9 GPa."
+        },
+        "density": {
+          "source": "nasa-6061",
+          "kind": "typical",
+          "note": "Summary density 2.70 g/cm3; §7.21 nu; §7.222 modulus 10 million psi converted and rounded to 68.9 GPa."
+        },
+        "yield": {
+          "source": "hydro-6061",
+          "kind": "specification minimum",
+          "note": "Extruded mechanical property limits, T6/T6511; minimum Rp0.2."
+        },
+        "k": {
+          "source": "hydro-6061",
+          "kind": "typical",
+          "note": "Typical thermal conductivity at 25 C."
+        },
+        "capacity": {
+          "source": "kaiser-6061",
+          "kind": "typical",
+          "note": "6061 physical table, specific heat at 100 C; not a 20 C measurement."
+        }
+      }
+    },
+    "aluminum-6063-t5-extrusion": {
+      "aliases": [
+        "aluminum-6063"
+      ],
+      "condition": "6063-T5 extruded profiles, wall <=25 mm; lowest EN 755-2:2016 minimum across this wall range. Physical constants typical 20 C; T6 physical table used for E/density/capacity.",
+      "properties": {
+        "E": {
+          "source": "hydro-6063-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C, T6 row; E/density/capacity used also for T5 as stated in condition."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "hydro-6063-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C, T6 row; E/density/capacity used also for T5 as stated in condition."
+        },
+        "yield": {
+          "source": "hydro-6063-en",
+          "kind": "specification minimum",
+          "note": "p1 EN 755-2:2016 minimum Rp0.2, lowest of <=10 and >10–25 mm bands."
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "source": "hydro-6063-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C, T6 row; E/density/capacity used also for T5 as stated in condition."
+        }
+      }
+    },
+    "aluminum-6063-t6-extrusion": {
+      "aliases": [
+        "aluminum-6063-t6"
+      ],
+      "condition": "6063-T6 extruded profiles, wall <=25 mm; lowest EN 755-2:2016 minimum across this wall range. Physical constants typical 20 C; T6 physical table used for E/density/capacity.",
+      "properties": {
+        "E": {
+          "source": "hydro-6063-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C, T6 row; E/density/capacity used also for T5 as stated in condition."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "hydro-6063-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C, T6 row; E/density/capacity used also for T5 as stated in condition."
+        },
+        "yield": {
+          "source": "hydro-6063-en",
+          "kind": "specification minimum",
+          "note": "p1 EN 755-2:2016 minimum Rp0.2, lowest of <=10 and >10–25 mm bands."
+        },
+        "k": {
+          "source": "hydro-6063-en",
+          "kind": "typical",
+          "note": "p2 T6, typical at 20 C."
+        },
+        "capacity": {
+          "source": "hydro-6063-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C, T6 row; E/density/capacity used also for T5 as stated in condition."
+        }
+      }
+    },
+    "aluminum-6005a-t5-extrusion": {
+      "aliases": [
+        "aluminum-6005a-t5"
+      ],
+      "condition": "6005A-T5 extrusion, wall <=25 mm; Hydro North American limits; physical properties typical at 20–25 C.",
+      "properties": {
+        "E": {
+          "source": "hydro-6005a-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C. T6 physical row used as the stated reference for T5/T61."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "hydro-6005a-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C. T6 physical row used as the stated reference for T5/T61."
+        },
+        "yield": {
+          "source": "hydro-6005a-na",
+          "kind": "specification minimum",
+          "note": "Extruded mechanical property limits, <=25 mm."
+        },
+        "k": {
+          "source": "hydro-6005a-na",
+          "kind": "typical",
+          "note": "Extruded physical table, T5, 25 C."
+        },
+        "capacity": {
+          "source": "hydro-6005a-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C. T6 physical row used as the stated reference for T5/T61."
+        }
+      }
+    },
+    "aluminum-6005a-t61-extrusion": {
+      "aliases": [
+        "aluminum-6005a-t61"
+      ],
+      "condition": "6005A-T61 extrusion, wall <=25 mm; Hydro North American limits; physical properties typical at 20–25 C.",
+      "properties": {
+        "E": {
+          "source": "hydro-6005a-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C. T6 physical row used as the stated reference for T5/T61."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "hydro-6005a-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C. T6 physical row used as the stated reference for T5/T61."
+        },
+        "yield": {
+          "source": "hydro-6005a-na",
+          "kind": "specification minimum",
+          "note": "Extruded mechanical property limits, <=25 mm."
+        },
+        "k": {
+          "source": "hydro-6005a-na",
+          "kind": "typical",
+          "note": "Extruded physical table, T61, 25 C."
+        },
+        "capacity": {
+          "source": "hydro-6005a-en",
+          "kind": "typical",
+          "note": "p2 typical physical constants at 20 C. T6 physical row used as the stated reference for T5/T61."
+        }
+      }
+    },
+    "aluminum-5052-h32-sheet": {
+      "aliases": [
+        "aluminum-5052"
+      ],
+      "condition": "5052-H32 sheet, thickness >0.63 through 50 mm; BlueScope mechanical limits. Physical legacy values except where sourced remain unsourced.",
+      "properties": {
+        "E": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "yield": {
+          "source": "bluescope-5052",
+          "kind": "specification minimum",
+          "note": "p3 mechanical property specification, minimum yield."
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "aluminum-7075-t6-sheet": {
+      "aliases": [
+        "aluminum-7075"
+      ],
+      "condition": "Bare 7075-T6 sheet, 0.008–0.249 in thick. Yield is lowest minimum across that range; density/capacity typical alloy data; k is T651 plate reference, not measured T6 sheet.",
+      "properties": {
+        "E": {
+          "source": "nasa-7075",
+          "kind": "typical",
+          "note": "§7.21 nu; §7.222 typical modulus10.4 million psi converted and rounded to71.7 GPa."
+        },
+        "nu": {
+          "source": "nasa-7075",
+          "kind": "typical",
+          "note": "§7.21 nu; §7.222 typical modulus10.4 million psi converted and rounded to71.7 GPa."
+        },
+        "density": {
+          "source": "kaiser-7075",
+          "kind": "typical",
+          "note": "p2, density at 20 C, specific heat at 100 C, k for T651 at 20 C (explicit temper proxy)."
+        },
+        "yield": {
+          "source": "kaiser-sheet-plate",
+          "kind": "specification minimum",
+          "note": "Table 7.2, 63 ksi minimum in thinnest band; 63*6.894757293=434.3697 MPa, conservatively rounded down."
+        },
+        "k": {
+          "source": "kaiser-7075",
+          "kind": "typical",
+          "note": "p2, density at 20 C, specific heat at 100 C, k for T651 at 20 C (explicit temper proxy)."
+        },
+        "capacity": {
+          "source": "kaiser-7075",
+          "kind": "typical",
+          "note": "p2, density at 20 C, specific heat at 100 C, k for T651 at 20 C (explicit temper proxy)."
+        }
+      }
+    },
+    "steel-a36-hot-rolled-plate": {
+      "aliases": [
+        "steel"
+      ],
+      "condition": "SSAB ASTM A36 hot rolled plate, thickness 2.54–152 mm. Typical physical references: maker E/nu/density and generic-steel handbook thermal values.",
+      "properties": {
+        "E": {
+          "source": "ssab-questions",
+          "kind": "typical",
+          "note": "Questions 3,10,17; approximate room-temperature values for SSAB steels, not a certificate for a particular A36 heat."
+        },
+        "nu": {
+          "source": "ssab-questions",
+          "kind": "typical",
+          "note": "Questions 3,10,17; approximate room-temperature values for SSAB steels, not a certificate for a particular A36 heat."
+        },
+        "density": {
+          "source": "ssab-questions",
+          "kind": "typical",
+          "note": "Questions 3,10,17; approximate room-temperature values for SSAB steels, not a certificate for a particular A36 heat."
+        },
+        "yield": {
+          "source": "ssab-a36",
+          "kind": "specification minimum",
+          "note": "36 ksi required minimum; 36*6.894757293=248.2113 MPa, conservatively rounded down."
+        },
+        "k": {
+          "source": "nist-thermal",
+          "kind": "typical",
+          "note": "p16, generic steel thermal reference at 20 C; not a measured A36 heat. Density7850kg/m3."
+        },
+        "capacity": {
+          "source": "nist-thermal",
+          "kind": "typical",
+          "note": "p16, generic steel thermal reference at 20 C; not a measured A36 heat. Density7850kg/m3."
+        }
+      }
+    },
+    "stainless-304-4301-hot-rolled": {
+      "aliases": [
+        "stainless-304"
+      ],
+      "condition": "Outokumpu Core 304/4301 hot rolled plate/sheet, EN 10088-2 limits in source Table 5. Not cold worked.",
+      "properties": {
+        "E": {
+          "source": "outokumpu-core",
+          "kind": "typical",
+          "note": "Physical properties table, typical 20 C except k/capacity as tabulated."
+        },
+        "nu": {
+          "source": "nasa-snp",
+          "kind": "typical",
+          "note": "p229, SS304 room-temperature reference; not a certificate for Outokumpu product."
+        },
+        "density": {
+          "source": "outokumpu-core",
+          "kind": "typical",
+          "note": "Physical properties table, typical 20 C except k/capacity as tabulated."
+        },
+        "yield": {
+          "source": "outokumpu-core",
+          "kind": "specification minimum",
+          "note": "Table 5 hot rolled strip/plate minimum Rp0.2."
+        },
+        "k": {
+          "source": "outokumpu-core",
+          "kind": "typical",
+          "note": "Physical properties table, typical 20 C except k/capacity as tabulated."
+        },
+        "capacity": {
+          "source": "outokumpu-core",
+          "kind": "typical",
+          "note": "Physical properties table, typical 20 C except k/capacity as tabulated."
+        }
+      }
+    },
+    "copper-cu-etp-annealed": {
+      "aliases": [
+        "copper"
+      ],
+      "condition": "KME Cu-ETP annealed physical reference at 20 C. No tensile yield minimum supplied: removed legacy 70 MPa, and no universal safety factor is available.",
+      "properties": {
+        "E": {
+          "source": "kme-c110",
+          "kind": "typical",
+          "note": "Physical properties at 20 C, annealed."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "kme-c110",
+          "kind": "typical",
+          "note": "Physical properties at 20 C, annealed."
+        },
+        "k": {
+          "source": "kme-c110",
+          "kind": "typical",
+          "note": "Physical properties at 20 C, annealed."
+        },
+        "capacity": {
+          "source": "kme-c110",
+          "kind": "typical",
+          "note": "Physical properties at 20 C, annealed."
+        }
+      }
+    },
+    "brass-c26000-h01-rod": {
+      "aliases": [
+        "brass"
+      ],
+      "condition": "Wieland C26000 H01 quarter-hard rod, diameter <=2.5 in stocked range. Yield is minimum at 0.5% extension, not0.2% proof stress. Physical values are maker references; nu remains unsourced.",
+      "properties": {
+        "E": {
+          "source": "wieland-c260",
+          "kind": "typical",
+          "note": "Physical properties table,20 C, maker republishes CDA physical facts."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "wieland-c260",
+          "kind": "typical",
+          "note": "Physical properties table,20 C, maker republishes CDA physical facts."
+        },
+        "yield": {
+          "source": "wieland-c260",
+          "kind": "specification minimum",
+          "note": "H01 rod >1 inch, lowest minimum across stocked diameter range <=2.5 in; ASTM B927/B927M-23."
+        },
+        "k": {
+          "source": "wieland-c260",
+          "kind": "typical",
+          "note": "Physical properties table,20 C, maker republishes CDA physical facts."
+        },
+        "capacity": {
+          "source": "wieland-c260",
+          "kind": "typical",
+          "note": "Physical properties table,20 C, maker republishes CDA physical facts."
+        }
+      }
+    },
+    "cast-iron-en-gjl-200": {
+      "aliases": [
+        "cast-iron"
+      ],
+      "condition": "KIPP EN-GJL-200 grey cast iron reference. Not an equivalence claim for FC200 or ASTM class30. Listed strength ranges are typical, not certified design allowables.",
+      "properties": {
+        "E": {
+          "source": "kipp-iron",
+          "kind": "typical",
+          "note": "Density7.15g/cm3; E lower endpoint of 88–113 GPa range."
+        },
+        "nu": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "source": "kipp-iron",
+          "kind": "typical",
+          "note": "Density7.15g/cm3; E lower endpoint of 88–113 GPa range."
+        },
+        "tensile": {
+          "source": "kipp-iron",
+          "kind": "datasheet typical",
+          "note": "Lower endpoint of 200–300 MPa maker range; no product/thickness-specific minimum."
+        },
+        "compressive": {
+          "source": "kipp-iron",
+          "kind": "datasheet typical",
+          "note": "Maker compressive strength; no guaranteed minimum."
+        },
+        "k": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "wc94-co6-goodfellow-rod": {
+      "aliases": [
+        "tungsten-carbide"
+      ],
+      "condition": "Goodfellow WC94-Co6 rod. Physical ranges are reference values; no guaranteed strength supplied.",
+      "properties": {
+        "E": {
+          "source": "goodfellow-wc6co",
+          "kind": "typical",
+          "note": "Maker physical properties: nu upper endpoint0.21–0.22; k lower endpoint60–80 at 20 C; capacity lower endpoint200–480 at 25 C. Scalar endpoints are not uncertainty bounds propagated by ink."
+        },
+        "nu": {
+          "source": "goodfellow-wc6co",
+          "kind": "typical",
+          "note": "Maker physical properties: nu upper endpoint0.21–0.22; k lower endpoint60–80 at 20 C; capacity lower endpoint200–480 at 25 C. Scalar endpoints are not uncertainty bounds propagated by ink."
+        },
+        "density": {
+          "source": "goodfellow-wc6co",
+          "kind": "typical",
+          "note": "Maker physical properties: nu upper endpoint0.21–0.22; k lower endpoint60–80 at 20 C; capacity lower endpoint200–480 at 25 C. Scalar endpoints are not uncertainty bounds propagated by ink."
+        },
+        "k": {
+          "source": "goodfellow-wc6co",
+          "kind": "typical",
+          "note": "Maker physical properties: nu upper endpoint0.21–0.22; k lower endpoint60–80 at 20 C; capacity lower endpoint200–480 at 25 C. Scalar endpoints are not uncertainty bounds propagated by ink."
+        },
+        "capacity": {
+          "source": "goodfellow-wc6co",
+          "kind": "typical",
+          "note": "Maker physical properties: nu upper endpoint0.21–0.22; k lower endpoint60–80 at 20 C; capacity lower endpoint200–480 at 25 C. Scalar endpoints are not uncertainty bounds propagated by ink."
+        }
+      }
+    },
+    "glass-soda-lime-annealed-en572": {
+      "aliases": [
+        "glass"
+      ],
+      "condition": "Annealed soda-lime silicate glass, AGC SUNMAX reference per EN572. Bending is characteristic45 MPa, not tensile and not a design allowable.",
+      "properties": {
+        "E": {
+          "source": "agc-soda-lime",
+          "kind": "typical",
+          "note": "Physical and mechanical properties per EN572."
+        },
+        "nu": {
+          "source": "agc-soda-lime",
+          "kind": "typical",
+          "note": "Physical and mechanical properties per EN572."
+        },
+        "density": {
+          "source": "agc-soda-lime",
+          "kind": "typical",
+          "note": "Physical and mechanical properties per EN572."
+        },
+        "k": {
+          "source": "agc-soda-lime",
+          "kind": "typical",
+          "note": "Physical and mechanical properties per EN572."
+        },
+        "capacity": {
+          "source": "agc-soda-lime",
+          "kind": "typical",
+          "note": "Physical and mechanical properties per EN572."
+        },
+        "bending": {
+          "source": "agc-soda-lime",
+          "kind": "datasheet",
+          "note": "EN572 characteristic bending strength, before design/surface/duration factors."
+        }
+      }
+    },
+    "glass-borofloat33-schott": {
+      "aliases": [
+        "borosilicate-glass"
+      ],
+      "condition": "SCHOTT BOROFLOAT33 flat borosilicate glass. Bending25 MPa per DIN52292T1, no tensile limit.",
+      "properties": {
+        "E": {
+          "source": "schott-borofloat-pdf",
+          "kind": "typical",
+          "note": "E/nu at 20 C; k at 90 C; capacity averaged20–100 C."
+        },
+        "nu": {
+          "source": "schott-borofloat-pdf",
+          "kind": "typical",
+          "note": "E/nu at 20 C; k at 90 C; capacity averaged20–100 C."
+        },
+        "density": {
+          "source": "schott-borofloat-pdf",
+          "kind": "typical",
+          "note": "E/nu at 20 C; k at 90 C; capacity averaged20–100 C."
+        },
+        "k": {
+          "source": "schott-borofloat-pdf",
+          "kind": "typical",
+          "note": "E/nu at 20 C; k at 90 C; capacity averaged20–100 C."
+        },
+        "capacity": {
+          "source": "schott-borofloat-pdf",
+          "kind": "typical",
+          "note": "E/nu at 20 C; k at 90 C; capacity averaged20–100 C."
+        },
+        "bending": {
+          "source": "schott-borofloat-pdf",
+          "kind": "datasheet",
+          "note": "DIN52292T1 bending strength; characteristic/reference, not a design allowable."
+        }
+      }
+    },
+    "water-liquid-20c-1bar": {
+      "aliases": [
+        "water"
+      ],
+      "condition": "NIST water, liquid293.15K at 1bar; reference thermophysical values.",
+      "properties": {
+        "viscosity": {
+          "source": "nist-water",
+          "kind": "typical",
+          "note": "Query293.15K,1bar. Cp4.18406J/gK converted to4184.06J/kgK."
+        },
+        "density": {
+          "source": "nist-water",
+          "kind": "typical",
+          "note": "Query293.15K,1bar. Cp4.18406J/gK converted to4184.06J/kgK."
+        },
+        "conductivity": {
+          "source": "nist-water",
+          "kind": "typical",
+          "note": "Query293.15K,1bar. Cp4.18406J/gK converted to4184.06J/kgK."
+        },
+        "capacity": {
+          "source": "nist-water",
+          "kind": "typical",
+          "note": "Query293.15K,1bar. Cp4.18406J/gK converted to4184.06J/kgK."
+        }
+      }
+    },
+    "air-unspecified-reference": {
+      "aliases": [
+        "air"
+      ],
+      "condition": "Legacy air reference, unspecified humidity/pressure; all four values unsourced. Supply measured/validated data for flow.",
+      "properties": {
+        "viscosity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "conductivity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    },
+    "oil-unspecified-reference": {
+      "aliases": [
+        "oil"
+      ],
+      "condition": "Legacy unspecified oil reference; no viscosity grade, maker or temperature. All four values unsourced; not a named real oil.",
+      "properties": {
+        "viscosity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "density": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "conductivity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        },
+        "capacity": {
+          "kind": "unsourced",
+          "source": null,
+          "note": "Legacy physical reference value; no qualifying source located."
+        }
+      }
+    }
+  }
+}

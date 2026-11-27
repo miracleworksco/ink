@@ -1,0 +1,7 @@
+{
+  "ratings": {
+    "motor-torque": {"ordered": [{"read": "peak-torque"}, {"number": 0.15, "unit": "N*m"}], "sizes": true, "from": "arm.ink: (effort-limits -150 150)"},
+    "weak-motor": {"ordered": [{"read": "peak-torque"}, {"number": 100, "unit": "N*mm"}], "sizes": true, "from": "a motor of 100 N mm"},
+    "motor-speed": {"ordered": [{"read": "speed-at-peak-torque"}, {"number": 30, "unit": "rpm"}], "sizes": true, "from": "a motor of 30 rpm"}
+  }
+}

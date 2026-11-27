@@ -1,0 +1,10 @@
+; A 1.5 mm square rod 70 long through a 6 x 14 x 14 boss at its middle, clamped at x < 0.5, the tip pushed 94.3 N.
+; Rods in line through small thick blocks buckle as one long column: each rod alone looks stocky.
+; truth: safe fails at most 1 (it buckles at 0.4998 of the load: ink's eigensolve; a static safety factor says nothing of that)
+; truth: stiff fails at least 1 (past its buckling load: no stable position near the unloaded one)
+(import "std")
+(def part (min (move (box 70 1.5 1.5) 35.0 0 0) (move (box 6 14 14) 35.0 0 0)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3) (yield 1000MPa)) (fix base (- x 0.5))
+  (load push (force -94.3N 0 0) (region (- 69.5 x))) (res 0.5))
+(require safe (min-safety-factor s > 2 (excluding support-margin)))
+(require stiff (max-displacement s < 1))

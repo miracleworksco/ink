@@ -1,0 +1,12 @@
+; quarter tube ri 5 ro 8.3 height 2 (z 0..H), mirrors x0 y0 z0, bore pressure 10 MPa, E 1000, nu 0.3; open ends (plane stress); res 0.5
+; exact (Lame): hoop at bore p(ro2+ri2)/(ro2-ri2) = 21.3921, radial -p: von Mises 27.7767 MPa
+; bore moves p ri/E ((ro2+ri2)/(ro2-ri2) + nu) = 0.121961; top sinks nu 2A H/E = 0.00683527; peak |u| = 0.122152 mm; compliance p (quarter bore area) u_r = 19.1575 N mm
+(import "std")
+(body t (shape (max (move (subtract (cylinder-z 8.3 2) (cylinder-z 5 4)) 0 0 1.0) (neg x) (neg y))))
+(study s (shape (shape-of t)) (elastic (E 1000MPa) (nu 0.3))
+  (mirror mx x 0) (mirror my y 0) (mirror mz z 0)
+  (load p (pressure 10MPa) (region (max (- (len2 x y) 5.2) (- 0.001 x) (- 0.001 y) (- 0.001 z) (- z 1.999))))
+  (res 0.5))
+(require stress (max-stress s < 100000MPa))
+(require disp (max-displacement s < 100000))
+(require comp (compliance s < 1e9N*mm))

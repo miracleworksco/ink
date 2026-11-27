@@ -1,0 +1,9 @@
+; bar 8 x 2 x 2, x from 0; held at 20 C over its first 1.2 mm; 0.01 W spread past x = 0+7.0; k 0.5; res 0.5
+; exact 1-D: Tmax = 20 + P (a - w)/(k A) + P (L - a)/(2 k A) = 51.5 C
+(import "std")
+(body bar (shape (move (box 8 2 2) 4.0 0 0)))
+(study s (shape (shape-of bar)) (heat (k 0.5W/m/K))
+  (temperature cold (- x 1.2) 20degC)
+  (source q (power 0.01W) (region (- 7.0 x)))
+  (res 0.5))
+(require temp (max-temperature s < 1e6degC))

@@ -1,0 +1,5 @@
+; A fin from a 4 x 6 x 6 block held at x < 1, 4 wide, tapering from 1 mm at the block (x 4) to a knife edge at x 20, E 200 GPa, nu 0, 1e-5 N over x > 15. Thinner than two floor cells (0.0625 mm) for its last 2 mm, far from material they resolve: where the taper rule gives way.
+; truth: stiff fails about 5.354e-07 (beam theory over the taper, its section integrated from the block)
+(import "std") (def part (min (move (box 4 6 6) 2 0 0) (max (move (box 20 4 1) 10 0 0) (- (abs z) (* 0.03125 (- 20 x))))))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix root (- x 1)) (load tip (force 0 0 -1e-05N) (region (- 15 x))) (res 0.5))
+(require stiff (max-displacement s < 5.1e-7))

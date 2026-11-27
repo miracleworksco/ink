@@ -1,0 +1,12 @@
+; A 1.5 mm square rod 30 long (x 10 to 40) out of a 10 mm cube's side, the cube held at y < 0.5, pushed 462.6 N
+; along its axis at its tip: twice its cantilever Euler load, pi^2 E I / 4 L^2 = 231.3 N. A 4 x 4 post 20 tall on the
+; cube's top, pressed 1500 N down. Two slender members on one thick part: each is its own.
+; truth: safe fails at most 1 (the rod buckles at 0.5 of the load: Euler, and ink's eigensolve 0.49; a static safety factor says nothing of that)
+; truth: stiff fails at least 1 (past its buckling load: no stable position near the unloaded one)
+(import "std")
+(def part (min (move (box 10 10 10) 5 5 0) (min (move (box 30 1.5 1.5) 25.0 5 0) (move (box 4 20 4) 5 20 0))))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3) (yield 1000MPa)) (fix base (- y 0.5))
+  (load pb (force 0 -1500N 0) (region (- 29.5 y)))
+  (load push (force -462.6N 0 0) (region (- 39.5 x))) (res 0.25))
+(require safe (min-safety-factor s > 2 (excluding support-margin)))
+(require stiff (max-displacement s < 1))

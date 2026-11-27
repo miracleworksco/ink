@@ -1,0 +1,23 @@
+{
+  "motor": {"holding-torque-Nm": 0.5, "side-N-max": 100, "curve": [[60, 0.4], [300, 0.1]], "stall-Nm": 0.6, "free-rpm": 600},
+  "ratings": {
+    "side-load": {"ordered": [{"read": "radial-load", "on": "shaft"}, {"number": {"record": ["motor", "side-N-max"]}, "unit": "N"}], "sizes": true, "from": "its record's motor side-N-max"},
+    "pull-out": {"ordered": [{"read": "torque", "on": "shaft"},
+                             {"table": {"x": "rpm", "y": "N*m", "points": {"record": ["motor", "curve"]}, "below": "first"}, "at": {"read": "speed", "on": "shaft"}}],
+                 "sizes": true, "from": "its record's motor curve"}
+  },
+  "uncovered": {
+    "pull-out": {"ordered": [{"read": "torque", "on": "shaft"},
+                             {"table": {"x": "rpm", "y": "N*m", "points": {"record": ["motor", "curve"]}, "below": "none: its chart's first torque is above its holding torque. Ask over a span that stays above 60 rpm"},
+                              "at": {"read": "speed", "on": "shaft"}}],
+                 "sizes": true, "from": "its record's motor curve"}
+  },
+  "line": {
+    "torque": {"ordered": [{"read": "torque", "on": "shaft"},
+                           {"table": {"x": "rpm", "y": "N*m", "line": true, "points": [[0, {"record": ["motor", "stall-Nm"]}], [{"record": ["motor", "free-rpm"]}, 0]]}, "at": {"read": "speed", "on": "shaft"}}],
+               "sizes": true, "from": "its record's motor stall-Nm and free-rpm"}
+  },
+  "astray": {
+    "side-load": {"ordered": [{"read": "radial-load", "on": "shaft"}, {"number": {"record": ["motor", "side-max"]}, "unit": "N"}], "sizes": true, "from": "a key its record lacks"}
+  }
+}

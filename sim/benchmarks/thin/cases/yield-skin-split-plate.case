@@ -1,0 +1,10 @@
+; A plate 30 x 10 x 0.3 mm (z -0.29 to 0.01), held at x < 1, pulled 3 N along x at x > 29: membrane stress 1 MPa,
+; uniform through its thickness. E 200 GPa throughout; yield 250 MPa but 10 MPa in a skin z > 0.002 (8 um under its top face).
+; 1 mm cells: the plate splits to 0.125 mm. On every split size (0.0625 to 0.5) its top face lies in a cell under half full,
+; and that cell's surface read falls back half a *grid* cell, out of the plate: no read region reaches the skin.
+; truth: safe fails about 10 (statics: 3 N over 3 mm2 = 1 MPa against the skin's 10 MPa)
+(import "std")
+(def part (move (box 30 10 0.3) 15 0 -0.14))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (- 0.002 z) 10 250))))
+  (fix root (- x 1)) (load pull (force 3N 0 0) (region (- 29 x))) (res 1))
+(require safe (min-safety-factor s > 50))

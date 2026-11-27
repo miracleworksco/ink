@@ -1,0 +1,18 @@
+; Truth check for soft-weak-skin-side.ink: the same beam, the skin still E 200, but one yield
+; (250) throughout, on 0.5 mm cells. Its least factor is the bulk's away from the skin
+; (the load end), 2.71 here (2.78 on 1 mm, 3.39 on 2 mm: converging). The skin itself
+; carries E_skin/E of the stress beside it (about 0.05 MPa against yield 25: a factor of
+; about 500), so the true least factor of soft-weak-skin-side.ink is about 2.7.
+; truth: safe holds about 2.71 (this model on 0.5 mm cells: 2.78 on 1 mm, 3.39 on 2 mm, converging; beam theory 4.6 at the faces)
+; truth: unsafe fails about 2.71 (as safe)
+(import "std")
+(def part (box 100 10 10))
+(def skin (max (- 4.9 y) (- y 5.5) (- 4 z) (- z 4.8) (- (abs x) 40)))
+(study s (shape part)
+ (elastic (E (* 1MPa (select skin 200 200000))) (nu 0.3) (yield 250MPa))
+ (fix root (+ x 49))
+ (load top (force 1000N 0 0) (region (max (- 49 x) (- 4 z))))
+ (load bottom (force -1000N 0 0) (region (max (- 49 x) (+ z 4))))
+ (res 0.5))
+(require safe (min-safety-factor s > 1))
+(require unsafe (min-safety-factor s < 1))

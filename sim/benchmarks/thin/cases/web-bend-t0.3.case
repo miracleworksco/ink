@@ -1,0 +1,8 @@
+; Two 10 x 6 x 6 blocks joined across a gap by a web 0.3 mm thick and 6 wide, 1 mm cells, 0.01 N down at the far end: 0.1 N mm across the web.
+; truth: strong fails at least 0.64 (statics: |sxx| >= 4 M / b t^2 over the section, von Mises with free faces)
+; truth: safe fails at most 390 (yield over the statics bound)
+(import "std")
+(def part (min (move (box 10 6 6) 5 0 0) (move (box 10 6 6) 16 0 0) (move (box 2 6 0.3) 10.5 0 0.5)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 250MPa)) (fix root (- x 1)) (load push (force 0 0 -0.01N) (region (- 20 x))) (res 1))
+(require strong (max-stress s < 0.6MPa))
+(require safe (min-safety-factor s > 400))

@@ -1,0 +1,2158 @@
+{
+ "en-heatband-k0.2-0.1": {
+  "how": "closed form",
+  "truths": {
+   "t": 4892.5
+  }
+ },
+ "en-heatband-k0.2-0.2": {
+  "how": "closed form",
+  "truths": {
+   "t": 4892.5
+  }
+ },
+ "en-heatband-step-0.1": {
+  "how": "closed form",
+  "truths": {
+   "t": 2527.37
+  }
+ },
+ "en-turned-0.125": {
+  "how": "CalculiX, converged over three meshes",
+  "truths": {
+   "d": 0.26455
+  }
+ },
+ "en-turned-0.25": {
+  "how": "CalculiX, converged over three meshes",
+  "truths": {
+   "d": 0.26455
+  }
+ },
+ "en-turned-0.5": {
+  "how": "CalculiX, converged over three meshes",
+  "truths": {
+   "d": 0.26455
+  }
+ },
+ "hd-WRONG1-pinned-column-false-no": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (31.41759, 31.41726, 31.41722, 31.41722), `within` its last step; the beam's 31.4172 (solid.py)",
+  "truths": {
+   "q": 31.41722
+  },
+  "within": 1e-06
+ },
+ "hd-bal-cf-aligned": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (7.883342, 7.878795, 7.8776, 7.877248), `within` its last step; the beam's 7.87725 (solid.py)",
+  "truths": {
+   "q": 7.877248
+  },
+  "within": 4.47e-05
+ },
+ "hd-bal-cf-shifted": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (7.883342, 7.878795, 7.8776, 7.877248), `within` its last step; the beam's 7.87725 (solid.py)",
+  "truths": {
+   "q": 7.877248
+  },
+  "within": 4.47e-05
+ },
+ "hd-bal-cf-shiftz": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (7.883342, 7.878795, 7.8776, 7.877248), `within` its last step; the beam's 7.87725 (solid.py)",
+  "truths": {
+   "q": 7.877248
+  },
+  "within": 4.47e-05
+ },
+ "hd-bal-pp-aligned": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (31.41759, 31.41726, 31.41722, 31.41722), `within` its last step; the beam's 31.4172 (solid.py)",
+  "truths": {
+   "q": 31.41722
+  },
+  "within": 1e-06
+ },
+ "hd-bal-pp-shifted": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (31.41759, 31.41726, 31.41722, 31.41722), `within` its last step; the beam's 31.4172 (solid.py)",
+  "truths": {
+   "q": 31.41722
+  },
+  "within": 1e-06
+ },
+ "hd-bal-pp-shiftz": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (31.41759, 31.41726, 31.41722, 31.41722), `within` its last step; the beam's 31.4172 (solid.py)",
+  "truths": {
+   "q": 31.41722
+  },
+  "within": 1e-06
+ },
+ "hd-bnu-cf-nu0": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (7.865339, 7.865317, 7.865315, 7.865307), `within` its last step; the beam's 7.86531 (solid.py)",
+  "truths": {
+   "q": 7.865307
+  },
+  "within": 1.02e-06
+ },
+ "hd-bnu-pp-long": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (78.6486, 78.64808, 78.64664, 78.64843), `within` its last step; the beam's 78.6484 (solid.py)",
+  "truths": {
+   "q": 78.64843
+  },
+  "within": 2.28e-05
+ },
+ "hd-bnu-pp-nu0": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (31.4251, 31.42474, 31.42472, 31.42469), `within` its last step; the beam's 31.4247 (solid.py)",
+  "truths": {
+   "q": 31.42469
+  },
+  "within": 1e-06
+ },
+ "hd-bnu-pp-nu045": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (31.4144, 31.4141, 31.41411, 31.41414); the beam's 31.4237",
+  "truths": {
+   "q": 31.4141
+  },
+  "within": 2e-05
+ },
+ "hd-bnu-pp-sq": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (20.94453, 20.9443, 20.94428, 20.94427), `within` its last step; the beam's 20.9443 (solid.py)",
+  "truths": {
+   "q": 20.94427
+  },
+  "within": 1e-06
+ },
+ "hd-bsw-cf-r0.3": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (7.35796, 7.35391, 7.35283, 7.35252, so 7.3524); the beam's 7.34301",
+  "truths": {
+   "q": 7.3524
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-cf-r0.5": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (7.35796, 7.35391, 7.35283, 7.35252, so 7.3524); the beam's 7.34301",
+  "truths": {
+   "q": 7.3524
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-cf-r0.9": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (7.35796, 7.35391, 7.35283, 7.35252, so 7.3524); the beam's 7.34301",
+  "truths": {
+   "q": 7.3524
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-cf-r1.1": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (7.35796, 7.35391, 7.35283, 7.35252, so 7.3524); the beam's 7.34301",
+  "truths": {
+   "q": 7.3524
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-cf-r1.3": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (7.35796, 7.35391, 7.35283, 7.35252, so 7.3524); the beam's 7.34301",
+  "truths": {
+   "q": 7.3524
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-cf-r1.7": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (7.35796, 7.35391, 7.35283, 7.35252, so 7.3524); the beam's 7.34301",
+  "truths": {
+   "q": 7.3524
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-ff-r0.3": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (116.9074, 116.8385, 116.8212, 116.8161), `within` its last step; the beam's 116.816 (solid.py)",
+  "truths": {
+   "q": 116.8161
+  },
+  "within": 4.37e-05
+ },
+ "hd-bsw-ff-r0.5": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (116.9074, 116.8385, 116.8212, 116.8161), `within` its last step; the beam's 116.816 (solid.py)",
+  "truths": {
+   "q": 116.8161
+  },
+  "within": 4.37e-05
+ },
+ "hd-bsw-ff-r0.9": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (116.9074, 116.8385, 116.8212, 116.8161), `within` its last step; the beam's 116.816 (solid.py)",
+  "truths": {
+   "q": 116.8161
+  },
+  "within": 4.37e-05
+ },
+ "hd-bsw-ff-r1.1": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (116.9074, 116.8385, 116.8212, 116.8161), `within` its last step; the beam's 116.816 (solid.py)",
+  "truths": {
+   "q": 116.8161
+  },
+  "within": 4.37e-05
+ },
+ "hd-bsw-ff-r1.3": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (116.9074, 116.8385, 116.8212, 116.8161), `within` its last step; the beam's 116.816 (solid.py)",
+  "truths": {
+   "q": 116.8161
+  },
+  "within": 4.37e-05
+ },
+ "hd-bsw-ff-r1.7": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (116.9074, 116.8385, 116.8212, 116.8161), `within` its last step; the beam's 116.816 (solid.py)",
+  "truths": {
+   "q": 116.8161
+  },
+  "within": 4.37e-05
+ },
+ "hd-bsw-fp-r0.3": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (59.9908, 59.9563, 59.9473, 59.9447, so 59.944); the beam's 59.9281",
+  "truths": {
+   "q": 59.944
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-fp-r0.5": {
+  "how": "read only, two solvers settling apart: CalculiX, C3D20R on 40 to 320 cells along (59.9908, 59.9563, 59.9473, 59.9447) gives 59.944 +- 0.004, and C3D8 59.943; ink settles about 59.957 (0.125 mm: 59.9586), 0.013 apart, and which is right is not known; the beam's 59.9281",
+  "truths": {
+   "q": null
+  }
+ },
+ "hd-bsw-fp-r0.9": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (59.9908, 59.9563, 59.9473, 59.9447, so 59.944); the beam's 59.9281",
+  "truths": {
+   "q": 59.944
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-fp-r1.1": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (59.9908, 59.9563, 59.9473, 59.9447, so 59.944); the beam's 59.9281",
+  "truths": {
+   "q": 59.944
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-fp-r1.3": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (59.9908, 59.9563, 59.9473, 59.9447, so 59.944); the beam's 59.9281",
+  "truths": {
+   "q": 59.944
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-fp-r1.7": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (59.9908, 59.9563, 59.9473, 59.9447, so 59.944); the beam's 59.9281",
+  "truths": {
+   "q": 59.944
+  },
+  "within": 2e-05
+ },
+ "hd-bsw-pp-r0.3": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.32802, 29.3277, 29.32767, 29.32767), `within` its last step; the beam's 29.3277 (solid.py)",
+  "truths": {
+   "q": 29.32767
+  },
+  "within": 1e-06
+ },
+ "hd-bsw-pp-r0.5": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.32802, 29.3277, 29.32767, 29.32767), `within` its last step; the beam's 29.3277 (solid.py)",
+  "truths": {
+   "q": 29.32767
+  },
+  "within": 1e-06
+ },
+ "hd-bsw-pp-r0.9": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.32802, 29.3277, 29.32767, 29.32767), `within` its last step; the beam's 29.3277 (solid.py)",
+  "truths": {
+   "q": 29.32767
+  },
+  "within": 1e-06
+ },
+ "hd-bsw-pp-r1.1": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.32802, 29.3277, 29.32767, 29.32767), `within` its last step; the beam's 29.3277 (solid.py)",
+  "truths": {
+   "q": 29.32767
+  },
+  "within": 1e-06
+ },
+ "hd-bsw-pp-r1.3": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.32802, 29.3277, 29.32767, 29.32767), `within` its last step; the beam's 29.3277 (solid.py)",
+  "truths": {
+   "q": 29.32767
+  },
+  "within": 1e-06
+ },
+ "hd-bsw-pp-r1.7": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.32802, 29.3277, 29.32767, 29.32767), `within` its last step; the beam's 29.3277 (solid.py)",
+  "truths": {
+   "q": 29.32767
+  },
+  "within": 1e-06
+ },
+ "hd-buck-cf": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (7.357961, 7.353912, 7.352834, 7.35251), `within` its last step; the beam's 7.35251 (solid.py)",
+  "truths": {
+   "q": 7.35251
+  },
+  "within": 4.41e-05
+ },
+ "hd-buck-cf-offaxis": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (7.357961, 7.353912, 7.352834, 7.35251), `within` its last step; the beam's 7.35251 (solid.py)",
+  "truths": {
+   "q": 7.35251
+  },
+  "within": 4.41e-05
+ },
+ "hd-buck-cf-tension": {
+  "how": "pulled: no buckle; the hunt copied the compression value",
+  "truths": {
+   "q": null
+  }
+ },
+ "hd-buck-cf-tilt": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (7.373329, 7.36927, 7.368183, 7.367875), `within` its last step; the beam's 7.36787 (solid.py)",
+  "truths": {
+   "q": 7.367875
+  },
+  "within": 4.18e-05
+ },
+ "hd-buck-ff": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (116.9074, 116.8385, 116.8212, 116.8161), `within` its last step; the beam's 116.816 (solid.py)",
+  "truths": {
+   "q": 116.8161
+  },
+  "within": 4.37e-05
+ },
+ "hd-buck-ff-tilt": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (117.1516, 117.0826, 117.0652, 117.0601), `within` its last step; the beam's 117.06 (solid.py)",
+  "truths": {
+   "q": 117.0601
+  },
+  "within": 4.36e-05
+ },
+ "hd-buck-fp": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (59.99077, 59.95629, 59.94734, 59.94469), `within` its last step; the beam's 59.9447 (solid.py)",
+  "truths": {
+   "q": 59.94469
+  },
+  "within": 4.42e-05
+ },
+ "hd-buck-fp-tilt": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (60.11608, 60.08152, 60.07253, 60.06991), `within` its last step; the beam's 60.0699 (solid.py)",
+  "truths": {
+   "q": 60.06991
+  },
+  "within": 4.36e-05
+ },
+ "hd-buck-pp": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.32802, 29.3277, 29.32767, 29.32767), `within` its last step; the beam's 29.3277 (solid.py)",
+  "truths": {
+   "q": 29.32767
+  },
+  "within": 1e-06
+ },
+ "hd-buck-pp-tilt": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (29.38928, 29.38895, 29.38891, 29.38893), `within` its last step; the beam's 29.3889 (solid.py)",
+  "truths": {
+   "q": 29.38893
+  },
+  "within": 1e-06
+ },
+ "hd-mal-cf-nu0.0": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (94.01226, 94.01199, 94.01198, 94.01197), `within` its last step; the beam's 94.012 (solid.py)",
+  "truths": {
+   "q": 94.01197
+  },
+  "within": 1e-06
+ },
+ "hd-mal-cf-nu0.0-shift": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (94.01226, 94.01199, 94.01198, 94.01197), `within` its last step; the beam's 94.012 (solid.py)",
+  "truths": {
+   "q": 94.01197
+  },
+  "within": 1e-06
+ },
+ "hd-mal-cf-nu0.3": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (94.22581, 94.17107, 94.15663, 94.15236), `within` its last step; the beam's 94.1524 (solid.py)",
+  "truths": {
+   "q": 94.15236
+  },
+  "within": 4.54e-05
+ },
+ "hd-mal-ffm-nu0.0": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (596.663, 596.6432, 596.6416, 596.6414), `within` its last step; the beam's 596.641 (solid.py)",
+  "truths": {
+   "q": 596.6414
+  },
+  "within": 1e-06
+ },
+ "hd-mal-ffm-nu0.3": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (599.016, 598.294, 598.104, 598.048 Hz, so 598.03); the beam's 596.205",
+  "truths": {
+   "q": 598.03
+  },
+  "within": 2e-05
+ },
+ "hd-mal-ppm-nu0.0": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (263.7889, 263.7874, 263.7873, 263.7873), `within` its last step; the beam's 263.787 (solid.py)",
+  "truths": {
+   "q": 263.7873
+  },
+  "within": 1e-06
+ },
+ "hd-mal-ppm-nu0.3": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (263.7574, 263.756, 263.7559, 263.7559), `within` its last step; the beam's 263.756 (solid.py)",
+  "truths": {
+   "q": 263.7559
+  },
+  "within": 1e-06
+ },
+ "hd-modal-cf": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (96.45011, 96.39662, 96.3823, 96.37801), `within` its last step; the beam's 96.378 (solid.py)",
+  "truths": {
+   "q": 96.37801
+  },
+  "within": 4.45e-05
+ },
+ "hd-modal-cf-tilt": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (96.45011, 96.39662, 96.3823, 96.37801), `within` its last step; the beam's 96.378 (solid.py)",
+  "truths": {
+   "q": 96.37801
+  },
+  "within": 4.45e-05
+ },
+ "hd-modal-ffm": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (612.9412, 612.2348, 612.0456, 611.9891), `within` its last step; the beam's 611.989 (solid.py)",
+  "truths": {
+   "q": 611.9891
+  },
+  "within": 9.23e-05
+ },
+ "hd-modal-ffm-tilt": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (612.9412, 612.2348, 612.0456, 611.9891), `within` its last step; the beam's 611.989 (solid.py)",
+  "truths": {
+   "q": 611.9891
+  },
+  "within": 9.23e-05
+ },
+ "hd-modal-ppm": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (270.0333, 270.0317, 270.0316, 270.0316 Hz); the beam's 270.286",
+  "truths": {
+   "q": 270.0316
+  },
+  "within": 2e-05
+ },
+ "hd-modal-ppm-tilt": {
+  "how": "CalculiX, C3D20R on 40 to 320 cells along (270.0333, 270.0317, 270.0316, 270.0316 Hz); the beam's 270.286",
+  "truths": {
+   "q": 270.0316
+  },
+  "within": 2e-05
+ },
+ "hd-scale-cf-large": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (0.9401226, 0.9401199, 0.9401197, 0.9401196), `within` its last step; the beam's 0.94012 (solid.py)",
+  "truths": {
+   "q": 0.9401196
+  },
+  "within": 1e-06
+ },
+ "hd-scale-cf-small": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (9401.226, 9401.199, 9401.197, 9401.197), `within` its last step; the beam's 9401.2 (solid.py)",
+  "truths": {
+   "q": 9401.197
+  },
+  "within": 1e-06
+ },
+ "hd-scale-pp-large": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (31.42511, 31.42475, 31.42473, 31.42469), `within` its last step; the beam's 31.4247 (solid.py)",
+  "truths": {
+   "q": 31.42469
+  },
+  "within": 1.27e-06
+ },
+ "hd-scale-pp-small": {
+  "how": "CalculiX: hd-scale-pp-large's (31.42511, 31.42475, 31.42473, 31.42469) scaled, `within` as it; its own meshes broke down past 80 cells along (31.4251, 31.42474, 0.9993065, 412.9255); the beam's 31.4247 (solid.py)",
+  "truths": {
+   "q": 31.42469
+  },
+  "within": 1.27e-06
+ },
+ "hd-scale-ppm-large": {
+  "how": "CalculiX, C3D20R on 40, 80, 160 and 320 cells along (2.637889, 2.637874, 2.637873, 2.637873), `within` its last step; the beam's 2.63787 (solid.py)",
+  "truths": {
+   "q": 2.637873
+  },
+  "within": 1e-06
+ },
+ "hd-scale-ppm-small": {
+  "how": "CalculiX: hd-scale-ppm-large's (26378.89, 26378.74, 26378.73, 26378.73) scaled, `within` as it; its own meshes broke down past 80 cells along (26378.89, 26378.74, 47577.8, 26377.31); the beam's 26378.7 (solid.py)",
+  "truths": {
+   "q": 26378.73
+  },
+  "within": 1e-06
+ },
+ "hs-b1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 9.5
+  }
+ },
+ "hs-b2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 9.5
+  }
+ },
+ "hs-b3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 9.5
+  }
+ },
+ "hs-b4": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 9.0
+  }
+ },
+ "hs-b5": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 9.5
+  }
+ },
+ "hs-c1": {
+  "how": "truth corrected: free height L-0.01 (floor holds z<0.01)",
+  "truths": {
+   "disp": 0.000344231845425,
+   "sinks": 0.000344231845425,
+   "stress": 0.000230255415,
+   "under": 0.000230255415
+  }
+ },
+ "hs-c2": {
+  "how": "truth corrected: free height L-0.01 (floor holds z<0.01)",
+  "truths": {
+   "disp": 0.000152480680425,
+   "sinks": 0.000152480680425,
+   "stress": 0.000153246915,
+   "under": 0.000153246915
+  }
+ },
+ "hs-c3": {
+  "how": "truth corrected: free height L-0.01 (floor holds z<0.01)",
+  "truths": {
+   "disp": 0.022159969810424996,
+   "sinks": 0.022159969810424996,
+   "stress": 0.001847433915,
+   "under": 0.001847433915
+  }
+ },
+ "hs-f1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 10
+  }
+ },
+ "hs-f2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 10
+  }
+ },
+ "hs-f3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 10
+  }
+ },
+ "hs-f4": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 10
+  }
+ },
+ "hs-f5": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "stress": 10
+  }
+ },
+ "hs-g1": {
+  "how": "truth corrected: free height L-0.01 (floor holds z<0.01)",
+  "truths": {
+   "comp": 3.956338462909693e-06,
+   "disp": 0.002520030004425,
+   "stress": 0.000622998765
+  }
+ },
+ "hs-g2": {
+  "how": "truth corrected: free height L-0.01 (floor holds z<0.01)",
+  "truths": {
+   "comp": 3.2012157153645095e-06,
+   "disp": 0.002046273712425,
+   "stress": 0.000561391965
+  }
+ },
+ "hs-g3": {
+  "how": "truth corrected: free height L-0.01 (floor holds z<0.01)",
+  "truths": {
+   "comp": 4.033261704512993e-06,
+   "disp": 0.0024581151704250004,
+   "stress": 0.000615297915
+  }
+ },
+ "hs-h1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 64.49760765550239
+  }
+ },
+ "hs-h2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 64.49760765550239
+  }
+ },
+ "hs-h3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 64.49760765550239
+  }
+ },
+ "hs-h4": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 64.49760765550239
+  }
+ },
+ "hs-h5": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 48.56459330143541
+  }
+ },
+ "hs-h6": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 47.175925925925924
+  }
+ },
+ "hs-h7": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 35.21531100478469
+  }
+ },
+ "hs-h8": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 753.3333333333334
+  }
+ },
+ "hs-k1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 22.001272269814258
+  }
+ },
+ "hs-k2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 22.001272269814258
+  }
+ },
+ "hs-k3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 22.238116387229777
+  }
+ },
+ "hs-l1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 19.157523622428936,
+   "disp": 0.12215197415102427,
+   "stress": 27.776677654925187
+  }
+ },
+ "hs-l2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 19.157523622428936,
+   "disp": 0.12215197415102427,
+   "stress": 27.776677654925187
+  }
+ },
+ "hs-l3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 21.07327598467183,
+   "disp": 0.12219212814795881,
+   "stress": 27.776677654925187
+  }
+ },
+ "hs-l4": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 50.240663555229425,
+   "disp": 0.3213006437160865,
+   "stress": 66.53442526063586
+  }
+ },
+ "hs-m1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 1.5498000000000003,
+   "disp": 0.041,
+   "stress": 10
+  }
+ },
+ "hs-m2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 1.5195600000000002,
+   "disp": 0.0402,
+   "stress": 10
+  }
+ },
+ "hs-m3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 10.621800000000002,
+   "disp": 0.281,
+   "stress": 10
+  }
+ },
+ "hs-q0": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 70.0
+  }
+ },
+ "hs-q1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 70.25
+  }
+ },
+ "hs-q10": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 32.875
+  }
+ },
+ "hs-q11": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 62.5
+  }
+ },
+ "hs-q2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 70.625
+  }
+ },
+ "hs-q3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 71.0
+  }
+ },
+ "hs-q4": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 71.22500000000001
+  }
+ },
+ "hs-q5": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 70.625
+  }
+ },
+ "hs-q6": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 70.25
+  }
+ },
+ "hs-q7": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 68.125
+  }
+ },
+ "hs-q8": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 182.5
+  }
+ },
+ "hs-q9": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 70.0
+  }
+ },
+ "hs-r1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 3.0133333333333336,
+   "disp": 0.0765,
+   "stress": 10
+  }
+ },
+ "hs-r2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 3.148933333333333,
+   "disp": 0.0765,
+   "stress": 10
+  }
+ },
+ "hs-r3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 2.9333333333333336,
+   "disp": 0.07500000000000001,
+   "stress": 10
+  }
+ },
+ "hs-s1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 18.530765607846767,
+   "disp": 0.04718820713225765,
+   "stress": 19.19663060921647
+  }
+ },
+ "hs-s2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 18.530765607846767,
+   "disp": 0.04718820713225765,
+   "stress": 19.19663060921647
+  }
+ },
+ "hs-t1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 86.97264168722467
+  }
+ },
+ "hs-t2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 86.97264168722467
+  }
+ },
+ "hs-t3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 91.55536739186964
+  }
+ },
+ "hs-t4": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 87.14083524946085
+  }
+ },
+ "hs-th1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 55.00000000000001
+  }
+ },
+ "hs-th2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 56.0
+  }
+ },
+ "hs-th3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 56.85
+  }
+ },
+ "hs-th4": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 51.5
+  }
+ },
+ "hs-th5": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "cool-enough": 52.653061224489804,
+   "temp": 52.653061224489804
+  }
+ },
+ "hs-th5a": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "cool-enough": 51.74603174603175,
+   "temp": 51.74603174603175
+  }
+ },
+ "hs-th5b": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "cool-enough": 53.333333333333336,
+   "temp": 53.333333333333336
+  }
+ },
+ "hs-th5c": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "cool-enough": 52.653061224489804,
+   "temp": 52.653061224489804
+  }
+ },
+ "hs-th5d": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "cool-enough": 52.653061224489804,
+   "temp": 52.653061224489804
+  }
+ },
+ "hs-th5e": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "cool-enough": 50.8390022675737,
+   "temp": 50.8390022675737
+  }
+ },
+ "hs-th5f": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "cool-enough": 52.653061224489804,
+   "temp": 52.653061224489804
+  }
+ },
+ "hs-th6": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 53.75
+  }
+ },
+ "hs-tm1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 85.81481546555774
+  }
+ },
+ "hs-tm2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 90.07860082309963
+  }
+ },
+ "hs-tm3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "temp": 92.9681195192725
+  }
+ },
+ "hs-u1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "a": 6.894757,
+   "b": 6.894757,
+   "c": 0.002413,
+   "d": 0.002413,
+   "disp": 0.002413,
+   "stress": 6.894757
+  }
+ },
+ "hs-u2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "a": 64.4976,
+   "b": 64.4976,
+   "c": 64.4976,
+   "d": 64.4976,
+   "temp": 64.4976
+  }
+ },
+ "hs-u3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "a": 64.4976,
+   "b": 64.4976,
+   "c": 64.4976,
+   "d": 64.4976,
+   "temp": 64.4976
+  }
+ },
+ "hs-x1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "hi": 11.906465725554302,
+   "lo": 11.906465725554302,
+   "stress": 11.906465725554302
+  }
+ },
+ "hs-x2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "hi": 11.906465725554302,
+   "lo": 11.906465725554302,
+   "stress": 11.906465725554302
+  }
+ },
+ "hs-x3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "hi": 13.783222385544802,
+   "lo": 13.783222385544802,
+   "stress": 13.783222385544802
+  }
+ },
+ "hs-z1": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 3149.0333333333333,
+   "disp": 0.09425,
+   "stress": 10.0
+  }
+ },
+ "hs-z2": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 1.4688e-05,
+   "disp": 3.45e-05,
+   "stress": 10.0
+  }
+ },
+ "hs-z3": {
+  "how": "closed form (statics hunt)",
+  "truths": {
+   "comp": 209935555.55555555,
+   "disp": 6283.333333333334,
+   "stress": 10.0
+  }
+ },
+ "kt-corner0.1-S0.25-above": {
+  "how": "none: a known tracing fault (block face on a sample face, non-binary size)",
+  "truths": {
+   "d": null
+  }
+ },
+ "kt-corner0.1-S0.25-below": {
+  "how": "none: a known tracing fault (block face on a sample face, non-binary size)",
+  "truths": {
+   "d": null
+  }
+ },
+ "kt-corner0.1-S0.45-above": {
+  "how": "none: a known tracing fault (block face on a sample face, non-binary size)",
+  "truths": {
+   "d": null
+  }
+ },
+ "kt-corner0.1-S0.45-below": {
+  "how": "none: a known tracing fault (block face on a sample face, non-binary size)",
+  "truths": {
+   "d": null
+  }
+ },
+ "pl-guides-test": {
+  "how": "the test plate; guides stiffen: no exact",
+  "truths": {
+   "b": null
+  }
+ },
+ "pl-points-0.25": {
+  "how": "same",
+  "truths": {
+   "b": 2.252
+  }
+ },
+ "pl-points-0.5": {
+  "how": "truth: shear-corrected thin plate, an estimate (Mindlin), 3D solid",
+  "truths": {
+   "b": 2.252
+  }
+ },
+ "rv-corner-S0.4-above": {
+  "how": "reference: the same block on 0.1 mm cells (not exact)",
+  "truths": {
+   "d": 0.35955
+  }
+ },
+ "rv-corner-S0.4-below": {
+  "how": "reference: the same block on 0.1 mm cells (not exact)",
+  "truths": {
+   "d": 0.35955
+  }
+ },
+ "rv-corner-S0.45-above": {
+  "how": "reference: the same block on 0.1 mm cells (not exact)",
+  "truths": {
+   "d": 0.33709
+  }
+ },
+ "rv-corner-S0.45-below": {
+  "how": "reference: the same block on 0.1 mm cells (not exact)",
+  "truths": {
+   "d": 0.33709
+  }
+ },
+ "rv-corner-S0.5-above": {
+  "how": "reference: the same block on 0.1 mm cells (not exact)",
+  "truths": {
+   "d": 0.31551
+  }
+ },
+ "rv-corner-S0.5-below": {
+  "how": "reference: the same block on 0.1 mm cells (not exact)",
+  "truths": {
+   "d": 0.31551
+  }
+ },
+ "rv-cylinder": {
+  "how": "none: reading only",
+  "truths": {
+   "d": null
+  }
+ },
+ "rv-moved": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.24
+  }
+ },
+ "rv-onesided-f0.0001": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19000050000000002
+  }
+ },
+ "rv-onesided-f0.001": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19000499999999998
+  }
+ },
+ "rv-onesided-f0.003": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19001500000000002
+  }
+ },
+ "rv-onesided-f0.01": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19005
+  }
+ },
+ "rv-onesided-f0.02": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19010000000000002
+  }
+ },
+ "rv-onesided-f0.05": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19025
+  }
+ },
+ "rv-onesided-f0.1": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.1905
+  }
+ },
+ "rv-onesided-f0.25": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19125
+  }
+ },
+ "rv-onesided-f0.5": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.1925
+  }
+ },
+ "rv-onesided-f0.75": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19375
+  }
+ },
+ "rv-onesided-f0.9": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.1945
+  }
+ },
+ "rv-onesided-f1e-05": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19000005000000003
+  }
+ },
+ "rv-onesided-f1e-06": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.190000005
+  }
+ },
+ "rv-onesided-f1e-07": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19000000050000002
+  }
+ },
+ "rv-onesided-f1e-08": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19000000005
+  }
+ },
+ "rv-onesided-f1e-09": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19000000000500003
+  }
+ },
+ "rv-res0.3-bar": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19
+  }
+ },
+ "rv-res0.3-heat": {
+  "how": "closed form",
+  "truths": {
+   "t": 4570.0
+  }
+ },
+ "rv-s140-5.0001-0.0175": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149824
+  }
+ },
+ "rv-s140-5.002-0.0468": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14951200000000003
+  }
+ },
+ "rv-s140-5.002-0.19": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14808000000000002
+  }
+ },
+ "rv-s140-5.0113-0.0548": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149339
+  }
+ },
+ "rv-s140-5.0115-0.3323": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146562
+  }
+ },
+ "rv-s140-5.0128-0.2506": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147366
+  }
+ },
+ "rv-s140-5.014-0.028": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14958000000000002
+  }
+ },
+ "rv-s140-5.0187-0.0494": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149319
+  }
+ },
+ "rv-s140-5.0196-0.1173": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14863099999999999
+  }
+ },
+ "rv-s140-5.029-0.0648": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149062
+  }
+ },
+ "rv-s140-5.0295-0.1695": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14801000000000003
+  }
+ },
+ "rv-s140-5.0298-0.0214": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149488
+  }
+ },
+ "rv-s140-5.0303-0.1326": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148371
+  }
+ },
+ "rv-s140-5.0311-0.0128": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149561
+  }
+ },
+ "rv-s140-5.0349-0.014": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149511
+  }
+ },
+ "rv-s140-5.0403-0.0523": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14907399999999998
+  }
+ },
+ "rv-s140-5.0424-0.114": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14843599999999998
+  }
+ },
+ "rv-s140-5.0429-0.0146": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149425
+  }
+ },
+ "rv-s140-5.0507-0.0382": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14911100000000002
+  }
+ },
+ "rv-s140-5.0518-0.1035": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148447
+  }
+ },
+ "rv-s140-5.0531-0.0788": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148681
+  }
+ },
+ "rv-s140-5.0619-0.0228": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149153
+  }
+ },
+ "rv-s140-5.0635-0.0175": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14919
+  }
+ },
+ "rv-s140-5.0647-0.0249": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149104
+  }
+ },
+ "rv-s140-5.0655-0.0105": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14924
+  }
+ },
+ "rv-s140-5.0655-0.2858": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146487
+  }
+ },
+ "rv-s140-5.0721-0.0154": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149125
+  }
+ },
+ "rv-s140-5.0731-0.2101": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147168
+  }
+ },
+ "rv-s140-5.076-0.0606": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148634
+  }
+ },
+ "rv-s140-5.0835-0.1718": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147447
+  }
+ },
+ "rv-s140-5.084-0.0154": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.149006
+  }
+ },
+ "rv-s140-5.0862-0.0572": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148566
+  }
+ },
+ "rv-s140-5.0881-0.0235": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148884
+  }
+ },
+ "rv-s140-5.0893-0.1831": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14727600000000002
+  }
+ },
+ "rv-s140-5.0904-0.0852": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14824400000000001
+  }
+ },
+ "rv-s140-5.0984-0.0212": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148804
+  }
+ },
+ "rv-s140-5.1044-0.0182": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148774
+  }
+ },
+ "rv-s140-5.1102-0.0231": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14866700000000002
+  }
+ },
+ "rv-s140-5.1134-0.0673": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148193
+  }
+ },
+ "rv-s140-5.1167-0.0597": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148236
+  }
+ },
+ "rv-s140-5.1203-0.0868": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147929
+  }
+ },
+ "rv-s140-5.122-0.083": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14795
+  }
+ },
+ "rv-s140-5.1242-0.0277": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148481
+  }
+ },
+ "rv-s140-5.1259-0.0294": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148447
+  }
+ },
+ "rv-s140-5.1261-0.036": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148379
+  }
+ },
+ "rv-s140-5.1296-0.1282": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147422
+  }
+ },
+ "rv-s140-5.1297-0.0468": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148235
+  }
+ },
+ "rv-s140-5.1306-0.0386": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148308
+  }
+ },
+ "rv-s140-5.1392-0.0462": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148146
+  }
+ },
+ "rv-s140-5.1542-0.2022": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146436
+  }
+ },
+ "rv-s140-5.1571-0.0865": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147564
+  }
+ },
+ "rv-s140-5.1619-0.0174": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148207
+  }
+ },
+ "rv-s140-5.163-0.0675": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147695
+  }
+ },
+ "rv-s140-5.1648-0.0227": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148125
+  }
+ },
+ "rv-s140-5.1663-0.1911": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146426
+  }
+ },
+ "rv-s140-5.17-0.0121": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148179
+  }
+ },
+ "rv-s140-5.1713-0.0265": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14802200000000001
+  }
+ },
+ "rv-s140-5.1752-0.0755": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147493
+  }
+ },
+ "rv-s140-5.1769-0.0541": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14769000000000002
+  }
+ },
+ "rv-s140-5.1778-0.0111": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148111
+  }
+ },
+ "rv-s140-5.1794-0.2598": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145608
+  }
+ },
+ "rv-s140-5.1821-0.0157": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.148022
+  }
+ },
+ "rv-s140-5.1846-0.0806": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147348
+  }
+ },
+ "rv-s140-5.1929-0.1174": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146897
+  }
+ },
+ "rv-s140-5.1955-0.2479": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14556600000000003
+  }
+ },
+ "rv-s140-5.1962-0.0435": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14760299999999998
+  }
+ },
+ "rv-s140-5.2007-0.3272": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144721
+  }
+ },
+ "rv-s140-5.2091-0.1627": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14628200000000002
+  }
+ },
+ "rv-s140-5.2103-0.294": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144957
+  }
+ },
+ "rv-s140-5.2123-0.2104": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145773
+  }
+ },
+ "rv-s140-5.2169-0.2482": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145349
+  }
+ },
+ "rv-s140-5.2201-0.0196": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14760299999999998
+  }
+ },
+ "rv-s140-5.2266-0.0302": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14743199999999998
+  }
+ },
+ "rv-s140-5.233-0.0594": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14707599999999998
+  }
+ },
+ "rv-s140-5.237-0.1155": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146475
+  }
+ },
+ "rv-s140-5.2508-0.0709": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146783
+  }
+ },
+ "rv-s140-5.2561-0.1283": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146156
+  }
+ },
+ "rv-s140-5.2577-0.0973": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14645
+  }
+ },
+ "rv-s140-5.2618-0.0107": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147275
+  }
+ },
+ "rv-s140-5.2626-0.2513": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14486100000000002
+  }
+ },
+ "rv-s140-5.2633-0.3117": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14425
+  }
+ },
+ "rv-s140-5.2641-0.0172": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147187
+  }
+ },
+ "rv-s140-5.2641-0.3678": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.143681
+  }
+ },
+ "rv-s140-5.2663-0.1764": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145573
+  }
+ },
+ "rv-s140-5.2679-0.0385": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14693599999999998
+  }
+ },
+ "rv-s140-5.2716-0.011": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14717400000000003
+  }
+ },
+ "rv-s140-5.2739-0.0126": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.147135
+  }
+ },
+ "rv-s140-5.2747-0.2591": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144662
+  }
+ },
+ "rv-s140-5.2777-0.1798": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145425
+  }
+ },
+ "rv-s140-5.2809-0.1644": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145547
+  }
+ },
+ "rv-s140-5.2886-0.0431": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146683
+  }
+ },
+ "rv-s140-5.2899-0.0537": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14656400000000003
+  }
+ },
+ "rv-s140-5.2917-0.2798": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14428500000000002
+  }
+ },
+ "rv-s140-5.2946-0.0263": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146791
+  }
+ },
+ "rv-s140-5.3063-0.0644": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146293
+  }
+ },
+ "rv-s140-5.307-0.0173": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146757
+  }
+ },
+ "rv-s140-5.312-0.2757": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14412299999999997
+  }
+ },
+ "rv-s140-5.3137-0.3283": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14357999999999999
+  }
+ },
+ "rv-s140-5.3195-0.0394": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146411
+  }
+ },
+ "rv-s140-5.3236-0.3881": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.142883
+  }
+ },
+ "rv-s140-5.3255-0.0131": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146614
+  }
+ },
+ "rv-s140-5.3265-0.1903": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14483200000000002
+  }
+ },
+ "rv-s140-5.3381-0.0122": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146497
+  }
+ },
+ "rv-s140-5.3402-0.0483": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14611500000000002
+  }
+ },
+ "rv-s140-5.3476-0.0893": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145631
+  }
+ },
+ "rv-s140-5.3624-0.0187": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14618899999999999
+  }
+ },
+ "rv-s140-5.3626-0.0777": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145597
+  }
+ },
+ "rv-s140-5.3647-0.0289": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.146064
+  }
+ },
+ "rv-s140-5.3751-0.0582": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14566700000000002
+  }
+ },
+ "rv-s140-5.3823-0.0826": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145351
+  }
+ },
+ "rv-s140-5.3861-0.0649": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14549
+  }
+ },
+ "rv-s140-5.3972-0.1313": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144715
+  }
+ },
+ "rv-s140-5.4058-0.3766": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14217600000000002
+  }
+ },
+ "rv-s140-5.4092-0.1527": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144381
+  }
+ },
+ "rv-s140-5.4096-0.2412": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.143492
+  }
+ },
+ "rv-s140-5.411-0.0285": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145605
+  }
+ },
+ "rv-s140-5.4131-0.0218": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145651
+  }
+ },
+ "rv-s140-5.4144-0.0181": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145675
+  }
+ },
+ "rv-s140-5.42-0.3247": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.142553
+  }
+ },
+ "rv-s140-5.4202-0.0585": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14521299999999998
+  }
+ },
+ "rv-s140-5.4245-0.3881": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.141874
+  }
+ },
+ "rv-s140-5.4263-0.1949": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.143788
+  }
+ },
+ "rv-s140-5.4292-0.0291": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14541700000000002
+  }
+ },
+ "rv-s140-5.4317-0.13": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144383
+  }
+ },
+ "rv-s140-5.4373-0.1891": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.143736
+  }
+ },
+ "rv-s140-5.4377-0.0318": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145305
+  }
+ },
+ "rv-s140-5.4498-0.177": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.143732
+  }
+ },
+ "rv-s140-5.4524-0.1952": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14352399999999998
+  }
+ },
+ "rv-s140-5.4549-0.1785": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14366600000000002
+  }
+ },
+ "rv-s140-5.4562-0.0512": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14492600000000003
+  }
+ },
+ "rv-s140-5.4685-0.3809": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14150600000000002
+  }
+ },
+ "rv-s140-5.4765-0.1273": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.143962
+  }
+ },
+ "rv-s140-5.4775-0.0383": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14484200000000003
+  }
+ },
+ "rv-s140-5.4783-0.0519": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144698
+  }
+ },
+ "rv-s140-5.4789-0.0174": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145037
+  }
+ },
+ "rv-s140-5.4854-0.1095": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14405099999999998
+  }
+ },
+ "rv-s140-5.4858-0.043": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.144712
+  }
+ },
+ "rv-s140-5.4881-0.0119": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.145
+  }
+ },
+ "rv-s140-5.4901-0.0154": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.14494500000000002
+  }
+ },
+ "rv-s140-5.4902-0.1126": {
+  "how": "closed form: 0.01 (20 - c - w), the free length",
+  "truths": {
+   "d": 0.143972
+  }
+ },
+ "rv-slab-5.0893": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.147276
+  }
+ },
+ "rv-sphere": {
+  "how": "none: reading only",
+  "truths": {
+   "d": null
+  }
+ },
+ "rv-tilt-0.0001": {
+  "how": "CalculiX at x < 0.5, scaled by Timoshenko to the hold",
+  "truths": {
+   "d": 0.2447758419611409
+  }
+ },
+ "rv-tilt-1e-06": {
+  "how": "CalculiX at x < 0.5, scaled by Timoshenko to the hold",
+  "truths": {
+   "d": 0.2447758419611409
+  }
+ },
+ "rv-tilt-1e-08": {
+  "how": "CalculiX at x < 0.5, scaled by Timoshenko to the hold",
+  "truths": {
+   "d": 0.2447758419611409
+  }
+ },
+ "rv-tilt-1e-10": {
+  "how": "CalculiX at x < 0.5, scaled by Timoshenko to the hold",
+  "truths": {
+   "d": 0.2447758419611409
+  }
+ },
+ "rv-tilt-1e-12": {
+  "how": "CalculiX at x < 0.5, scaled by Timoshenko to the hold",
+  "truths": {
+   "d": 0.2447758419611409
+  }
+ },
+ "rv-two-bars": {
+  "how": "finding 1",
+  "truths": {
+   "d": 0.1989
+  }
+ },
+ "rv-vanish-0.025": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19975
+  }
+ },
+ "rv-vanish-0.05": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.1995
+  }
+ },
+ "rv-vanish-0.1": {
+  "how": "closed form",
+  "truths": {
+   "d": 0.19899999999999998
+  }
+ },
+ "rv-vanish-heat-0.025": {
+  "how": "closed form",
+  "truths": {
+   "t": 4813.75
+  }
+ },
+ "rv-vanish-heat-0.05": {
+  "how": "closed form",
+  "truths": {
+   "t": 4807.499999999999
+  }
+ },
+ "rv-vanish-heat-0.1": {
+  "how": "closed form",
+  "truths": {
+   "t": 4794.999999999999
+  }
+ }
+}

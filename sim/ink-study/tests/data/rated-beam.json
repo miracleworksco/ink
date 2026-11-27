@@ -1,0 +1,6 @@
+{
+  "ratings": {
+    "yield": {"ordered": [{"read": "max-stress"}, {"number": 0.24, "unit": "GPa"}], "from": "aluminum-6061: yield 240 MPa"},
+    "sag": {"ordered": [{"read": "max-displacement"}, {"number": 0.4, "unit": "cm"}], "from": "the shelf under it: 4 mm away"}
+  }
+}

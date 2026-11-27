@@ -1,0 +1,9 @@
+; The 40 x 10 x 10 bar pulled at 10 MPa, its yield a smooth gradient 250 - 2 x MPa: no strip. A bound may leave it unknown, never failed.
+; truth: safe holds about 21 (statics: 10 MPa against the least yield, 210 MPa at x 20)
+; truth: away holds about 21 (as safe, the fix's singular edge left out)
+(import "std")
+(def part (box 40 10 10))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (- 250 (* 2 x)))))
+ (fix root (+ x 19)) (load pull (force 1000N 0 0) (region (- 19 x))) (res 1))
+(require safe (min-safety-factor s > 20))
+(require away (min-safety-factor s > 20 (excluding support-margin)))

@@ -1,0 +1,9 @@
+; two-layer tube ri 6 rm 10.4 ro 16 height 4; k 10 inside, 0.2 outside; convection 500 W/m2/K from 100 C in the bore, 50 to 20 C outside; res 0.5
+; exact radial: q' = (Ta-Tb)/(1/(h1 2 pi ri) + ln(rm/ri)/(2 pi k1) + ln(ro/rm)/(2 pi k2) + 1/(h2 2 pi ro)) = 132.548 W/m; bore wall Tmax = Ta - q'/(h1 2 pi ri) = 92.9681 C
+(import "std")
+(body t (shape (subtract (cylinder-z 16 4) (cylinder-z 6 6))))
+(study s (shape (shape-of t)) (heat (k (select (- (len2 x y) 10.4) 10W/m/K 0.2W/m/K)))
+  (convection hot (max (- (len2 x y) 6.15) (- (abs z) 1.999)) (coefficient 500W/m2/K) (ambient 100degC))
+  (convection cold (max (- 15.85 (len2 x y)) (- (abs z) 1.999)) (coefficient 50W/m2/K) (ambient 20degC))
+  (res 0.5))
+(require temp (max-temperature s < 1e6degC))

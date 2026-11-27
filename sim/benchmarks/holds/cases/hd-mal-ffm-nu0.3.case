@@ -1,0 +1,8 @@
+(import "std")
+(def part (move (rotate-z (move (box 204 7.2 4.8) 102.0 0 0) 0.0) 0 0 0))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.3) (density 7850kg/m3))
+  (fix base (- (+ (* 1.0 (- x 0)) (* 0.0 (- y 0))) 1e-06))
+  (fix top (- 203.999999 (+ (* 1.0 (- x 0)) (* 0.0 (- y 0)))))
+  (modes 6)
+  (res 0.6))
+(require q (min-frequency s > 0Hz))

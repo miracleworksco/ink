@@ -1,0 +1,438 @@
+{
+  "kilo": {
+    "r": {
+      "ordered": [
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "number": 1.001,
+          "unit": "kN"
+        }
+      ],
+      "from": "1.001 kN"
+    }
+  },
+  "line": {
+    "r": {
+      "ordered": [
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N",
+            "line": true,
+            "points": [
+              [
+                0,
+                1
+              ],
+              [
+                10,
+                0
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        }
+      ],
+      "sizes": true,
+      "from": "a line from 1 N at rest to none at 10 rpm"
+    }
+  },
+  "between": {
+    "r": {
+      "ordered": [
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N",
+            "points": [
+              [
+                0,
+                5
+              ],
+              [
+                100,
+                5
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        },
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N",
+            "points": [
+              [
+                0,
+                10
+              ],
+              [
+                100,
+                10
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        }
+      ],
+      "from": "two tables"
+    }
+  },
+  "signed": {
+    "r": {
+      "ordered": [
+        {
+          "number": -20,
+          "unit": "N"
+        },
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "number": 10,
+          "unit": "N"
+        }
+      ],
+      "from": "a signed window"
+    }
+  },
+  "sized": {
+    "r": {
+      "ordered": [
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "number": 10,
+          "unit": "N"
+        }
+      ],
+      "sizes": true,
+      "from": "10 N either way"
+    }
+  },
+  "fast": {
+    "r": {
+      "ordered": [
+        {
+          "read": "speed",
+          "on": "shaft"
+        },
+        {
+          "number": 6000,
+          "unit": "rpm"
+        }
+      ],
+      "sizes": true,
+      "from": "6000 rpm either way"
+    }
+  },
+  "warm": {
+    "r": {
+      "ordered": [
+        {
+          "read": "temp",
+          "on": "shaft"
+        },
+        {
+          "number": 400,
+          "unit": "K"
+        }
+      ],
+      "from": "400 K"
+    }
+  },
+  "plain": {
+    "r": {
+      "ordered": [
+        {
+          "read": "load"
+        },
+        {
+          "number": 100,
+          "unit": "N"
+        }
+      ],
+      "sizes": true,
+      "from": "100 N on the part"
+    }
+  },
+  "near": {
+    "r": {
+      "ordered": [
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "table": {
+            "x": "deg/s",
+            "y": "N",
+            "points": [
+              [
+                1,
+                100
+              ],
+              [
+                1.0000000000000002,
+                90
+              ],
+              [
+                1.0000000000000004,
+                10
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        }
+      ],
+      "sizes": true,
+      "from": "three points a step apart"
+    }
+  },
+  "named-like-a-limit": {
+    "r": {
+      "ordered": [
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N",
+            "line": true,
+            "points": [
+              [
+                0,
+                0
+              ],
+              [
+                2,
+                0
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        },
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N",
+            "line": true,
+            "points": [
+              [
+                0,
+                10
+              ],
+              [
+                2,
+                10
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        }
+      ],
+      "from": "0 to 10 N"
+    },
+    "r limit 2": {
+      "ordered": [
+        {
+          "number": 1000,
+          "unit": "N"
+        },
+        {
+          "number": 1000,
+          "unit": "N"
+        }
+      ],
+      "from": "a rating named like a table's limit"
+    },
+    "r's limit": {
+      "ordered": [
+        {
+          "number": 1000,
+          "unit": "N"
+        },
+        {
+          "number": 1000,
+          "unit": "N"
+        }
+      ],
+      "from": "and another"
+    }
+  },
+  "steep": {
+    "r": {
+      "ordered": [
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N",
+            "line": true,
+            "points": [
+              [
+                0,
+                -1e+308
+              ],
+              [
+                2,
+                1e+308
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        }
+      ],
+      "from": "a line whose ends are 2e308 apart"
+    }
+  },
+  "plain-shaft": {
+    "r": {
+      "ordered": [
+        {
+          "read": "load",
+          "on": "shaft"
+        },
+        {
+          "number": 100,
+          "unit": "N"
+        }
+      ],
+      "sizes": true,
+      "from": "100 N"
+    }
+  },
+  "powered": {
+    "r": {
+      "ordered": [
+        {
+          "read": "power",
+          "on": "shaft"
+        },
+        {
+          "number": 2,
+          "unit": "W"
+        }
+      ],
+      "sizes": true,
+      "from": "2 W"
+    }
+  },
+  "humming": {
+    "r": {
+      "ordered": [
+        {
+          "read": "hum",
+          "on": "shaft"
+        },
+        {
+          "number": 0.5,
+          "unit": "Hz"
+        }
+      ],
+      "sizes": true,
+      "from": "0.5 Hz"
+    }
+  },
+  "quick": {
+    "r": {
+      "ordered": [
+        {
+          "read": "pace",
+          "on": "shaft"
+        },
+        {
+          "number": 3,
+          "unit": "mm/s"
+        }
+      ],
+      "sizes": true,
+      "from": "3 mm/s"
+    }
+  },
+  "long": {
+    "r": {
+      "ordered": [
+        {
+          "read": "reach",
+          "on": "shaft"
+        },
+        {
+          "number": 4,
+          "unit": "mm"
+        }
+      ],
+      "sizes": true,
+      "from": "4 mm"
+    }
+  },
+  "worked": {
+    "r": {
+      "ordered": [
+        {
+          "read": "work"
+        },
+        {
+          "number": 100,
+          "unit": "N*mm"
+        }
+      ],
+      "sizes": true,
+      "from": "100 N mm"
+    }
+  },
+  "clash": {
+    "load": {
+      "ordered": [
+        {
+          "read": "load"
+        },
+        {
+          "number": 10,
+          "unit": "N"
+        }
+      ],
+      "from": "10 N"
+    }
+  }
+}

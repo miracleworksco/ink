@@ -1,0 +1,26 @@
+{
+  "carriage": {
+    "name": "HIWIN MGN12H linear guide carriage (HIWIN's MGN catalogue)",
+    "load-ratings": {"C-N": 3720, "C0-N": 5880, "moment-rating-Nm": {"MR": 38.22, "MP": 36.26, "MY": 36.26}}
+  },
+  "radial": {
+    "name": "6000 deep-groove ball bearing, 10 x 26 x 8 mm (NSK's catalogue)",
+    "load-ratings": {"direction": "radial", "C-N": 5050, "C0-N": 1970, "life-exponent": 3},
+    "ratings": {
+      "static-load": {"ordered": [{"read": "static-equivalent-load"}, {"read": "static-load-rating"}], "from": "6000 load-ratings C0-N (ISO 76)"},
+      "life": {"ordered": [{"read": "required-life", "least": 0, "unit": "h"}, {"read": "rated-life"}], "from": "6000 load-ratings C-N (ISO 281)"}
+    }
+  },
+  "thrust": {
+    "name": "51100 thrust ball bearing, 10 x 24 x 9 mm (NSK's catalogue)",
+    "load-ratings": {"direction": "axial", "thrust": "single-direction", "C-N": 10100, "C0-N": 14000, "life-exponent": 3},
+    "ratings": {
+      "static-load": {"ordered": [{"read": "static-equivalent-load"}, {"read": "static-load-rating"}], "from": "51100 load-ratings C0-N (ISO 76)"},
+      "life": {"ordered": [{"read": "required-life", "least": 0, "unit": "h"}, {"read": "rated-life"}], "from": "51100 load-ratings C-N (ISO 281)"}
+    }
+  },
+  "belt": {
+    "name": "HTD3 timing belt, 9 mm wide (DOLD Mechatronik's data)",
+    "belt": {"breaking-strength-N": 810, "working-tension-N": 203}
+  }
+}

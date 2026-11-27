@@ -1,0 +1,9 @@
+; bar 8.0 x 2.0 x 2.0, mirror at x 0, 40 N spread over the material past x = 7.3, E 1000, nu 0, res 0.5
+; exact: stress F/A = 10 MPa up to x=7.3; tip F a/(AE) + F (L-a)/(2AE) = 0.0765 mm; compliance F (a + (L-a)/3... ) : F^2/(AE) (a + (L-a)/3) = 3.01333
+(import "std")
+(body bar (shape (move (box 8.0 2.0 2.0) 4.0 1.0 1.0)))
+(study s (shape (shape-of bar)) (elastic (E 1000MPa) (nu 0))
+  (mirror mx x 0) (mirror my y 0) (mirror mz z 0) (load f (force 40.0N 0 0) (region (- 7.3 x))) (res 0.5))
+(require stress (max-stress s < 100000MPa))
+(require disp (max-displacement s < 100000))
+(require comp (compliance s < 1e9N*mm))

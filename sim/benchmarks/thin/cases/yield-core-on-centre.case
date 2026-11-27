@@ -1,0 +1,14 @@
+; review-yield/inputs/strip-neutral-axis.ink with the 4 MPa strip thickened to
+; z 0.05..0.95, so it holds the centre (z 0.5) of its cell z 0..1. The cell's least
+; yield (4) is then its centre read's, so it is not flagged, and the strip is read
+; only at the centre, on the neutral axis, where the stress is about 0.
+; truth: safe fails about 0.82 (ink's probe at the strip's edge, -30 0 0.95: von Mises 4.86 MPa; beam theory 9000 N mm x 0.45 / 833.3 mm4 = 4.86 MPa)
+(import "std")
+(def part (move (box 100 10 10) 0 0 0.5))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- -39.95 x) (- x 39.95) (- (abs y) 3.95) (- 0.05 z) (- z 0.95)) 4 1000))))
+ (fix root (+ x 49))
+ (load top (force 1000N 0 0) (region (max (- 49 x) (- 4.5 z))))
+ (load bottom (force -1000N 0 0) (region (max (- 49 x) (+ z 3.5))))
+ (res 1))
+(require safe (min-safety-factor s > 1.5))

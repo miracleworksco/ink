@@ -1,0 +1,9 @@
+; multiplying the entire shape field by positive 100 leaves exactly the same material.
+; The unscaled model fails strong; beam stress 1 mm from its root is about 0.02175 MPa, above 0.01.
+; truth: stiff fails about 0.0001952 (cantilever, F L^3 / 3 E I over the free 16 mm; the field scaled by 100 is the same shape)
+; truth: strong fails about 0.02175 (beam, 6 M / b t^2 1 mm from the root)
+(import "std")
+(def part (* 100 (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.1) 10 0 0))))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix root (- x 0.5)) (load tip (force 0 0 -0.00001N) (region (- 19 x))) (res 0.5))
+(require stiff (max-displacement s < 0.00001))
+(require strong (max-stress s < 0.01MPa (excluding support-margin)))

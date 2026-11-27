@@ -1,0 +1,17 @@
+[package]
+name = "ink-formula"
+version.workspace = true
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+description = "ink's formula tool: a fact read off a maker's table at another fact, plugged into the claims core"
+
+[dependencies]
+ink-claims.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1"

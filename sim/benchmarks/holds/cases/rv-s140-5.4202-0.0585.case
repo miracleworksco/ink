@@ -1,0 +1,6 @@
+(import "std")
+(def bar (move (box 20 4 4) 10 0 0))
+(study s (shape bar) (elastic (E 1000MPa) (nu 0))
+  (fix wall (- (abs (- x 5.4202)) 0.0585))
+  (load tip (pressure -10MPa) (region (face bar (normal 1 0 0)))) (res 0.5))
+(require d (max-displacement s < 1000mm))

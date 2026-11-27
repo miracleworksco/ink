@@ -1,9 +1,12 @@
-# The kernel's checks on every push and pull request: formatting, clippy,
-# the release build and the tests. They run on Linux and macOS, on stable
-# and on the oldest Rust the workspace supports (its rust-version). Clippy
-# warnings fail only on the oldest. A second job, once on Linux, runs the
-# slow validation `cargo test` leaves out: benchmarks/run.sh.
-# No GPU, no network past crates.io.
+# The public repository's checks on every push and pull request. The kernel
+# (kernel/): formatting, clippy, the release build and the tests, on Linux
+# and macOS, on stable and on the oldest Rust the workspace supports (its
+# rust-version). Clippy warnings fail only on the oldest. A second job, once
+# on Linux, runs the slow validation `cargo test` leaves out:
+# kernel/benchmarks/run.sh. One more checks the simulation packages (sim/, a
+# workspace of their own on the kernel): formatting, clippy and their tests
+# (sim/cpu-test.sh). No GPU, no network past crates.io and Ubuntu's
+# packages.
 name: ci
 
 on:
@@ -26,16 +29,16 @@ env:
 jobs:
   check:
     name: ${{ matrix.os }}, Rust ${{ matrix.rust }}
-    # Only in the public repository and its forks. Every branch push to the
-    # private one it is exported from would spend its minutes.
-    if: github.event.repository.name == 'ink'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # 1.95 is the workspace's rust-version (Cargo.toml). Keep the two the same.
+        # 1.95 is the workspace's rust-version (kernel/Cargo.toml). Keep the two the same.
         rust: ["1.95", stable]
+    defaults:
+      run:
+        working-directory: kernel
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
@@ -45,6 +48,7 @@ jobs:
           rustc --version
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: kernel
           key: ${{ matrix.rust }}
       - run: cargo fmt --all --check
       # Warnings fail on 1.95. On stable a new lint only warns.
@@ -54,8 +58,10 @@ jobs:
 
   validation:
     name: validation (benchmarks/run.sh)
-    if: github.event.repository.name == 'ink'
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kernel
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
@@ -64,5 +70,26 @@ jobs:
           rustup override set 1.95
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: kernel
           key: validation
       - run: benchmarks/run.sh
+
+  sim:
+    name: sim (simulation packages, CPU)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install 1.95 --profile minimal --component rustfmt,clippy
+          rustup override set 1.95
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sim
+          key: sim
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: ./cpu-test.sh --quick

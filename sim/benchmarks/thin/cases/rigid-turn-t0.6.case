@@ -1,0 +1,7 @@
+; u=(0,-0.15 z,0.15 y), so half curl has magnitude 0.15 rad = 8.59436692696 deg.
+; Split to 0.25 mm cells, its rotation was read on the grid's 0.5: half, and the large-rotation warning dropped.
+; truth: displacement holds about 0.3034 (the held field u = (0, -0.15 z, 0.15 y), |u| = 0.15 (y^2 + z^2)^0.5 at y 2, z 0.3; its rotation 8.594 deg, past the linear limit)
+(import "std")
+(def part (move (box 8 4 0.6) 4 0 0))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix drive -1 (move 0 (* -0.15 z) (* 0.15 y))) (res 0.5))
+(require displacement (max-displacement s < 1))

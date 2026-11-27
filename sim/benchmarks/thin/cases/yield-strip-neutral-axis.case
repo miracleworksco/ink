@@ -1,0 +1,11 @@
+; A 100 x 10 x 10 cantilever bent by a couple (no shear), its neutral axis on the centres of the 1 mm cells z 0 to 1; yield 1000 MPa but 4 MPa in a strip z 0.90 to 0.95 inside those cells, whose centres read about 0.
+; truth: safe fails about 0.82 (beam theory: 9000 N mm x 0.45 / 833.3 mm4 = 4.86 MPa at the strip, as ink's probe there reads on 1 and 0.5 mm cells)
+(import "std")
+(def part (move (box 100 10 10) 0 0 0.5))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- -39.95 x) (- x 39.95) (- (abs y) 3.95) (- 0.9 z) (- z 0.95)) 4 1000))))
+ (fix root (+ x 49))
+ (load top (force 1000N 0 0) (region (max (- 49 x) (- 4.5 z))))
+ (load bottom (force -1000N 0 0) (region (max (- 49 x) (+ z 3.5))))
+ (res 1))
+(require safe (min-safety-factor s > 1.5))

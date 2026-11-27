@@ -1,0 +1,35 @@
+; Benchmark 30's flexure, in the PETG CalculiX was given (E 2100, nu 0.38):
+; its peak von Mises at the shuttle-side r0.75 root fillets of a 1 mm leaf.
+; CalculiX (C3D10; fillet mesh 0.35 / 0.25 / 0.167 mm): 2.13, 2.21, 2.27,
+; still rising; beam theory without the fillets 1.97. Its load is the hand
+; stiffness times the stroke, so its stress scales with E.
+; False: root-stress-under-2-24.
+(import "std")
+(param L 40)
+(param h 1)
+(param b 6)
+(param separation 18)
+(param stroke 0.5)
+(param force-scale 1)
+(param root-r 0.75)
+(def block-len 6)
+(def block-width 24)
+(def base (move (box block-len block-width b) (* -0.5 block-len) 0 0))
+(def shuttle (move (box block-len block-width b) (+ L (* 0.5 block-len)) 0 0))
+(fn radiused-leaf (yc)
+  (let ((q (max 0 (- root-r x) (- x (- L root-r))))
+        (extra (- root-r (sqrt (- (square root-r) (square q))))))
+    (max (neg x) (- x L) (- (abs (- y yc)) (+ (* 0.5 h) extra))
+         (- (abs z) (* 0.5 b)))))
+(def upper (radiused-leaf (* 0.5 separation)))
+(def lower (radiused-leaf (* -0.5 separation)))
+(def guide (min base shuttle upper lower))
+(def E 2100)
+(def I (/ (* b (pow h 3)) 12))
+(def k-hand (/ (* 24 E I) (pow L 3)))
+(def force-hand (* k-hand stroke))
+(study translate (shape guide) (elastic (E (* 1MPa E)) (nu 0.38))
+  (fix clamp base)
+  (load actuator (force 0 (* 1N (* force-scale force-hand)) 0) (region shuttle))
+  (res 0.25))
+(require root-stress-under-2-24 (max-stress translate < 2.24MPa))

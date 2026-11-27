@@ -1,0 +1,7 @@
+(import "std")
+(body p (shape (move (box 40 40 1) 20 20 0.5)))
+(study press (shape (shape-of p)) (elastic (E 200000MPa) (nu 0.3))
+  (fix edges (- 19.99 (max (abs (- x 20)) (abs (- y 20)))) (dofs z))
+  (fix px (max (- (abs (- x 20)) 0.25) (min (- y 0.5) (- 39.5 y))) (dofs x) (support)) (fix py (max (- (abs (- y 20)) 0.25) (min (- x 0.5) (- 39.5 x))) (dofs y) (support))
+  (load left (pressure 200MPa) (region (- x 0.01))) (load right (pressure 200MPa) (region (- 39.99 x))) (res 0.25))
+(require b (min-buckling-factor press > 1e6))

@@ -1,0 +1,13 @@
+; As core-on-centre.ink, the 4 MPa strip z 0.45..0.95: half a cell thick, from just
+; under its cell's centre to just under its top face. Not flagged (the centre read
+; is in it); read only at the centre, on the neutral axis.
+; truth: safe fails about 0.82 (as core-on-centre: the strip's top edge z 0.95 carries 4.86 MPa)
+(import "std")
+(def part (move (box 100 10 10) 0 0 0.5))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield (* 1MPa (select (max (- -39.95 x) (- x 39.95) (- (abs y) 3.95) (- 0.45 z) (- z 0.95)) 4 1000))))
+ (fix root (+ x 49))
+ (load top (force 1000N 0 0) (region (max (- 49 x) (- 4.5 z))))
+ (load bottom (force -1000N 0 0) (region (max (- 49 x) (+ z 3.5))))
+ (res 1))
+(require safe (min-safety-factor s > 1.5))

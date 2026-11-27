@@ -1,0 +1,9 @@
+; bar 2000 x 60 x 50 along x from 0, turned 0 about z then moved (0, 0, 0); convection 200 W/m2/K to 20 C on its x=0 face; 50 W over its last 100 mm; k 50 (k2 None past x=None); res 13
+; exact 1-D: Tmax = 20 + P/(hA) + P L1/(k A) [+ P L2/(k2 A)] + P w/(2 k A) = 753.333 C
+(import "std")
+(body bar (shape (move (rotate-z (move (box 2000 60 50) 1000.0 0 0) 0) 0 0 0)))
+(study s (shape (shape-of bar)) (heat (k 50W/m/K))
+  (convection air (- (+ (* 1.0 (- x 0)) (* 0.0 (- y 0))) 0.0001) (coefficient 200W/m2/K) (ambient 20degC))
+  (source q (power 50W) (region (- 1900 (+ (* 1.0 (- x 0)) (* 0.0 (- y 0))))))
+  (res 13))
+(require temp (max-temperature s < 1e6degC))

@@ -1,0 +1,8 @@
+; false max-stress hold at 3 MPa. Identical full-width model at res 0.0625 reads 4.54551081781 MPa.
+; The notch is a smooth semiellipse, depth 0.2, half-width 0.08 mm, through the full width.
+; truth: safe fails at least 3.99 (the same model on cells of 0.25, 0.125 and 0.0625 mm: 4.26, 3.99, 4.55 MPa)
+(import "std")
+(def notch (* 0.08 (- (sqrt (+ (square (/ (- x 5.03) 0.08)) (square (/ (- z 2) 0.2)))) 1)))
+(def part (max (move (box 10 4 4) 5 0 0) (- notch)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix root (- x 0.5)) (load tip (force 16N 0 0) (region (- 9 x))) (res 1))
+(require safe (max-stress s < 3MPa (excluding support-margin)))

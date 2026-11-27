@@ -1,0 +1,11 @@
+; round shaft radius 2.0, length 14 along z from 0, turned 0 deg about y; clamped over its first 0.5 mm, 100 N mm of torque on its last mm; nu 0.3; res 0.5
+; exact (away from the ends): shear 2T/(pi r^3), von Mises sqrt3 that = 13.7832 MPa
+(import "std")
+(body sh (shape (rotate-y (move (cylinder-z 2.0 14) 0 0 7.0) 0)))
+(study s (shape (shape-of sh)) (elastic (E 1000MPa) (nu 0.3))
+  (fix wall (- (+ (* 0.0 x) (* 1.0 z)) 0.5))
+  (load tq (torque 0.0N*mm 0 100.0N*mm) (region (- 13 (+ (* 0.0 x) (* 1.0 z)))))
+  (res 0.5))
+(require stress (max-stress s < 100000MPa))
+(require lo (max-stress s > 12.13MPa))
+(require hi (max-stress s < 17.23MPa))

@@ -1,0 +1,8 @@
+; Two 6 x 6 x 4 blocks in opposite quadrants joined only by a 0.2 x 0.2 x 4 post at the origin, pulled apart by 1 N.
+; truth: strong fails at least 60 (the 0.5 mm solve read in the post itself; 0.1 and 0.05 mm cells read 97 and 163)
+; test: slow
+(import "std")
+(def part (min (move (box 6 6 4) -3 3 0) (move (box 6 6 4) 3 -3 0) (box 0.2 0.2 4)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 250MPa))
+ (fix root (- 5 x)) (load pull (force 0 1N 0) (region (- 5 y))) (res 0.1))
+(require strong (max-stress s < 20MPa))

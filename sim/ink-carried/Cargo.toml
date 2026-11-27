@@ -1,0 +1,14 @@
+[package]
+name = "ink-carried"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+description = "std's carried description (attr carried) as its readers, sharing and dynamics, read it"
+
+[dependencies]
+ink-core = { path = "../../kernel/crates/ink-core" }
+ink-lang = { path = "../../kernel/crates/ink-lang" }
+
+[lints]
+workspace = true

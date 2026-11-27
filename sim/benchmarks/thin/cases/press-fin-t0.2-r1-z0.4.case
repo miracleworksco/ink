@@ -1,0 +1,8 @@
+; A fin 20 x 4 x 0.2 mm (mid-plane z 0.4) from a 4 x 6 x 6 block, held at x < 1; a pressure 0.001 MPa on its top face
+; (z > 0.4, x > 4.5): 0.001 x 15.5 x 4 = 0.062 N down. E 200 GPa, nu 0.
+; truth: stiff fails about 0.06144 (beam q L^4 / 8 E I, q 0.004 N/mm, L 16, the unloaded half mm neglected)
+(import "std")
+(def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.2) 10 0 0.4)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix root (- x 1))
+  (load top (pressure 0.001MPa) (region (max (- 0.4 z) (- 4.5 x)))) (res 1))
+(require stiff (max-displacement s < 0.03072))

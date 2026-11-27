@@ -1,0 +1,12 @@
+{
+  "radial": {"load-ratings": {"direction": "radial", "C-N": 3300, "C0-N": 1370, "life-exponent": 3}},
+  "thrust": {"load-ratings": {"direction": "axial", "thrust": "single-direction", "C-N": 10100, "C0-N": 14000, "life-exponent": 3}},
+  "unit": {"load-ratings": {"direction": "radial", "C-N": 14200, "C0-N": 6650, "life-exponent": 3}},
+  "bushing": {"load-ratings": {"direction": "radial", "C-N": 265, "C0-N": 402}},
+  "carriage": {"load-ratings": {"C-N": 3720, "C0-N": 5880, "moment-rating-Nm": {"MR": 38.22, "MP": 36.26, "MY": 36.26}}},
+  "carriage-short": {"load-ratings": {"C-N": 2840, "C0-N": 3920, "moment-rating-Nm": {"MR": 25.48, "MP": 13.72, "MY": 13.72}}},
+  "guide-without-C0": {"load-ratings": {"C-N": 66.7, "moment-rating-Nm": {"MP": 0.0678}}},
+  "nut": {"load-ratings": {"direction": "axial", "thrust": "double-direction", "C-N": 7649, "C0-N": 17554}},
+  "screw": {"name": "M3x8 cap screw"},
+  "belt": {"belt": {"working-tension-N": 203}, "geometry": {"width": 9}}
+}

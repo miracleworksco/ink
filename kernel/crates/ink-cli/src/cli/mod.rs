@@ -1,0 +1,15 @@
+//! The commands behind `ink`'s verbs (main.rs parses arguments and dispatches).
+
+mod claims;
+#[cfg(test)]
+pub(crate) mod counted;
+mod docs;
+pub(crate) mod queries;
+pub(crate) mod require;
+pub(crate) mod session;
+
+pub(crate) use self::claims::*;
+pub(crate) use self::docs::*;
+pub(crate) use self::queries::*;
+pub(crate) use self::require::cmd_require;
+pub(crate) use self::session::*;

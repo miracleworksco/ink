@@ -1,0 +1,9 @@
+; applied compression 277.582623780638 N; Euler cantilever load 138.791311890319 N.
+; A static safety-factor hold must be refused for buckling.
+; truth: strong fails at most 0.5285 (it buckles at 0.52 to 0.53 of the load: Euler pi^2 E I / (2L)^2 = 138.8 N against 277.6, and ink's own eigensolve)
+; truth: stiff fails at least 1 (past its buckling load: no stable position near the unloaded one)
+(import "std")
+(def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.6) 10 0 0)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0) (yield 1000MPa)) (fix root (- x 0.5)) (load tip (force -277.58262378063813N 0 0) (region (- 19 x))) (res 0.5))
+(require strong (min-safety-factor s > 2 (excluding support-margin)))
+(require stiff (max-displacement s < 1))

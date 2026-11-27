@@ -1,0 +1,19 @@
+; A 100 x 10 x 10 beam bent by a couple of about 9000 N mm (beam theory: 54 MPa at
+; its top and bottom faces, about 4.6 against its yield of 250). A skin 0.1 mm thick
+; on its side face y 4.9..5 (z 4..4.8, |x| < 40) is of a much softer, weaker material
+; (E 200, yield 25). Along the beam the strain is shared, so the skin carries
+; E_skin / E times the stress beside it: about 0.05 MPa, a factor of about 500 there.
+; True minimum: about 4.6, at the top and bottom faces.
+; truth: safe holds about 2.7 (the beam with one yield, yield-soft-skin-one-yield: 2.71 on 0.5 mm cells, converging; the skin itself carries E_skin / E of the stress beside it, a factor near 500)
+; truth: unsafe fails about 2.7 (as safe)
+(import "std")
+(def part (box 100 10 10))
+(def skin (max (- 4.9 y) (- y 5.5) (- 4 z) (- z 4.8) (- (abs x) 40)))
+(study s (shape part)
+ (elastic (E (* 1MPa (select skin 200 200000))) (nu 0.3) (yield (* 1MPa (select skin 25 250))))
+ (fix root (+ x 49))
+ (load top (force 1000N 0 0) (region (max (- 49 x) (- 4 z))))
+ (load bottom (force -1000N 0 0) (region (max (- 49 x) (+ z 4))))
+ (res 1))
+(require safe (min-safety-factor s > 1))
+(require unsafe (min-safety-factor s < 1))

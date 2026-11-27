@@ -1,0 +1,9 @@
+; bar 8 x 2 x 2, x from 0; convection 200 W/m2/K to 20 C on its low x face; 0.01 W spread over the material past x = 0+7.49; k 0.5; res 0.5
+; exact 1-D: Tmax = 20 + P/(hA) + P a/(k A) + P (L-a)/(2 k A) = 71.225 C
+(import "std")
+(body bar (shape (move (box 8 2 2) 4.0 0 0)))
+(study s (shape (shape-of bar)) (heat (k 0.5W/m/K))
+  (convection air (- x 0.0001) (coefficient 200W/m2/K) (ambient 20degC))
+  (source q (power 0.01W) (region (- 7.49 x)))
+  (res 0.5))
+(require temp (max-temperature s < 1e6degC))

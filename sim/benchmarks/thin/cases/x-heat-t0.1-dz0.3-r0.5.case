@@ -1,0 +1,5 @@
+; The 0.1 mm fin at z 0.3, k 50, its block at 20 C, 1 mW into its tip.
+; truth: cool fails about 20.78 (1-D conduction, 20 + P L / k A)
+(import "std") (def part (min (move (box 4 6 6) 2 0 0) (move (box 20 4 0.1) 10.0 0 0.3)))
+(study s (shape part) (heat (k 50W/m/K)) (temperature base (- x 1) 20degC) (source tip (power 0.001W) (region (- 19 x))) (res 0.5))
+(require cool (max-temperature s < 20.5degC))

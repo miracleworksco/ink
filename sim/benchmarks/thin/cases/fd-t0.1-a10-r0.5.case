@@ -1,0 +1,5 @@
+; A fin 20 x 4 x t mm along x from a 4 x 6 x 6 block, held at x < 1, E 200 GPa, nu 0, 1e-5 N at its tip (x > 19), t 0.1, turned 10 deg about x.
+; truth: stiff fails about 0.0001952 (cantilever, F L^3 / 3 E I over the free 16 mm)
+(import "std") (def part (min (move (box 4 6 6) 2 0 0) (move (rotate-x (move (box 20 4 0.1) 10 0 0) 10) 0 0 0)))
+(study s (shape part) (elastic (E 200000MPa) (nu 0)) (fix root (- x 1)) (load tip (force 0 1.7364817766693034e-06N -9.84807753012208e-06N) (region (- 19 x))) (res 0.5))
+(require stiff (max-displacement s < 1.6e-4))

@@ -1,0 +1,11 @@
+; octant of a hollow sphere ri 5 ro 8.3, three mirrors, bore pressure 10 MPa, E 1000, nu 0.3, res 0.3
+; exact (Lame): von Mises at bore 1.5 p ro3/(ro3-ri3) = 19.1966 MPa; bore moves p ri3/(E(ro3-ri3)) ((1-2nu) ri + (1+nu) ro3/(2 ri2)) = 0.0471882 mm
+(import "std")
+(body t (shape (max (subtract (sphere 8.3) (sphere 5)) (neg x) (neg y) (neg z))))
+(study s (shape (shape-of t)) (elastic (E 1000MPa) (nu 0.3))
+  (mirror mx x 0) (mirror my y 0) (mirror mz z 0)
+  (load p (pressure 10MPa) (region (max (- (len3 x y z) 5.2) (- 0.001 x) (- 0.001 y) (- 0.001 z))))
+  (res 0.3))
+(require stress (max-stress s < 100000MPa))
+(require disp (max-displacement s < 100000))
+(require comp (compliance s < 1e9N*mm))

@@ -1,0 +1,1 @@
+{"free-speed":{"from":"a speed rating independent of the torque limits","sizes":true,"ordered":[{"read":"speed","on":"shaft"},{"number":1,"unit":"deg/s"}]}}

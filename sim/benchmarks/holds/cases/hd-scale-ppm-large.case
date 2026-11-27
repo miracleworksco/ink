@@ -1,0 +1,8 @@
+(import "std")
+(def part (move (rotate-z (move (box 20400 720.0 480.0) 10200.0 0 0) 0.0) 13.0 17.0 23.0))
+(study s (shape part) (elastic (E 200000MPa) (nu 0.0) (density 7850kg/m3))
+  (fix pin (- (+ (* 1.0 (- x 13.0)) (* 0.0 (- y 17.0))) 9.999999999999999e-05) (pivot (at 13.0 17.0 23.0) (axis -0.0 1.0 0)))
+  (fix pin2 (- 20399.9999 (+ (* 1.0 (- x 13.0)) (* 0.0 (- y 17.0)))) (pivot (at 20413.0 17.0 23.0) (axis -0.0 1.0 0)))
+  (modes 3)
+  (res 60.0))
+(require q (min-frequency s > 0Hz))

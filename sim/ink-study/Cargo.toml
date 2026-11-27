@@ -1,0 +1,19 @@
+[package]
+name = "ink-study"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+description = "ink's study plug: a part's peak stress and deflection under a study's loads, read off one solve of ink-fem as facts for the claims core"
+
+[dependencies]
+ink-claims = { path = "../../kernel/crates/ink-claims" }
+ink-lang = { path = "../../kernel/crates/ink-lang" }
+ink-sim = { path = "../ink-sim" }
+
+[dev-dependencies]
+# tests/plug.rs: a part's rating answered by the solver
+ink-ratings = { path = "../../kernel/crates/ink-ratings" }
+
+[lints]
+workspace = true

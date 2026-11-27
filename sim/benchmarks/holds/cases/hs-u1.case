@@ -1,0 +1,14 @@
+; imperial bar 1in x 0.25in x 0.2in, mirrors on its low faces, 50 lbf spread past x = 0.9in, E 10 Msi, nu 0, res 0.5 mm
+; exact: stress 50/(0.25 0.2) = 1000 psi = 6.894757 MPa; tip (1000/1e7)(0.9 + 0.05) in = 9.5e-5 in = 0.002413 mm
+(import "std")
+(body bar (shape (move (box 1in 0.25in 0.2in) 0.5in 0.125in 0.1in)))
+(study s (shape (shape-of bar)) (elastic (E 10Msi) (nu 0))
+  (mirror mx x 0) (mirror my y 0) (mirror mz z 0)
+  (load f (force 50lbf 0 0) (region (- 0.9in x))) (res 0.5))
+(require stress (max-stress s < 100000MPa))
+(require disp (max-displacement s < 100000))
+(require comp (compliance s < 1e9N*mm))
+(require a (max-stress s < 1100psi))
+(require b (max-stress s > 900psi))
+(require c (max-displacement s < 0.0001in))
+(require d (max-displacement s > 0.00009in))

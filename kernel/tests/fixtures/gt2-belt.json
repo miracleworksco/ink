@@ -1,0 +1,41 @@
+{
+ "pitch": 2,
+ "pitch-line-differential": 0.254,
+ "back": 0.63,
+ "tooth-height": 0.75,
+ "tooth": [
+  [
+   0.498876,
+   0.438202,
+   0.555,
+   0.0,
+   0.195
+  ],
+  [
+   0.591457,
+   0.130435,
+   1.0,
+   -0.4,
+   0.0
+  ],
+  [
+   0.740175,
+   0.0,
+   -0.15,
+   0.740175,
+   0.15
+  ]
+ ],
+ "drawing": {
+  "pitch": 2,
+  "pitch-line-differential": 0.254,
+  "tooth-height": 0.75,
+  "belt-height": 1.38,
+  "root-radius": 0.15,
+  "flank-radius": 1,
+  "tip-radius": 0.555,
+  "flank-centre-offset": 0.4,
+  "page": 46,
+  "pdf-page": 33
+ }
+}

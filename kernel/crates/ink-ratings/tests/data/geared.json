@@ -1,0 +1,52 @@
+{
+  "ratings": {
+    "side-load": {
+      "ordered": [
+        {
+          "read": "radial-load",
+          "on": "shaft"
+        },
+        {
+          "number": 100,
+          "unit": "N"
+        }
+      ],
+      "from": "a made-up gearbox table",
+      "sizes": true
+    },
+    "window": {
+      "ordered": [
+        {
+          "number": 1,
+          "unit": "N*m"
+        },
+        {
+          "read": "torque",
+          "on": "shaft"
+        },
+        {
+          "table": {
+            "x": "rpm",
+            "y": "N*m",
+            "points": [
+              [
+                10,
+                6
+              ],
+              [
+                20,
+                4
+              ]
+            ]
+          },
+          "at": {
+            "read": "speed",
+            "on": "shaft"
+          }
+        }
+      ],
+      "from": "a made-up curve",
+      "sizes": true
+    }
+  }
+}

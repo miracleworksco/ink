@@ -1,0 +1,23 @@
+; TRUTH MODEL: one material. A 100 x 10.6 x 10 beam bent by a couple (about 54 MPa at its top and bottom
+; faces, yield 250), its side faces at y = +-5.3: on 1 mm cells the cells
+; y 5..6 are 30% material, so the side face's points are read from the cells
+; y 4..5, at y 5.3, outside those cells' boxes. A skin y 5.2..5.3 on part
+; of that face (z 4..4.8, |x| < 40) is a softer, weaker material (E 200,
+; yield 25): along the beam the strain is shared, so it carries E_skin/E
+; (1/1000) of the stress beside it, a factor of about 500 there. The cells
+; y 4..5 are of one material over their boxes, so their reads count; the
+; read at y 5.3 takes the bulk's stress against the skin's yield.
+; True minimum: the one-yield model's (skin-past-cell-truth.ink).
+; truth: safe holds about 2.87 (this model on 0.5 mm cells, yield-skin-past-cell-one-r0.5)
+; truth: unsafe fails about 2.87 (as safe)
+(import "std")
+(def part (box 100 10.6 10))
+(def skin (max (- 5.2 y) (- y 5.5) (- 4 z) (- z 4.8) (- (abs x) 40)))
+(study s (shape part)
+ (elastic (E 200000MPa) (nu 0.3) (yield 250MPa))
+ (fix root (+ x 49))
+ (load top (force 1000N 0 0) (region (max (- 49 x) (- 4 z))))
+ (load bottom (force -1000N 0 0) (region (max (- 49 x) (+ z 4))))
+ (res 1))
+(require safe (min-safety-factor s > 1))
+(require unsafe (min-safety-factor s < 1))
