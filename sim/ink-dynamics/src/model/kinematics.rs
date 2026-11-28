@@ -10,17 +10,12 @@ use ink_lang::Doc;
 /// dropped).
 pub(super) fn placement(d: &mut Doc, entries: &[NodeId], along: &[usize], eps: &[u32]) -> Placement {
     let dr: Vec<NodeId> = entries[..9].iter().map(|&e| d.derivative(e, Var::T)).collect();
+    let dp: Vec<NodeId> = entries[9..].iter().map(|&e| d.derivative(e, Var::T)).collect();
     let p = nums(&d.g, &entries[9..]);
-    let dt2: Vec<NodeId> = entries
-        .iter()
-        .map(|&e| {
-            let de = d.derivative(e, Var::T);
-            d.derivative(de, Var::T)
-        })
-        .collect();
+    let dt2: Vec<NodeId> = dr.iter().chain(&dp).map(|&de| d.derivative(de, Var::T)).collect();
     let dq = partials(d, entries, along, eps);
     let g = &d.g;
-    Placement { r: nums(g, &entries[..9]), dr: nums(g, &dr), p, dt2: nums(g, &dt2), dq }
+    Placement { r: nums(g, &entries[..9]), dr: nums(g, &dr), p, dp: nums(g, &dp), dt2: nums(g, &dt2), dq }
 }
 
 /// Numbers of the model, compiled.
@@ -72,8 +67,16 @@ impl Model {
     /// partitioning solves the dependent coordinates at each state); its
     /// rates at that root, certified regular there, as at any moment.
     pub fn state_near(&self, t: f64, q: &[[f64; 3]]) -> Moment {
+        let mut m = self.compute_in(t, self.near_ctx(t, q), &vec![false; self.groups.len()]);
+        m.q = q.to_vec();
+        m
+    }
+
+    /// The context of a state of a simulation (Model::state_near), its
+    /// loops solved there from their roots at the state before.
+    pub(super) fn near_ctx(&self, t: f64, q: &[[f64; 3]]) -> Result<Ctx, String> {
         let mut params = self.state_params(t, q);
-        let ctx = match &self.follow {
+        match &self.follow {
             None => Ok(Ctx::new(t, params)),
             Some(f) => (|| {
                 let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
@@ -105,10 +108,7 @@ impl Model {
                 }
                 Ok(Ctx::new(t, params))
             })(),
-        };
-        let mut m = self.compute_in(t, ctx, &vec![false; self.groups.len()]);
-        m.q = q.to_vec();
-        m
+        }
     }
 
     /// Over step `s` of the written motion, each coordinate's bound on its
@@ -202,6 +202,58 @@ impl Model {
         let efforts = self.actuators.iter().map(|a| (a.lo.at(&ctx), a.hi.at(&ctx))).collect();
         let speeds = self.speeds.iter().map(|s| (s.rate.at(&ctx), s.lo.at(&ctx), s.hi.at(&ctx))).collect();
         Ok((efforts, speeds))
+    }
+
+    /// Each actuator's limits (lo, hi) bounded over a box of states at
+    /// moment t: each coordinate's position, rate and acceleration anywhere
+    /// in its interval (Model::state's, as intervals), each limit's least
+    /// and most there by the interval evaluation an effort's bound over a
+    /// step reads them with (bounded.rs), rounded outward. So a limit that
+    /// follows the drive's speed (a torque-speed line, a pull-out curve, a
+    /// band of speeds it gives nothing in) is bounded over every speed the
+    /// box holds, not read at one. Unbounded through a solve on t.
+    pub fn limits_over(&self, t: f64, q: &[[I; 3]]) -> Result<Vec<(I, I)>, String> {
+        let mid: Vec<[f64; 3]> = q.iter().map(|c| c.map(|x| x.mid())).collect();
+        let mut ctx = self.ctx_with(t, self.state_params(t, &mid))?;
+        let mut spans: Vec<(u32, I)> = Vec::new();
+        if let Some(st) = &self.states {
+            for (&(k, jet), s) in st.of.iter().zip(q) {
+                if let Some((r, a)) = jet {
+                    spans.extend([(k, s[0]), (r, s[1]), (a, s[2])].map(|(p, x)| (p as u32, x)));
+                }
+            }
+        }
+        for &(k, [_, v, a, ..]) in &self.simulated {
+            spans.extend([(v as u32, q[k][1]), (a as u32, q[k][2])]);
+        }
+        if let Some((_, x)) = spans.iter().find(|(_, x)| !(x.lo <= x.hi && x.lo.is_finite() && x.hi.is_finite())) {
+            return Err(format!("a state's bound [{}, {}] is not a finite interval", x.lo, x.hi));
+        }
+        ctx.p_spans = ink_core::eval::ParamSpans::new(spans.into_iter().filter(|(_, x)| x.lo < x.hi).map(|(p, x)| (p, (x.lo, x.hi))));
+        Ok(self.actuators.iter().map(|a| (a.lo.over(&ctx), a.hi.over(&ctx))).collect())
+    }
+
+    /// Whether each actuator's limits read the state (a coordinate's
+    /// position, rate or acceleration as Model::state passes it): where
+    /// not, limits_over is limits_at's at any state.
+    pub fn limits_read_state(&self) -> Vec<bool> {
+        let mut state: Vec<u32> = Vec::new();
+        if let Some(st) = &self.states {
+            for &(k, jet) in &st.of {
+                if let Some((r, a)) = jet {
+                    state.extend([k, r, a].map(|p| p as u32));
+                }
+            }
+        }
+        for &(_, [_, v, a, ..]) in &self.simulated {
+            state.extend([v, a].map(|p| p as u32));
+        }
+        let reads = |n: &Num| match n {
+            Num::C(_) => false,
+            Num::T(t) => t.params_read().iter().any(|p| state.contains(p)),
+            Num::S(..) => true,
+        };
+        self.actuators.iter().map(|a| reads(&a.lo) || reads(&a.hi)).collect()
     }
 
     /// Its context at moment t: the solves on t it reads solved there.

@@ -1632,14 +1632,17 @@
 ; bridges along x or y holds; one that bridges along neither is not
 ; settled, as a bridge may run another way. (unbridged-along part z0 a h l
 ; w dx dy) checks along the direction (dx, dy) alone, and fails where a
-; ceiling does not bridge along it.
+; ceiling does not bridge along it. For a slot turned by A degrees, pass
+; (nth (sin-cos-deg A) 1) (nth (sin-cos-deg A) 0) so the roof certificate
+; sees the exact direction.
 ; A support column must be solid through the full 0.3 mm below its row.
 ; A rib can carry another roof; the check also reads the rib's underside.
 ; A row fails if it breaks into air before reaching support, or runs
 ; unsupported for floor(l/w) steps of w. A failure may therefore be a
 ; span over (floor(l/w) - 1) w, or one on a support thinner than w.
 ; A pass can prove an angled segment stays in solid, or prove the roof
-; spans between bearings with unbroken support columns.
+; spans between bearings with unbroken support columns: walls at any
+; angle, where the part is upright prisms of its own numbers.
 ; A shared face can carry a row where both pieces have material up to it.
 (fn unbridged (source z0 a h l w) (bridges source z0 a h l w (vec (vec 1 0) (vec 0 1)) 0))
 (fn unbridged-along (source z0 a h l w dx dy)
@@ -1648,7 +1651,7 @@
 ; fails, else it is only not shown to bridge.
 (fn bridges (source z0 a h l w dirs sure)
   (let ((c 0.3)
-        (support (bridge-support source z0 a h c l w))
+        (support (bridge-support source z0 a h c l w dirs))
         ; Read proven internal faces as material in the failure probes too.
         (f (nth support 2))
         (k (floor (/ l w)))

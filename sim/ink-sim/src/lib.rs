@@ -14,6 +14,7 @@ use ink_lang::sexp;
 
 mod command;
 mod forms;
+mod receipt;
 pub use self::forms::*;
 // The solver, at the package's paths.
 pub use ink_fem::*;
@@ -59,7 +60,7 @@ pub fn solve_setup(doc: &mut lang::Doc, ctx: &Ctx, name: &str, setup: &Setup) ->
 /// Solves study `name` at each of `at` (moments of one motion: one setup, its loads apart) ahead of
 /// `solve_setup`, which then finds each solved: at once, as many as memory leaves room for
 /// (`solves_at_once`, by what a solve on these cells this run already holds says one takes; with none,
-/// the first alone says), each one solve on the threads all share. One that fails is left for
+/// the first alone says), each solve running on a pool sized to its grid. One that fails is left for
 /// `solve_setup` to say.
 pub fn solve_each(doc: &mut lang::Doc, at: &[(Ctx, lang::RunOpts)], name: &str) -> Result<(), InkError> {
     let mut todo: Vec<(u128, Setup, &Ctx)> = Vec::new();

@@ -1,0 +1,15 @@
+; A cantilever 20 x 2 x 0.5 from a block, held at x < -3.99, 0.01 N up at its tip, on 0.125 mm cells; four foils 0.002 mm
+; thick and 1.8 wide under it (z -0.25 to -1), joined to it only at its root (the block) and its tip (a tab). Each is written as
+; a distance, so the samples see it (the planes through them find nothing missed), a sixtieth of its cells thick: its cells
+; are slivers no cell beside takes, dropped with its material, and the beam alone is read, 0.00654, on cells of 0.125, 0.25
+; and 0.5 mm alike. Sorted by what they join, as missed material is, each foil joins the cells kept in two places apart (or
+; beside them over more than a tip's cells): not settled, naming it. Foils half as thick read the same; twice as thick, not
+; settled.
+; truth: stiff holds about 0.0047 (beam theory: the foils hold the tip's turn as a spring of E A d^2 / L, 0.58 times the beam's E I / L, so the tip moves 1 - 0.75 x 0.58 / 1.58 = 0.72 of the beam alone's 0.0065)
+(import "std")
+(def block (move (box 4 2 4.5) -2 1 0.25))
+(def beam (move (box 20 2 0.5) 10 1 0.25))
+(def tab (move (box 0.5 2 1.6) 19.75 1 -0.3))
+(def foils (min (move (box 20.4 1.8 0.002) 9.7 1 -0.25) (move (box 20.4 1.8 0.002) 9.7 1 -0.5) (move (box 20.4 1.8 0.002) 9.7 1 -0.75) (move (box 20.4 1.8 0.002) 9.7 1 -1.0)))
+(study s (shape (min block beam tab foils)) (elastic (E 200000MPa) (nu 0.3)) (fix root (- x -3.99)) (load tip (force 0 0 0.01N) (region (- 19.9 x))) (res 0.125))
+(require stiff (max-displacement s < 0.005))

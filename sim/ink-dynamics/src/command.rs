@@ -346,8 +346,9 @@ fn supplied(actuators: &mut J, model: &Model, sim: Option<&dynamics::simulate::S
                         }
                         j["rms"] = sim.rms(i, span).map_or(J::Null, |r| n(k * r));
                         // Known either way to within its stiffness times its
-                        // following error's band at the span's end (measured).
-                        j["band"] = n(k * sim.band(i, span.1));
+                        // following error's band at the span's end (measured)
+                        // and the most the masses move it over the span.
+                        j["band"] = n(k * sim.widest(i, span.1));
                         j["band_kind"] = json!("measured");
                         j["loose"] = J::Array(joined(&steps.loose).into_iter().map(|(a, b)| bounds(a, b)).collect());
                         j["partial"] = json!(!steps.loose.is_empty());

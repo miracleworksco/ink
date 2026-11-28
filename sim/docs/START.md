@@ -115,10 +115,12 @@ ink answers what the model says. It does not know what you meant:
   not: `1.2g` for a 1.2 kg camera, or gravity of `9.81mm/s2`, gives a
   confident yes. Read every mass and every unit once.
 - **What holds what.** ink says when parts overlap where they start (the
-  answer's first line, and `ink interfere` over the motion), and when a
-  part moves by a motor's angle with nothing between them (a belt left
-  out): NOT COVERED names both, and the answer is not all yes. It does not
-  see a part that floats free of what it should be bolted to:
+  answer's first line, and `ink interfere` over the motion), when a part
+  in a small assembly (up to 60 parts) is proven more than 1 mm from all
+  others with no relation joining it (`LOOSE`), and when a part moves by
+  a motor's angle with nothing between them (a belt left out): NOT COVERED
+  names clashes and missing couplings, and the answer is not all yes. It
+  still does not see a deleted bolt when the part rests against its mount:
   `ink render FILE --out look.png` shows it.
 - **The motion's end.** A motion that stops by `clamp` or a `select` on
   `t` is read to its end. One that goes on past the span is said (`the

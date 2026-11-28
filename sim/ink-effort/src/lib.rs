@@ -107,6 +107,12 @@ pub struct Effort<'a> {
     left: RefCell<HashMap<usize, Vec<String>>>,
     rates: Vec<Option<ink_dynamics::Rate>>,
     kin: OnceCell<Option<Kin>>,
+    /// Kept off the run, which is made once, as each is first asked: why each actuator's effort lacks (by
+    /// its place in the run), the moving bodies with no mass each reaction rests on, said (by its place),
+    /// and each actuator's largest effort over the moments read, either way round.
+    lacking: RefCell<HashMap<usize, Option<String>>>,
+    massless: RefCell<HashMap<usize, Option<String>>>,
+    peaks: OnceCell<Vec<f64>>,
 }
 
 /// The written motion at moments of its own: their times, and each actuator's rate at each. It needs no
@@ -191,6 +197,9 @@ impl<'a> Effort<'a> {
             left: RefCell::default(),
             rates,
             kin: OnceCell::new(),
+            lacking: RefCell::default(),
+            massless: RefCell::default(),
+            peaks: OnceCell::new(),
         })
     }
 
@@ -261,7 +270,7 @@ impl<'a> Effort<'a> {
                 };
                 let mut most: Option<(f64, f64, f64)> = None;
                 for (_, m) in run.at.iter().filter(|(_, m)| m.unsolved.is_none()) {
-                    if run.model.reaction_refused_lossless(r, m).is_some() || !run.model.blocks_reaction(r).is_empty() {
+                    if self.massless_under(run, r).is_some() || run.model.reaction_refused_lossless(r, m).is_some() {
                         most = None;
                         break;
                     }
@@ -533,7 +542,8 @@ impl<'a> Effort<'a> {
             let powered = m.unpowered.iter().all(Option::is_none)
                 && supplied.is_finite()
                 && taken.is_finite()
-                && (0..run.model.actuators.len()).all(|a| run.model.refusal_lossless(a, m).is_none());
+                // (An actuator whose effort lacks a mass is refused at every moment: said once, not at each.)
+                && (0..run.model.actuators.len()).all(|a| self.lacks(run, a).is_none() && run.model.refusal_lossless(a, m).is_none());
             let off = if run.model.lossy() { (taken - supplied).max(0.0) } else { (taken - supplied).abs() };
             if powered && off > slack {
                 note(
@@ -564,7 +574,7 @@ impl<'a> Effort<'a> {
         let add = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] { std::array::from_fn(|i| a[i] + b[i]) };
         for (_, m) in run.at.iter().step_by(every).filter(|(_, m)| m.unsolved.is_none()) {
             for (r, reaction) in run.model.reactions.iter().enumerate() {
-                if run.model.reaction_refused_lossless(r, m).is_some() || !run.model.blocks_reaction(r).is_empty() || reaction.path == self.target {
+                if self.massless_under(run, r).is_some() || run.model.reaction_refused_lossless(r, m).is_some() || reaction.path == self.target {
                     continue;
                 }
                 let Some((bodies, other)) = run.model.carried_masses(r, m.t) else { continue };
@@ -968,12 +978,35 @@ impl<'a> Effort<'a> {
     /// open with why there is none.
     /// Why the run, read for its motion alone, has no effort of actuator `k` (None: it has): no gravity is
     /// declared, or moving bodies its effort rests on have no mass, each named.
-    fn lacks(run: &Read, k: usize) -> Option<String> {
+    fn lacks(&self, run: &Read, k: usize) -> Option<String> {
         if run.weightless {
             return Some(ink_dynamics::no_gravity().message);
         }
-        let without = run.model.blocked(k);
-        (!without.is_empty()).then(|| format!("these moving bodies its effort rests on have no mass: {}", run.model.massless_said(&without)))
+        let mut lacking = self.lacking.borrow_mut();
+        lacking
+            .entry(k)
+            .or_insert_with(|| {
+                let without = run.model.blocked(k);
+                (!without.is_empty()).then(|| format!("these moving bodies its effort rests on have no mass: {}", run.model.massless_said(&without)))
+            })
+            .clone()
+    }
+
+    /// The moving bodies with no mass reaction `r` of the run rests on, said (None: there are none).
+    fn massless_under(&self, run: &Read, r: usize) -> Option<String> {
+        let mut massless = self.massless.borrow_mut();
+        massless
+            .entry(r)
+            .or_insert_with(|| {
+                let without = run.model.blocks_reaction(r);
+                (!without.is_empty()).then(|| run.model.massless_said(&without))
+            })
+            .clone()
+    }
+
+    /// Actuator `k`'s largest effort over the moments read, either way round.
+    fn peak(&self, run: &Read, k: usize) -> f64 {
+        self.peaks.get_or_init(|| (0..run.model.actuators.len()).map(|a| run.at.iter().map(|(_, m)| m.effort[a].abs()).fold(0.0, f64::max)).collect())[k]
     }
 
     /// `effort`: the fact is an effort (a torque, a force, a peak), not the motion's speed.
@@ -1000,7 +1033,7 @@ impl<'a> Effort<'a> {
         if let Some(why) = self.ranged(run) {
             return Err(open(fact, outside, why));
         }
-        if let Some(why) = Self::lacks(run, k).filter(|_| effort) {
+        if let Some(why) = self.lacks(run, k).filter(|_| effort) {
             return Err(open(fact, Verdict::NotSettled(Unsettled::Lacks), why));
         }
         match &run.sprung[k] {
@@ -1034,6 +1067,10 @@ impl Effort<'_> {
     /// of a ranged one its model reads that value says nothing of the rest.
     fn ranged(&self, run: &Read) -> Option<String> {
         let view = self.view.borrow();
+        // (Nothing ranged: no name the model reads need be looked up.)
+        if view.ctx.p_spans.is_empty() {
+            return None;
+        }
         let ranged: Vec<String> = (run.model.reads.iter().chain(&run.model.reads_carried))
             .filter_map(|name| Some((name, view.ctx.p_spans.get(view.doc.param_index(name)? as u32)?)))
             .map(|(name, (low, high))| format!("'{name}' ({low} to {high})"))
@@ -1136,9 +1173,8 @@ impl Effort<'_> {
                 return open(fact, lacks, format!("nothing states it, and the model does not work it out: {}", ink_dynamics::no_gravity().message));
             }
             let path = support.map(|(d, _)| &self.divided[d].path).or(joint.map(|(path, ..)| path));
-            let without = path.and_then(|p| run.model.reactions.iter().position(|r| r.path == *p)).map(|r| run.model.blocks_reaction(r)).unwrap_or_default();
-            if !without.is_empty() {
-                return open(fact, lacks, format!("these moving bodies its reaction rests on have no mass: {}", run.model.massless_said(&without)));
+            if let Some(said) = path.and_then(|p| run.model.reactions.iter().position(|r| r.path == *p)).and_then(|r| self.massless_under(run, r)) {
+                return open(fact, lacks, format!("these moving bodies its reaction rests on have no mass: {said}"));
             }
         }
         if let Some(why) = self.other_moment(run, moment).filter(|_| early) {
@@ -1609,7 +1645,7 @@ impl Tool for AtMoment<'_> {
         // Either way, what the solver says of this moment's read; away from nothing, over a motion, what
         // an effort between this moment and the next may add: the share of the motion's peak a peak is read low by.
         let off = m.bound[k] + m.loss_bound[k] + m.mass[k];
-        let peak = run.at.iter().map(|(_, m)| m.effort[k].abs()).fold(0.0, f64::max);
+        let peak = self.effort.peak(run, k);
         let between = if run.span.is_some() { OFF_LINE * peak } else { 0.0 };
         if off > 0.0 || between > 0.0 {
             fact.band = Some((x - off - if x < 0.0 { between } else { 0.0 }, x + off + if x >= 0.0 { between } else { 0.0 }));

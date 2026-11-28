@@ -1,0 +1,10 @@
+; A 20 x 10 x 2 bar (x 0..20, y -5..5) fixed over its first 0.01 mm, pulled by 1000 N over its last mm, nu 0.
+; A stiff 2600 MPa skin against the outer face y = -5 (clamped to 2600 into air), ramping down to 2000 by
+; y = -4.9875 (the face floor box's centre). Every grid's face-cell centre lies at y >= -4.9875 and reads 2000;
+; the neighbour centre in air (y = -5.0125) reads 2600, so air neighbours must not count in `seen`.
+; truth: strong fails about 65 (2600 / 2000 * 50 MPa in the outer-face skin)
+(import "std")
+(def part (move (box 20 10 2) 10 0 0))
+(study pull (shape part) (elastic (E (* 1MPa (max 2000 (min 2600 (- 2000 (* 48000 (+ y 4.9875))))))) (nu 0))
+ (fix root (- x 0.01)) (load end (force 1000N 0 0) (region (- 19 x))) (res 0.2))
+(require strong (max-stress pull < 60MPa (excluding support-margin buckling)))

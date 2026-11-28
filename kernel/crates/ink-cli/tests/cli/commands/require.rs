@@ -64,3 +64,67 @@ fn a_requirement_is_asked_at_each_declared_case() {
     let set = ink(["require", &m, "--param", "n=4"]);
     assert!(set["all_yes"] == true && set.get("cases").is_none() && set["requirements"][0].get("covers").is_none(), "{set}");
 }
+
+/// A wall box: its lid on a hinge pin with 0.2 mm to spare in each knuckle, swung shut over the motion, and a
+/// heater plate on four standoffs, `lift` above them.
+const WALL_BOX: &str = r#"(import "std")
+(t-span 0 1s)
+(param lift 0mm)
+(body box
+  (shape (subtract (min (subtract (box 90 90 50) (move (box 84 84 50) 0 0 3))
+                        (move (cylinder-x 4 10) 30 -40 30) (move (box 10 6 10) 30 -42 25)
+                        (move (cylinder-x 4 10) -30 -40 30) (move (box 10 6 10) -30 -42 25))
+                   (move (cylinder-x 2.2 100) 0 -40 30))))
+(body pin (shape (move (cylinder-x 2 76) 0 -40 30)))
+(body standoff (shape (cylinder-z 3 8)))
+(body plate (shape (move (box 70 70 2) 0 0 (+ -13 (/ lift 1mm)))))
+(body lid (shape (subtract (min (cylinder-x 4 20) (move (box 40 80 3) 0 42 0)) (cylinder-x 2.2 100))))
+(body handle (shape (move (box 20 4 4) 0 78 3.5)))
+(assembly lid-unit (instance lid lid) (instance handle handle))
+(assembly root
+  (instance box box)
+  (instance pin pin)
+  (instance s1 standoff (at (move 25 25 -18)))
+  (instance s2 standoff (at (move -25 25 -18)))
+  (instance s3 standoff (at (move 25 -25 -18)))
+  (instance s4 standoff (at (move -25 -25 -18)))
+  (instance plate plate)
+  (instance lid lid-unit (at (move 0 -40 30)) (turn x (- 90deg (* 90deg/s t)))))
+(require ok (within-ratings root))
+"#;
+
+/// Where the parts' placement is checked, the parts that touch nothing (none within 1 mm, no relation) are
+/// named, by group: a plate lifted off its standoffs, a lid whose pin is gone, a plate with no standoffs. A
+/// moving lid held by its pin through a clearance fit, a gap under 1 mm, and a relation are touching; a part
+/// resting where one of its supports was is too. A loose part changes no verdict.
+#[test]
+fn a_part_that_touches_nothing_is_named_where_the_parts_are_placed() {
+    let s = Scratch::new("require-loose");
+    let asked = |name: &str, model: &str, args: &[&str]| -> (Value, String) {
+        let m = s.model(name, model);
+        let d = Ink::new(["require", m.as_str()].into_iter().chain(args.iter().copied())).any();
+        let said = Ink::new(["require", m.as_str(), "--plain"].into_iter().chain(args.iter().copied())).run().stdout;
+        (d, said.lines().next().unwrap_or_default().to_string())
+    };
+    let (built, said) = asked("box.ink", WALL_BOX, &[]);
+    assert!(built["placement"]["loose"] == json!([]), "{built}");
+    assert!(said.starts_with("PLACEMENT: no two parts overlap at the start of the motion. None is proven more than 1 mm from all the rest."), "{said}");
+    for (lift, loose) in [("4.5", json!([["root/plate"]])), ("0.5", json!([]))] {
+        let (d, said) = asked("box.ink", WALL_BOX, &["--param", &format!("lift={lift}")]);
+        assert!(d["placement"]["loose"] == loose && d["all_yes"] == built["all_yes"] && d["counts"] == built["counts"], "{lift}: {d}");
+        assert_eq!(said.contains("LOOSE: 1 part touches no other part, none within 1 mm and no relation joining it: root/plate."), lift == "4.5", "{said}");
+    }
+    let (d, said) = asked("nopin.ink", &WALL_BOX.replace("  (instance pin pin)\n", ""), &[]);
+    assert_eq!(d["placement"]["loose"], json!([["root/lid/lid", "root/lid/handle"]]), "{d}");
+    assert!(said.starts_with("PLACEMENT: no two parts overlap") && said.contains("root/lid/lid, root/lid/handle (touching only each other)"), "{said}");
+    let none = WALL_BOX.lines().filter(|l| !l.contains("standoff (at")).collect::<Vec<_>>().join("\n");
+    assert_eq!(asked("none.ink", &none, &[]).0["placement"]["loose"], json!([["root/plate"]]));
+    let three = WALL_BOX.replace("  (instance s1 standoff (at (move 25 25 -18)))\n", "");
+    assert_eq!(asked("three.ink", &three, &[]).0["placement"]["loose"], json!([]));
+    let related = WALL_BOX.replace("  (instance plate plate)\n", "  (instance plate plate)\n  (contact plate s1 (move (box 10 10 10) 25 25 -10))\n");
+    assert_eq!(asked("related.ink", &related, &["--param", "lift=4.5"]).0["placement"]["loose"], json!([]));
+    // Said with a clash, which is what is not covered.
+    let (d, said) = asked("nopin.ink", &WALL_BOX.replace("  (instance pin pin)\n", ""), &["--param", "lift=-1"]);
+    assert!(d["placement"]["clashes"].as_array().unwrap().len() == 4 && d["placement"]["loose"] == json!([["root/lid/lid", "root/lid/handle"]]), "{d}");
+    assert!(said.starts_with("NOT COVERED: the parts are not placed as built: root/s1 and root/plate overlap in solid") && said.contains(". LOOSE: 2 parts"), "{said}");
+}

@@ -5,7 +5,7 @@ use crate::cells::{K, MIN_FRACTION, SimCell, masked, place};
 use crate::element::shape_n;
 use crate::eval::{eval_interval, eval_points};
 use crate::occupancy::{at_xi, occupied, surface_cell};
-use crate::report::{Incomplete, PRESSURE_COVERAGE_LIMIT, SurfaceMeasure};
+use crate::report::{Footprint, Gather, Incomplete, PRESSURE_COVERAGE_LIMIT, SurfaceMeasure};
 use crate::surface::{
     CUT_DEPTH, Facet, ON_SURFACE, RIM, clip_facets, face_strips, facet_cut, facet_in_cells, half_spaces, integrate_pressure, onto_surface, rim_pieces, six_points, surface_measure,
 };
@@ -40,6 +40,8 @@ pub(super) struct Loads {
     pub(super) pressure_lost: Vec<(String, f64, f64)>,
     /// Each load's pressure's error bound, where read.
     pub(super) pressure_error: Vec<Option<f64>>,
+    /// Where each load landed, as `applied` (`Report::load_footprints`).
+    pub(super) footprints: Vec<Option<Footprint>>,
 }
 
 impl Model<'_> {
@@ -191,6 +193,7 @@ pub(super) fn loads(model: &Model, sys: &mut System, f: &mut [f64], surf: &mut S
         landed: vec![Vec::new(); s.loads.len()],
         pressure_lost: Vec::new(),
         pressure_error: Vec::new(),
+        footprints: Vec::new(),
     };
     if let Some((rho, g)) = &s.body {
         body_load(model, sys, f, &mut out, rho, g);
@@ -215,13 +218,19 @@ fn body_load(model: &Model, sys: &System, f: &mut [f64], out: &mut Loads, rho: &
     let final_pos = &mesh.final_pos;
     let Study { s, ctx, ndof, ref grid, ref xis, .. } = *st;
     let slivers_left = &cells.slivers.left;
-    let Loads { ref mut applied, ref mut applied_moments, ref mut held_load, ref mut held_moment, .. } = *out;
+    let Loads { ref mut applied, ref mut applied_moments, ref mut held_load, ref mut held_moment, ref mut footprints, .. } = *out;
     let parts: Vec<([f64; 8], f64)> = sys.cells.par_iter().map(|c| model.sample_cell(c, None, Some(rho))).collect();
     let mut total = [0.0; 3];
     let mut total_m = [0.0; 3];
+    // (the part, its weight at its centre of mass)
+    let mut footprint = Gather::new();
+    footprint.volume = mesh.volume;
     for (c, (nodal, _)) in sys.cells.iter().zip(&parts) {
+        let (ctr, size) = place(grid, c);
+        footprint.cell(ctr, size);
         for k in 0..8 {
             let p = final_pos[c.nodes[k] as usize];
+            footprint.weigh(p, nodal[k]);
             for d in 0..ndof {
                 let v = nodal[k] * g[d];
                 f[c.nodes[k] as usize * ndof + d] += v;
@@ -232,6 +241,7 @@ fn body_load(model: &Model, sys: &System, f: &mut [f64], out: &mut Loads, rho: &
     }
     applied.push(("body".to_string(), total));
     applied_moments.push(total_m);
+    footprints.push(footprint.footprint((s.lo, s.hi)));
     for (i, c) in sys.cells.iter().enumerate() {
         let (ctr, size) = place(grid, c);
         for d in (0..ndof).filter(|&d| g[d] != 0.0) {
@@ -302,7 +312,17 @@ fn pressure_load(
     let Study { s, ctx, ndof, h, dims, ref grid, .. } = *st;
     let Mesh { ref final_pos, ref held_geometry, ref classified_of, .. } = *mesh;
     let taken = &cells.slivers.taken;
-    let Loads { ref mut applied, ref mut applied_moments, ref mut held_load, ref mut held_moment, ref mut landed, ref mut pressure_lost, ref mut pressure_error, .. } = *out;
+    let Loads {
+        ref mut applied,
+        ref mut applied_moments,
+        ref mut held_load,
+        ref mut held_moment,
+        ref mut landed,
+        ref mut pressure_lost,
+        ref mut pressure_error,
+        ref mut footprints,
+        ..
+    } = *out;
     // One sample per facet, distributed to its cell's nodes: every
     // sample's load lands (else load goes missing unevenly and bends
     // thin shells).
@@ -386,6 +406,8 @@ fn pressure_load(
     let mut sampled_mask = exact_mask.is_none();
     let mut force_samples = Vec::new();
     let (mut meant, mut lost, mut covered) = (0.0, 0.0, Vec::new());
+    // (each sample it put on the part: where, its pressure, and its force)
+    let mut footprint = Gather::new();
     for (i, (fc, (&(reg, q), pr))) in pts.iter().zip(inside.iter().zip(&pv)).enumerate() {
         let (nrm, w) = (&fc.normal, &fc.area);
         if reg <= 0.0 {
@@ -571,6 +593,7 @@ fn pressure_load(
             meant += force;
             if force == 0.0 {
                 landed_area += patch;
+                footprint.press(p, pressure, patch, force);
                 continue;
             }
             // (on material a fix holds still: that fix's, on the axes it holds)
@@ -585,6 +608,7 @@ fn pressure_load(
                 }
                 if (0..ndof.min(3)).all(|d| s.fixes[fi].dofs[d]) {
                     landed_area += patch;
+                    footprint.press(p, pressure, patch, force);
                     continue;
                 }
             }
@@ -621,6 +645,7 @@ fn pressure_load(
                 continue;
             };
             landed_area += patch;
+            footprint.press(p, pressure, patch, force);
             landed[li].push((ci, force));
             if dropped_lip_load.is_none()
                 && s.modes == 0
@@ -688,6 +713,7 @@ fn pressure_load(
     surf.measures.push(measure);
     applied.push((l.name.clone(), total));
     applied_moments.push(total_m);
+    footprints.push(footprint.footprint((s.lo, s.hi)));
     Ok(())
 }
 
@@ -696,8 +722,8 @@ fn region_load(model: &Model, sys: &System, f: &mut [f64], out: &mut Loads, li: 
     let Model { st, cells, mesh, .. } = *model;
     let Mesh { ref final_pos, nn, .. } = *mesh;
     let taken_by = &cells.slivers.taken_by;
-    let Study { ndof, h, ref grid, .. } = *st;
-    let Loads { ref mut applied, ref mut applied_moments, ref mut held_load, ref mut held_moment, ref mut timed, ref mut landed, .. } = *out;
+    let Study { s, ndof, h, ref grid, .. } = *st;
+    let Loads { ref mut applied, ref mut applied_moments, ref mut held_load, ref mut held_moment, ref mut timed, ref mut landed, ref mut footprints, .. } = *out;
     let parts: Vec<Option<([f64; 8], f64)>> = sys
         .cells
         .par_iter()
@@ -735,6 +761,18 @@ fn region_load(model: &Model, sys: &System, f: &mut [f64], out: &mut Loads, li: 
         return Err(format!("load '{}' region contains no material", l.name).into());
     }
     landed[li] = parts.iter().enumerate().filter_map(|(ci, p)| p.as_ref().map(|p| (ci, p.1))).filter(|p| p.1 > 0.0).collect();
+    // Its material: the cells it lands in, and its centroid, where its force acts (its moment's arm).
+    let mut footprint = Gather::new();
+    for (c, p) in sys.cells.iter().zip(&parts) {
+        let Some((nodal, v)) = p.as_ref().filter(|p| p.1 > 0.0) else { continue };
+        let (ctr, size) = place(grid, c);
+        footprint.cell(ctr, size);
+        footprint.volume += v;
+        for k in 0..8 {
+            footprint.weigh(final_pos[c.nodes[k] as usize], nodal[k]);
+        }
+    }
+    footprints.push(footprint.footprint((s.lo, s.hi)));
     if let Some(tq) = l.torque {
         // The region's material as weighted nodes, and the forces of a
         // turn of it that make the torque (`torque_forces`).

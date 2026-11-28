@@ -1,3 +1,4 @@
+use super::masses::Pieces;
 use super::{DEVIATION, EQUATIONS, INTEGRATOR, PER_PERIOD, RESOLVE, SPRINGS_METHOD, TOLERANCE, UNRESOLVED};
 
 /// A simulated motion: its knots' moments, and at each its components'
@@ -24,11 +25,44 @@ pub struct Trajectory {
     /// of gyration (the deviations' tolerance and band read them).
     pub scale: Vec<f64>,
     pub gyration: Vec<f64>,
+    /// Each piece's band for the bodies' masses (MassPiece, read at a
+    /// moment by mass_band); none where every mass is exact. Where it was
+    /// lost (its sources or the motion's Jacobian not found at a knot), from
+    /// when, and why: infinite since.
+    pub(super) mass: Vec<MassPiece>,
+    pub(super) lost: Option<(f64, String)>,
     /// Whether the springs are stepped (a joint released).
     pub springs: bool,
     pub stopped: Option<(f64, String)>,
     pub rejected: usize,
     pub evaluations: usize,
+}
+
+/// A step's band for the bodies' masses: its groups' quintics (Pieces),
+/// and each stepped component's position band's largest over every step
+/// to its end (Trajectory::mass_most).
+pub(super) struct MassPiece {
+    groups: Pieces,
+    most: Vec<f64>,
+}
+
+/// A piece's quintic Hermite through its ends' positions, speeds and
+/// accelerations, over `displacement` from its start's position, `h` long:
+/// its coefficients in s, the share of the piece (0 to 1).
+pub(super) fn quintic(start: [f64; 3], end: [f64; 3], displacement: f64, h: f64) -> [f64; 6] {
+    const H: [[f64; 6]; 6] = [
+        [1.0, 0.0, 0.0, -10.0, 15.0, -6.0],
+        [0.0, 1.0, 0.0, -6.0, 8.0, -3.0],
+        [0.0, 0.0, 0.5, -1.5, 1.5, -0.5],
+        [0.0, 0.0, 0.0, 0.5, -1.0, 0.5],
+        [0.0, 0.0, 0.0, -4.0, 7.0, -3.0],
+        [0.0, 0.0, 0.0, 10.0, -15.0, 6.0],
+    ];
+    let ([p0, v0, a0], [_, v1, a1]) = (start, end);
+    let c = [0.0, h * v0, h * h * a0, h * h * a1, h * v1, displacement];
+    let mut m = std::array::from_fn(|k| (0..6).map(|n| c[n] * H[n][k]).sum());
+    m[0] = p0;
+    m
 }
 
 /// Interior sign changes of a polynomial on [0, 1]. Its derivative's
@@ -66,25 +100,59 @@ impl Trajectory {
     /// positions, speeds and accelerations: its coefficients in s, the
     /// share of the piece (0 to 1), and the piece's length.
     fn piece(&self, j: usize, i: usize) -> ([f64; 6], f64) {
-        const H: [[f64; 6]; 6] = [
-            [1.0, 0.0, 0.0, -10.0, 15.0, -6.0],
-            [0.0, 1.0, 0.0, -6.0, 8.0, -3.0],
-            [0.0, 0.0, 0.5, -1.5, 1.5, -0.5],
-            [0.0, 0.0, 0.0, 0.5, -1.0, 0.5],
-            [0.0, 0.0, 0.0, -4.0, 7.0, -3.0],
-            [0.0, 0.0, 0.0, 10.0, -15.0, 6.0],
-        ];
         let h = self.t[j + 1] - self.t[j];
-        let ([p0, v0, a0], [_, v1, a1]) = (self.x[j][i], self.x[j + 1][i]);
-        let c = [0.0, h * v0, h * h * a0, h * h * a1, h * v1, self.displacement[j][i]];
-        let mut m = std::array::from_fn(|k| (0..6).map(|n| c[n] * H[n][k]).sum());
-        m[0] = p0;
-        (m, h)
+        (quintic(self.x[j][i], self.x[j + 1][i], self.displacement[j][i], h), h)
     }
 
     /// The coefficients in s of a piece's derivative of order d along t.
     fn derived(m: &[f64; 6], h: f64, d: usize) -> Vec<f64> {
         (d..6).map(|k| ((k + 1 - d)..=k).map(|f| f as f64).product::<f64>() * m[k] / h.powi(d as i32)).collect()
+    }
+
+    /// Component i's band at t for what the bodies' masses are known to
+    /// (MASSES): how far its position and its first four derivatives move
+    /// either way there, each group's change read off its quintic over the
+    /// piece holding t (its start, at a knot) and their sizes summed
+    /// (Sensitivity); none where every mass is exact, infinite past where
+    /// it was lost.
+    pub fn mass_band(&self, i: usize, t: f64) -> [f64; 5] {
+        if self.mass.is_empty() && self.lost.is_none() {
+            return [0.0; 5];
+        }
+        let j = self.t.partition_point(|&x| x <= t).clamp(1, self.t.len().max(2) - 1) - 1;
+        let Some(piece) = self.mass.get(j) else { return [f64::INFINITY; 5] };
+        let h = self.t[j + 1] - self.t[j];
+        let s = (t - self.t[j]) / h;
+        let mut band = [0.0; 5];
+        for (w, each) in &piece.groups {
+            for (d, b) in band.iter_mut().enumerate() {
+                *b += w * Self::derived(&each[i], h, d).iter().rev().fold(0.0, |y, c| y * s + c).abs();
+            }
+        }
+        band
+    }
+
+    /// The largest position band (mass_band) of component i over the pieces
+    /// up to `until`, bounded on each piece by its quintics' coefficients'
+    /// sizes.
+    pub fn mass_most(&self, i: usize, until: f64) -> f64 {
+        if self.mass.is_empty() && self.lost.is_none() {
+            return 0.0;
+        }
+        let pieces = self.t.partition_point(|&x| x < until).max(1);
+        self.mass.get(pieces - 1).map_or(f64::INFINITY, |p| p.most[i])
+    }
+
+    /// The band over the step just taken (Sensitivity::step), kept.
+    pub(super) fn push_mass(&mut self, groups: Pieces) {
+        let n = self.gyration.len();
+        let most = (0..n)
+            .map(|i| {
+                let here: f64 = groups.iter().map(|(w, each)| w * each[i].iter().map(|c| c.abs()).sum::<f64>()).sum();
+                self.mass.last().map_or(here, |p| p.most[i].max(here))
+            })
+            .collect();
+        self.mass.push(MassPiece { groups, most });
     }
 
     fn no_piece(&self) -> String {
@@ -204,6 +272,8 @@ impl Trajectory {
     }
 }
 
-/// What a simulated motion reads of the bodies' masses: what they are measured to moves it, by no bound found.
-const MASSES: &str = "the bodies' masses, centres and inertias read as measured, exactly: how far what their measures are known to \
-    moves the motion is not bounded, so a claim near its limit may be overturned by it";
+/// What a simulated motion reads of the bodies' masses (Sensitivity).
+const MASSES: &str = "the bodies' masses, centres and inertias as measured, the motion known to within what their measures' proven bounds \
+    move it: each of a body's ten measured moments, alone at the far side of its bounds, moves the motion by its first-order sensitivity, \
+    stepped beside it (the variational equations, by the exponential midpoint rule on its steps), and the band sums their sizes, a claim \
+    within it of its bound not settled; first order, no bound: the motion is not linear in them";

@@ -206,7 +206,7 @@ fn topology_solve_is_independent_of_thread_count() {
         rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| {
             let mut d = load(src);
             let ctx = d.ctx(&[], 0.0).unwrap();
-            let (setup, _, _) = ink::sim::study_setup(&mut d, &ctx, "beam", Some(1.0), 1e-9).unwrap();
+            let (setup, _, _) = ink::sim::study_setup(&mut d, &ctx, "beam", Some(0.5), 1e-9).unwrap();
             let top = ink::topology::Settings { volume_fraction: 0.4, iterations: 3, filter: Some(1.5), keep: None };
             let mut record = None;
             let mut s = ink::sim::solve_redesigned(&setup, &ctx, &mut |a| {

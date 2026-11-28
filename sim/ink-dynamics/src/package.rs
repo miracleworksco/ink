@@ -675,7 +675,9 @@ impl Package for Dynamics {
             owns.push(k);
             let lim = joint::effort(j).unwrap();
             // An actuator that states no limits claims none: its effort is worked out where something reads it.
-            if !lim.claimed {
+            // Nor does one commanded in a simulation: its effort is its command clamped to its limits, within
+            // them by construction (whether the drive is enough is the simulated motion's to say).
+            if !lim.claimed || commands.iter().any(|c| &c.0 == path) {
                 continue;
             }
             let rate = r.derivative(j.drive, Var::T);

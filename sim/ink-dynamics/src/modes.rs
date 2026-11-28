@@ -247,6 +247,10 @@ pub fn modes(reload: &Reload, target: &str, t: f64) -> Result<Modes, InkError> {
     // carrying it; each body's partials kept for its share of a mode's
     // energy (its velocity per unit of each coordinate, and its turning).
     let mut m = vec![vec![0.0; n]; n];
+    // Each one's heft, the size of what its inertia sums: each body's mass
+    // times its speed squared, and its turning squared times its inertia's
+    // diagonal (as a simulation weighs a released joint, simulate::simulation).
+    let mut heft = vec![0.0; n];
     let mut partials: Vec<(f64, M3, Vec<Velocity>)> = Vec::new();
     // A body a coordinate moves otherwise than through the released joints
     // carrying it, where a released joint's drive reads that coordinate too:
@@ -278,12 +282,24 @@ pub fn modes(reload: &Reload, target: &str, t: f64) -> Result<Modes, InkError> {
         let rt = tr(&r);
         let iw = mul(&mul(&r, &b.inertia), &rt);
         let vel: Vec<Velocity> = dq.iter().map(|(k, dr, dp)| (*k, std::array::from_fn(|i| mv(dr, &b.center)[i] + dp[i]), vee(&mul(dr, &rt)))).collect();
+        let diagonal = (0..3).map(|i| iw[i][i].abs()).sum::<f64>();
         for (k, jv, jw) in &vel {
+            heft[*k] += b.mass * dot(*jv, *jv) + dot(*jw, *jw) * diagonal;
             for (l, kv, kw) in &vel {
                 m[*k][*l] += b.mass * dot(*jv, *kv) + dot(*jw, mv(&iw, kw));
             }
         }
         partials.push((b.mass, iw, vel));
+    }
+    // One whose inertia is within rounding of its heft carries none, as a
+    // simulation reads it: an idler given none, its measured centre a hair
+    // off its axis, has m r^2 there and m r^2 less in its own inertia (its
+    // spin-inertia, about the axis), which sum to rounding, of either sign.
+    // Left, a crumb above 0 was scaled to a unit inertia (below) and rang at
+    // 4e27 Hz; now it is condensed out as one at 0 is.
+    let none: Vec<usize> = (0..n).filter(|&i| m[i][i] <= ROUNDING * heft[i]).collect();
+    for i in none {
+        (0..n).for_each(|j| (m[i][j], m[j][i]) = (0.0, 0.0));
     }
     if !cut.is_empty() {
         let names: Vec<String> = cut.iter().take(3).map(|(b, q)| format!("{b} (with {q})")).collect();
@@ -716,6 +732,21 @@ mod tests {
         assert!(sized.pose.is_empty() && plain.pose.len() == 1, "{:?} {:?}", sized.pose, plain.pose);
         let f = |m: &Modes| m.modes.iter().map(|x| x.frequency).collect::<Vec<_>>();
         assert!(f(&sized).len() == 2 && f(&sized).iter().zip(f(&plain)).all(|(a, b)| (a / b - 1.0).abs() < 1e-9), "{:?} {:?}", f(&sized), f(&plain));
+    }
+
+    /// An idler whose inertia along its turn is within rounding of its heft
+    /// (1e-12 g mm2, beside the 106 g mm2 its own diagonal holds) carries
+    /// none, as a simulation reads it: condensed out, the axis rings at the
+    /// same two modes as with none. Before the fix a third rang at the
+    /// springs over that crumb, as one did in the pose above where the
+    /// idler's centre measured a hair off its axis left m r^2 less its own
+    /// as a crumb above 0 (4e27 Hz).
+    #[test]
+    fn an_idler_with_inertia_within_rounding_of_its_heft_has_none() {
+        let none = of(&axis("5478.7", "0", " (stiffness 22500N*mm)")).unwrap();
+        let crumb = of(&axis("5478.7", "1e-12", " (stiffness 22500N*mm)")).unwrap();
+        let f = |m: &Modes| m.modes.iter().map(|x| x.frequency).collect::<Vec<_>>();
+        assert!(f(&crumb).len() == 2 && f(&crumb).iter().zip(f(&none)).all(|(a, b)| (a / b - 1.0).abs() < 1e-9), "{:?} {:?}", f(&crumb), f(&none));
     }
 
     /// Two slides of 1000 g and 9000 g tied by a rigid line, the first held

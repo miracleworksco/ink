@@ -193,6 +193,10 @@ impl Tape {
     fn joins(&self) -> &Joins {
         self.joins.get_or_init(|| {
             let ssa = &self.ssa;
+            // Without a jump nothing is forked: a run is the tape once.
+            if self.jumps.is_empty() {
+                return Joins { rejoin: vec![0; ssa.len()], forked: ssa.len() as u64 };
+            }
             let monotone: Vec<bool> = self.ways().iter().map(|w| w.is_some_and(|w| w != 0)).collect();
             let rejoin = rejoins(ssa, &self.jumps, &monotone);
             let forked = forked_steps(&self.jumps, &rejoin, 0, ssa.len());

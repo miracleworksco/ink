@@ -46,8 +46,8 @@ pub use crate::cells::{VOID_SHARE, variation_resolved};
 use crate::eval::{Ctx, eval_interval};
 use crate::occupancy::tangent_offsets;
 pub use crate::report::{
-    Buckle, Incomplete, Report, SurfaceMeasure, cells_of, glued_warning, interface_shared_what, interface_stepped_what, material_left_warning, material_left_what, spread_of,
-    thin_left_warning,
+    Buckle, Footprint, Incomplete, Report, SurfaceMeasure, cells_of, glued_warning, interface_shared_what, interface_stepped_what, material_left_warning, material_left_what,
+    spread_of, thin_left_warning,
 };
 pub use crate::solution::{Extreme, GridFields, Mixed, MixedCell, NearestSupport, SUPPORT_MARGIN_MM, Solution, buckle_of_sum, surface_radius, von_mises};
 pub use crate::solve::{Assembly, SolveError, buckled_warning, solve, solve_checked, solve_redesigned};
@@ -464,8 +464,8 @@ impl Setup {
     }
 }
 
-/// `run` of each of `jobs`, at most `n` of them at a time, on the solver's threads: each result in its
-/// job's place.
+/// `run` of each of `jobs`, at most `n` of them at a time, on the caller's threads (each solve inside
+/// `run` uses a pool sized to its own grid): each result in its job's place.
 pub fn at_once<J: Sync, T: Send>(n: usize, jobs: &[J], run: impl Fn(&J) -> T + Sync) -> Vec<T> {
     jobs.chunks(n.max(1)).flat_map(|some| some.par_iter().map(&run).collect::<Vec<T>>()).collect()
 }

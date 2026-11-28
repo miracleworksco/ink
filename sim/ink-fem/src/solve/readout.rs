@@ -8,7 +8,7 @@ use crate::element::{b_matrix, d_matrix, laminate_mean, shape_dn};
 use crate::multigrid::Multigrid;
 use crate::numerics::dot;
 use crate::occupancy::{at_xi, surface_cell};
-use crate::report::{Incomplete, SurfaceMeasure};
+use crate::report::{Footprint, Gather, Incomplete, SurfaceMeasure};
 use crate::solution::NO_FIX;
 use crate::system::System;
 use crate::{Boundary, Held, Physics, RegionSel};
@@ -288,6 +288,53 @@ pub(super) fn supports(model: &Model, sys: &System, surf: &mut Surfaces) -> Supp
         }
     }
     Supports { near_support, possible_cuts, unstated_holds, cuts, planes }
+}
+
+/// Where each fix holds (`Report::fix_footprints`): the part's surface in its
+/// region (a facet the region takes whole by its corners, one it takes in
+/// part by its share's centre), and the material it holds (its clamps'). A
+/// region with no surface, inside the part, is placed by its held cells.
+pub(super) fn fix_footprints(model: &Model, sys: &System, surf: &mut Surfaces) -> Vec<Option<Footprint>> {
+    let st = model.st;
+    let Study { s, ctx, h, ref grid, .. } = *st;
+    let mut held: Vec<Gather> = s.fixes.iter().map(|_| Gather::new()).collect();
+    for &(cell, k) in &model.mesh.clamp_cells {
+        let cl = &model.holds.clamps[k];
+        let (ctr, size) = place(grid, &sys.cells[cell]);
+        let g = &mut held[cl.fix];
+        g.cell(ctr, size);
+        g.weigh(ctr, cl.vol);
+        g.volume += cl.vol;
+    }
+    let facets = surf.facets.get_or_insert_with(|| st.whole_surface(&surf.split));
+    let samples = surf.samples.get_or_insert_with(|| st.sample_faces(facets));
+    s.fixes
+        .iter()
+        .zip(held)
+        .map(|(fx, held)| {
+            if matches!(fx.boundary, Boundary::Mirror { .. }) {
+                return None;
+            }
+            let mut on = Gather::new();
+            for (f, (share, at)) in facets.iter().zip(fx.region.on_surface(ctx, facets, samples, h)) {
+                if share <= 0.0 {
+                    continue;
+                }
+                if share >= 1.0 {
+                    f.corners.iter().for_each(|c| on.reach(*c));
+                } else {
+                    on.reach(at);
+                }
+                on.weigh(at, share * f.area);
+                on.area += share * f.area;
+            }
+            if on.area <= 0.0 {
+                return held.footprint((s.lo, s.hi));
+            }
+            on.volume = held.volume;
+            on.footprint((s.lo, s.hi))
+        })
+        .collect()
 }
 
 // Each cell's material share inside regions that hold it entirely

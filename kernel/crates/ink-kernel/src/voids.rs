@@ -18,10 +18,14 @@
 //! cells it slides into land (the one at least its size each face lies in,
 //! else the smaller ones tiling it): none in a cell with no air, each point
 //! in one of their groups where they land in several (the cell is in
-//! theirs once they come to be one). Each void holds such a group,
-//! so the groups that do not reach the box's edge bound the voids from
-//! above, but for a group whose every cell is thin, which holds no point
-//! deeper than e.
+//! theirs once they come to be one). Where that leads nowhere (round a
+//! loop: two terms of a face written twice, each sliding its air into the
+//! other's cell), each term's air lands on its own, sliding on as that
+//! term's air in each cell it passes into (one of the whole field's
+//! values, one function in every cell), else where that cell's air lands.
+//! Each void holds such a group, so the groups that do not reach the box's
+//! edge bound the voids from above, but for a group whose every cell is
+//! thin, which holds no point deeper than e.
 //! Each set of cells joined across faces not proven airless, which does not
 //! reach the box's edge and holds an air cell, is sealed by cells with no
 //! air: it holds a void, and bounds them from below; to the accuracy, where
@@ -52,15 +56,16 @@ use ink_core::V3;
 use ink_core::eval::{Ctx, eval_interval, eval_interval_grad, eval_interval_grad_every, eval_points};
 use ink_core::graph::{BinOp, UnOp};
 use ink_core::interval::{self, I, norm};
-use ink_core::tape::{BOTH, Op, Tape};
+use ink_core::tape::{BOTH, Ins, Op, Tape};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The most cells a count tests (its passes together): past it, or where a
-/// pass alone is forecast past what is left of it (the search's estimate:
-/// the passes after it only add to it), it answers with what it has (about
-/// 1.5 GB, a few seconds).
+/// pass alone is forecast past what is left of it (the search's estimate,
+/// read once the pass has tested an eighth of that: the passes after it
+/// only add to it), it answers with what it has (about 1.5 GB, a few
+/// seconds).
 pub const MAX_CELLS: usize = 1_000_000;
 
 /// Proven bounds on a shape's enclosed voids, to an accuracy: at least
@@ -160,6 +165,8 @@ struct Leaf {
     thin: std::sync::OnceLock<bool>,
     /// Its faces, once asked (`Leaf::face`), by axis and side.
     faces: [std::sync::OnceLock<Face>; 6],
+    /// The whole field's terms over it, once asked (`whole_terms`).
+    terms: std::sync::OnceLock<Option<Vec<Term>>>,
 }
 
 /// What a leaf's face holds: no air, air shown, or air it may.
@@ -172,7 +179,7 @@ enum Face {
 
 impl Leaf {
     fn new(cell: Cell, kind: Kind, tape: Arc<Tape>) -> Leaf {
-        Leaf { cell, kind, tape, thin: std::sync::OnceLock::new(), faces: Default::default() }
+        Leaf { cell, kind, tape, thin: std::sync::OnceLock::new(), faces: Default::default(), terms: std::sync::OnceLock::new() }
     }
 
     /// Its face on axis `k`, side `s` (-1 or 1), by bounds over it (an air
@@ -197,6 +204,10 @@ impl Leaf {
 
     fn thin(&self, ask: &Ask, ctx: &Ctx, grid: &Grid) -> bool {
         *self.thin.get_or_init(|| self.kind == Kind::Thin || ask.thin(&self.tape, ctx, grid.cell_box(self.cell)))
+    }
+
+    fn terms(&self, ask: &Ask, ctx: &Ctx, grid: &Grid) -> Option<&[Term]> {
+        self.terms.get_or_init(|| whole_terms(&ask.whole, ctx, grid.cell_box(self.cell))).as_deref()
     }
 }
 
@@ -324,7 +335,8 @@ pub fn voids(tape: &Arc<Tape>, ctx: &Ctx, lo: V3, hi: V3, h: f64, e: f64) -> Voi
 }
 
 /// One pass of the search over `roots` (tested), at most `limit` cells,
-/// stopped where it is forecast past them (MAX_CELLS): the leaves it
+/// stopped where it is forecast past them, past an eighth of them
+/// (MAX_CELLS): the leaves it
 /// sorted, those it left (Open), how many it tested, and why it stopped
 /// short (its budget, the time limit).
 fn search(roots: Vec<(Node<State>, Test<State, ()>)>, grid: &Grid, ask: &Ask, h: f64, limit: usize) -> (Vec<Leaf>, usize, Option<Ended>) {
@@ -347,8 +359,12 @@ fn search(roots: Vec<(Node<State>, Test<State, ()>)>, grid: &Grid, ask: &Ask, h:
             Some(Outcome::Unknown(u)) if u.ended != Ended::Finest => break Some(u.ended),
             Some(_) => break None,
             // Forecast past what is left of the count's budget, this pass
-            // alone: the passes after it only add to it.
-            None if s.forecast() > limit as f64 => break Some(Ended::Limit),
+            // alone (the passes after it only add to it), once it has
+            // tested an eighth of that: before, an estimate read off a
+            // search still diving can be twice what it comes to (a bearing
+            // turned off its axes, forecast at 1.06 M cells after 7
+            // thousand, took 0.59 M).
+            None if 8 * s.tested() >= limit && s.forecast() > limit as f64 => break Some(Ended::Limit),
             None => {}
         }
     };
@@ -403,7 +419,7 @@ fn by_signs(tape: &Tape, ctx: &ink_core::eval::Ctx, b: [I; 3]) -> Option<Kind> {
 /// (bits as Kind::Slope's): along the axis the field surely does not fall
 /// along, else, where the field is a max of terms (a cut, an intersection:
 /// its air is theirs together), along a direction for each term with air
-/// in the box (`keeps`), out through the faces it points to.
+/// in the box (`way`), out through the faces it points to.
 fn slope(t: &Tape, ctx: &Ctx, b: [I; 3]) -> Option<Kind> {
     // An axis the field rises along somewhere and falls along nowhere, else
     // a direction for each term that rises along it somewhere, else an axis
@@ -413,41 +429,131 @@ fn slope(t: &Tape, ctx: &Ctx, b: [I; 3]) -> Option<Kind> {
         d => d.map(|d| d.0),
     };
     let every = eval_interval_grad_every(t, ctx, b);
-    let (mut ways, mut rises, mut terms) = (0u8, true, vec![(t.ssa.len() - 1, 1.0)]);
-    while let Some((i, s)) = terms.pop() {
-        let ins = t.ssa[i];
-        match ins.op {
-            Op::Bin(BinOp::Max | BinOp::Emax) if s > 0.0 => terms.extend([(ins.a as usize, s), (ins.b as usize, s)]),
-            Op::Bin(BinOp::Min) if s < 0.0 => terms.extend([(ins.a as usize, s), (ins.b as usize, s)]),
-            Op::Un(UnOp::Neg) => terms.push((ins.a as usize, -s)),
-            Op::Tag(_) => terms.push((ins.a as usize, s)),
-            // No air from this term in the box.
-            _ if (if s > 0.0 { every[i].v.hi < 0.0 } else { every[i].v.lo > 0.0 }) => {}
-            _ => {
-                // The axes, steepest by the term's bounds first, as `rising`
-                // orders them (one face to slide out through), then its own
-                // mean gradient.
-                let g = &every[i];
-                let mid: V3 = std::array::from_fn(|k| s * 0.5 * (g.d[k].lo + g.d[k].hi));
-                let len = norm(mid);
-                let axes = (0..6).map(|w| std::array::from_fn(|k| if k == w / 2 { if w % 2 == 1 { 1.0 } else { -1.0 } } else { 0.0 }));
-                let mut along: Vec<(I, V3)> =
-                    axes.chain((len.is_finite() && len > 0.0).then(|| mid.map(|x| x / len))).map(|d: V3| (falls(g, s, d), d)).filter(|x| x.0.lo >= 0.0).collect();
-                let axis = |d: &V3| d.iter().filter(|&&x| x != 0.0).count() == 1;
-                along.sort_by(|a, b| {
-                    axis(&b.1).cmp(&axis(&a.1)).then(b.0.lo.total_cmp(&a.0.lo)).then(b.0.hi.total_cmp(&a.0.hi)).then(b.1.iter().sum::<f64>().total_cmp(&a.1.iter().sum::<f64>()))
-                });
-                let Some(&(r, d)) = along.iter().find(|&&(_, d)| keeps(t, &every, i, s, d)) else {
-                    return flat.map(Kind::Slope);
-                };
-                rises &= r.lo > 0.0;
-                (0..3).filter(|&k| d[k] != 0.0).for_each(|k| ways |= 1 << (2 * k + (d[k] > 0.0) as usize));
-            }
-        }
+    let (mut ways, mut rises) = (0u8, true);
+    for (i, s) in terms_of(t, &every) {
+        let Some((r, d)) = way(t, &every, i, s) else {
+            return flat.map(Kind::Slope);
+        };
+        rises &= r.lo > 0.0;
+        ways |= faces_of(d);
     }
     match flat {
         Some(d) if !rises || ways == 0 => Some(Kind::Slope(d)),
         _ => (ways != 0).then_some(Kind::Slope(ways)),
+    }
+}
+
+/// The terms of tape `t`'s max (its air is theirs together) that hold air
+/// over the box `every` bounds it on, each a value and the sign it is read
+/// with: through a max read upward, a min read downward, a negation or a
+/// tag.
+fn terms_of(t: &Tape, every: &[ink_core::interval::G]) -> Vec<(usize, f64)> {
+    let (mut out, mut stack) = (Vec::new(), vec![(t.ssa.len() - 1, 1.0)]);
+    while let Some((i, s)) = stack.pop() {
+        let ins = t.ssa[i];
+        match ins.op {
+            Op::Bin(BinOp::Max | BinOp::Emax) if s > 0.0 => stack.extend([(ins.a as usize, s), (ins.b as usize, s)]),
+            Op::Bin(BinOp::Min) if s < 0.0 => stack.extend([(ins.a as usize, s), (ins.b as usize, s)]),
+            Op::Un(UnOp::Neg) => stack.push((ins.a as usize, -s)),
+            Op::Tag(_) => stack.push((ins.a as usize, s)),
+            // No air from this term in the box.
+            _ if (if s > 0.0 { every[i].v.hi < 0.0 } else { every[i].v.lo > 0.0 }) => {}
+            _ => out.push((i, s)),
+        }
+    }
+    out
+}
+
+/// A direction value `i` of `t` read with sign `s` keeps its air along over
+/// the box (`keeps`), with bounds on how it changes along it: of the axes,
+/// steepest by its bounds first, as `rising` orders them (one face to slide
+/// out through), then its own mean gradient.
+fn way(t: &Tape, every: &[ink_core::interval::G], i: usize, s: f64) -> Option<(I, V3)> {
+    let g = &every[i];
+    let mid: V3 = std::array::from_fn(|k| s * 0.5 * (g.d[k].lo + g.d[k].hi));
+    let len = norm(mid);
+    let axes = (0..6).map(|w| std::array::from_fn(|k| if k == w / 2 { if w % 2 == 1 { 1.0 } else { -1.0 } } else { 0.0 }));
+    let mut along: Vec<(I, V3)> = axes.chain((len.is_finite() && len > 0.0).then(|| mid.map(|x| x / len))).map(|d: V3| (falls(g, s, d), d)).filter(|x| x.0.lo >= 0.0).collect();
+    let axis = |d: &V3| d.iter().filter(|&&x| x != 0.0).count() == 1;
+    along.sort_by(|a, b| {
+        axis(&b.1).cmp(&axis(&a.1)).then(b.0.lo.total_cmp(&a.0.lo)).then(b.0.hi.total_cmp(&a.0.hi)).then(b.1.iter().sum::<f64>().total_cmp(&a.1.iter().sum::<f64>()))
+    });
+    along.into_iter().find(|&(_, d)| keeps(t, every, i, s, d))
+}
+
+/// The faces (bits as Kind::Slope's) a slide along `d` leaves through.
+fn faces_of(d: V3) -> u8 {
+    (0..3).filter(|&k| d[k] != 0.0).fold(0, |w, k| w | 1 << (2 * k + (d[k] > 0.0) as usize))
+}
+
+/// The terms of the whole field over a slope cell (`Leaf::terms`), on it
+/// simplified over the cell: each the whole field's values it is (the one
+/// a min, max or select of the whole leads to, and the branch the cell's
+/// bounds show it takes: one value over the cell), the sign it is read
+/// with, and the faces its air slides out through, staying its air
+/// (`way`). None: one has no such direction, or the simplified field's
+/// values are not shown the whole's (`values_of`).
+fn whole_terms(whole: &Tape, ctx: &Ctx, b: [I; 3]) -> Option<Vec<Term>> {
+    let mut ch = vec![BOTH; whole.len()];
+    eval_interval(whole, ctx, b, Some(&mut ch));
+    let sub = whole.simplify(&ch);
+    let ids = values_of(whole, &ch, &sub)?;
+    let every = eval_interval_grad_every(&sub, ctx, b);
+    // Each value of the simplified field with the whole's it is reached as.
+    let (mut out, mut stack) = (Vec::new(), vec![(sub.len() - 1, whole.len() - 1, 1.0)]);
+    while let Some((k, w, s)) = stack.pop() {
+        let (ins, of) = (sub.ssa[k], whole.ssa[ids[k] as usize]);
+        match ins.op {
+            Op::Bin(BinOp::Max | BinOp::Emax) if s > 0.0 => stack.extend([(ins.a as usize, of.a as usize, s), (ins.b as usize, of.b as usize, s)]),
+            Op::Bin(BinOp::Min) if s < 0.0 => stack.extend([(ins.a as usize, of.a as usize, s), (ins.b as usize, of.b as usize, s)]),
+            Op::Un(UnOp::Neg) => stack.push((ins.a as usize, of.a as usize, -s)),
+            Op::Tag(_) => stack.push((ins.a as usize, of.a as usize, s)),
+            _ if (if s > 0.0 { every[k].v.hi < 0.0 } else { every[k].v.lo > 0.0 }) => {}
+            _ => out.push(Term { values: [w as u32, ids[k]], neg: s < 0.0, ways: faces_of(way(&sub, &every, k, s)?.1) }),
+        }
+    }
+    Some(out)
+}
+
+/// The whole tape's value each of `sub`'s is (`whole` simplified by
+/// `choices`), shown: each of its instructions the whole's, read on the
+/// whole's arguments as `choices` take them. None where one is not.
+fn values_of(whole: &Tape, choices: &[u8], sub: &Tape) -> Option<Vec<u32>> {
+    let live = whole.live(choices);
+    let ids: Vec<u32> = (0..whole.len()).filter(|&i| live[i] && whole.picked(choices, i) == i).map(|i| i as u32).take(sub.len()).collect();
+    let same = |a: Op, b: Op| match (a, b) {
+        (Op::Const(x), Op::Const(y)) => x.to_bits() == y.to_bits(),
+        (Op::Var(x), Op::Var(y)) => x == y,
+        (Op::Un(x), Op::Un(y)) => x == y,
+        (Op::Bin(x), Op::Bin(y)) => x == y,
+        (Op::Select, Op::Select) => true,
+        (Op::Tag(x), Op::Tag(y)) => x == y,
+        _ => format!("{a:?}") == format!("{b:?}"),
+    };
+    let shown = ids.len() == sub.len()
+        && whole.picked(choices, whole.len() - 1) == *ids.last()? as usize
+        && sub.ssa.iter().zip(&ids).all(|(s, &w)| {
+            let w = whole.ssa[w as usize];
+            let ((sa, n), (wa, m)) = (s.args(), w.args());
+            let raw = |x: &Ins| [x.a, x.b, x.c];
+            same(s.op, w.op) && n == m && (0..n).all(|x| ids[sa[x] as usize] as usize == whole.picked(choices, wa[x] as usize)) && (n..3).all(|x| raw(s)[x] == raw(&w)[x])
+        });
+    shown.then_some(ids)
+}
+
+/// A term of the whole field over a cell (`whole_terms`).
+#[derive(Clone, Copy, Debug)]
+struct Term {
+    values: [u32; 2],
+    neg: bool,
+    ways: u8,
+}
+
+impl Term {
+    /// Whether it is one function with `o`: one of the whole tape's values
+    /// both are, read with one sign.
+    fn is(&self, o: &Term) -> bool {
+        self.neg == o.neg && self.values.iter().any(|v| o.values.contains(v))
     }
 }
 
@@ -610,52 +716,53 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
         p[k] = if s > 0 { p[k] + c.size } else { p[k] - 1 };
         p
     };
-    // The leaves a slope cell's air passes into across each face it slides
-    // toward: the one holding the cell of its size beside it, or the
-    // smaller ones tiling that cell's side on the face (each point of the
-    // face is in one of them); OUTSIDE past the root. None where no leaf
-    // holds part of it.
-    let next: Vec<Option<Vec<usize>>> = leaves
-        .par_iter()
-        .map(|l| {
-            let Kind::Slope(ways) = l.kind else { return None };
-            let mut out = Vec::new();
-            for (k, s) in (0..6).filter(|w| ways >> w & 1 == 1).map(|w| (w / 2, if w % 2 == 1 { 1 } else { -1 })) {
-                let p = across(l.cell, k, s);
-                if p.iter().any(|&x| x < 0 || x >= root.size) {
-                    out.push(OUTSIDE);
-                    continue;
-                }
-                if let Some(i) = at_least(p, l.cell.size) {
-                    out.push(i);
-                    continue;
-                }
-                let mut beside = l.cell;
-                beside.i[k] += s * l.cell.size;
-                let mut cells = vec![beside];
-                while let Some(c) = cells.pop() {
-                    if let Some(&i) = index.get(&(c.i, c.size)) {
-                        out.push(i);
-                        continue;
-                    }
-                    if c.size == 1 {
-                        return None;
-                    }
-                    let half = c.size / 2;
-                    for o in 0..8i64 {
-                        // The halves on the face: the near side along k.
-                        if (o >> k & 1) != (s < 0) as i64 {
-                            continue;
-                        }
-                        cells.push(Cell { i: std::array::from_fn(|a| c.i[a] + half * (o >> a & 1)), size: half });
-                    }
-                }
+    // The leaves air passes into across face (k, s) of cell c: the one
+    // holding the cell of its size beside it, or the smaller ones tiling
+    // that cell's side on the face (each point of the face is in one of
+    // them); OUTSIDE past the root. None where no leaf holds part of it.
+    let beyond = |c: Cell, k: usize, s: i64| -> Option<Vec<usize>> {
+        let p = across(c, k, s);
+        if p.iter().any(|&x| x < 0 || x >= root.size) {
+            return Some(vec![OUTSIDE]);
+        }
+        if let Some(i) = at_least(p, c.size) {
+            return Some(vec![i]);
+        }
+        let (mut out, mut beside) = (Vec::new(), c);
+        beside.i[k] += s * c.size;
+        let mut cells = vec![beside];
+        while let Some(c) = cells.pop() {
+            if let Some(&i) = index.get(&(c.i, c.size)) {
+                out.push(i);
+                continue;
             }
-            let mut seen = std::collections::HashSet::new();
-            out.retain(|&i| seen.insert(i));
-            Some(out)
-        })
-        .collect();
+            if c.size == 1 {
+                return None;
+            }
+            let half = c.size / 2;
+            for o in 0..8i64 {
+                // The halves on the face: the near side along k.
+                if (o >> k & 1) != (s < 0) as i64 {
+                    continue;
+                }
+                cells.push(Cell { i: std::array::from_fn(|a| c.i[a] + half * (o >> a & 1)), size: half });
+            }
+        }
+        Some(out)
+    };
+    // Those across each face of `ways` (bits as Kind::Slope's), each once.
+    let through = |c: Cell, ways: u8| -> Option<Vec<usize>> {
+        let mut out = Vec::new();
+        for w in (0..6).filter(|w| ways >> w & 1 == 1) {
+            out.extend(beyond(c, w / 2, if w % 2 == 1 { 1 } else { -1 })?);
+        }
+        out.sort_unstable();
+        out.dedup();
+        Some(out)
+    };
+    // The leaves a slope cell's air passes into across each face it slides
+    // toward.
+    let next: Vec<Option<Vec<usize>>> = leaves.par_iter().map(|l| if let Kind::Slope(ways) = l.kind { through(l.cell, ways) } else { None }).collect();
     // Where each leaf's air lands, following slopes. A slope cell's air,
     // sliding across its faces, lands where the leaves it passes into do:
     // none in an airless one; past a thin one it is open (unknown); into
@@ -726,6 +833,90 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
                 path.push((t, 0, Lands::None));
                 on_path[t] = true;
             }
+        }
+    }
+    // A slope cell whose air lands nowhere so (round a loop: two terms of a
+    // seam sliding their air each into the other's cell, as a face written
+    // twice does), its air each term's: the air of a term slides, staying
+    // that term's, across the faces it points to, into the leaves there,
+    // where it is still that term's air and slides on as that term's does
+    // there (one of the whole field's values: one function wherever it is
+    // read), else lands where the leaf's air does. Each point of the cell's
+    // air is some term's.
+    let again: Vec<usize> = (0..n).filter(|&i| lands[i] == Some(Lands::Open) && next[i].is_some()).collect();
+    if !again.is_empty() {
+        let terms: Vec<Option<&[Term]>> = again.par_iter().map(|&i| leaves[i].terms(ask, ctx, grid)).collect();
+        let mut slot = vec![u32::MAX; n];
+        again.iter().enumerate().for_each(|(k, &i)| slot[i] = k as u32);
+        // A cell's air, then each of its terms' (`terms`), of each cell of
+        // `again` in turn.
+        let mut base = Vec::with_capacity(again.len() + 1);
+        base.push(0);
+        terms.iter().for_each(|t| base.push(base.last().unwrap() + 1 + t.map_or(0, |t| t.len())));
+        enum Step {
+            Lands(Lands),
+            Go(usize),
+        }
+        let first = |l: Option<Lands>| match l.expect("landed") {
+            Lands::Thin => Lands::Open,
+            l => l,
+        };
+        // Into leaf j: the air of `term` (None: any of its air).
+        let into = |j: usize, term: Option<&Term>| match j {
+            OUTSIDE => Step::Lands(Lands::Group(n)),
+            j if slot[j] == u32::MAX => Step::Lands(first(lands[j])),
+            j => {
+                let k = slot[j] as usize;
+                Step::Go(base[k] + term.and_then(|t| terms[k]?.iter().position(|u| u.is(t))).map_or(0, |t| t + 1))
+            }
+        };
+        let steps = |at: usize| -> Vec<Step> {
+            let k = base.partition_point(|&b| b <= at) - 1;
+            let (i, term) = (again[k], at - base[k]);
+            match (term, terms[k]) {
+                (0, Some(ts)) => (0..ts.len()).map(|t| Step::Go(base[k] + 1 + t)).collect(),
+                (0, None) => next[i].as_ref().unwrap().iter().map(|&j| into(j, None)).collect(),
+                (t, Some(ts)) => match through(leaves[i].cell, ts[t - 1].ways) {
+                    Some(v) => v.into_iter().map(|j| into(j, Some(&ts[t - 1]))).collect(),
+                    None => vec![Step::Lands(Lands::Open)],
+                },
+                (_, None) => unreachable!(),
+            }
+        };
+        let mut landed: Vec<Option<Lands>> = vec![None; *base.last().unwrap()];
+        let mut on = vec![false; landed.len()];
+        for k in 0..again.len() {
+            if landed[base[k]].is_some() {
+                continue;
+            }
+            // Depth first, as above.
+            let mut path: Vec<(usize, Vec<Step>, usize, Lands)> = vec![(base[k], steps(base[k]), 0, Lands::None)];
+            on[base[k]] = true;
+            while let Some((at, v, next, acc)) = path.last_mut() {
+                if *acc == Lands::Open || *next == v.len() {
+                    let (at, acc) = (*at, *acc);
+                    path.pop();
+                    (on[at], landed[at]) = (false, Some(acc));
+                    if let Some((_, _, next, up)) = path.last_mut() {
+                        (*next, *up) = (*next + 1, join(*up, acc));
+                    }
+                    continue;
+                }
+                match v[*next] {
+                    Step::Lands(e) => (*next, *acc) = (*next + 1, join(*acc, e)),
+                    Step::Go(to) if on[to] => (*next, *acc) = (*next + 1, Lands::Open),
+                    Step::Go(to) => match landed[to] {
+                        Some(e) => (*next, *acc) = (*next + 1, join(*acc, e)),
+                        None => {
+                            on[to] = true;
+                            path.push((to, steps(to), 0, Lands::None));
+                        }
+                    },
+                }
+            }
+        }
+        for (k, &i) in again.iter().enumerate() {
+            lands[i] = landed[base[k]];
         }
     }
     // A cell whose air's group is unknown holds no void's deep point where it is
@@ -942,4 +1133,69 @@ fn count(ask: &Ask, ctx: &Ctx, grid: &Grid, root: Cell, leaves: &[Leaf]) -> (Voi
     let thin_at = thin.first().map(|&i| centre(grid, leaves[i].cell));
     let found = Voids { at_least, at_most, at, cells: n, finest: grid.h, undecided, ended: None, accuracy: ask.cover.tol, thin: thin.len(), thin_at };
     (found, halve, settles)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fields::{B, at};
+    use ink_core::graph::Var;
+
+    fn bx(lo: V3, hi: V3) -> [I; 3] {
+        std::array::from_fn(|k| I::new(lo[k], hi[k]))
+    }
+
+    /// A field simplified over a box, each of its values read as the
+    /// whole's it is: equal at points in the box; one changed is not shown.
+    #[test]
+    fn a_simplified_fields_values_are_shown_the_wholes() {
+        let mut b = B::new();
+        let (x, y, z) = (b.v(Var::X), b.v(Var::Y), b.v(Var::Z));
+        let one = b.c(1.0);
+        let xy = b.bin(BinOp::Max, x, y);
+        let a = b.bin(BinOp::Sub, xy, one);
+        let nz = b.un(UnOp::Neg, z);
+        let f = b.bin(BinOp::Max, a, nz);
+        let whole = b.tape(f);
+        // Over the box y > x: the max of x and y is y.
+        let cell = bx([0.0, 2.0, -0.5], [1.0, 3.0, 0.5]);
+        let mut ch = vec![BOTH; whole.len()];
+        eval_interval(&whole, &at(0.0), cell, Some(&mut ch));
+        let sub = whole.simplify(&ch);
+        assert!(sub.len() < whole.len());
+        let ids = values_of(&whole, &ch, &sub).expect("shown");
+        let p = [[0.5, 2.5, 0.25], [0.1, 2.9, -0.4]];
+        for (k, &w) in ids.iter().enumerate() {
+            let (mut u, mut v) = (Vec::new(), Vec::new());
+            eval_points(&sub.cone(k), &at(0.0), &p, &mut u);
+            eval_points(&whole.cone(w as usize), &at(0.0), &p, &mut v);
+            assert_eq!(u, v, "value {k} as the whole's {w}");
+        }
+        let mut changed = sub.clone();
+        let c = changed.ssa.iter().position(|i| matches!(i.op, Op::Const(_))).unwrap();
+        changed.ssa[c].op = Op::Const(2.0);
+        assert!(values_of(&whole, &ch, &changed).is_none());
+    }
+
+    /// A term is one of the whole field's values in every cell it is read
+    /// in, whichever branch of it each cell's bounds pick: a min of x and y
+    /// picked as x in one cell, as y in another and as neither between, is
+    /// one term of the three, and not the other term beside it.
+    #[test]
+    fn a_term_is_one_value_of_the_whole_in_each_cell() {
+        let mut b = B::new();
+        let (x, y, z) = (b.v(Var::X), b.v(Var::Y), b.v(Var::Z));
+        let xy = b.bin(BinOp::Min, x, y);
+        let nz = b.un(UnOp::Neg, z);
+        let f = b.bin(BinOp::Max, xy, nz);
+        let whole = b.tape(f);
+        let terms = |lo: V3, hi: V3| whole_terms(&whole, &at(0.0), bx(lo, hi)).expect("terms");
+        let of = |t: &[Term]| *t.iter().find(|t| t.ways & 0b11 != 0 || t.ways & 0b1100 != 0).expect("the min's term");
+        let (xs, ys, both) = (terms([-1.0, 1.0, -1.0], [0.0, 2.0, 1.0]), terms([1.0, -1.0, -1.0], [2.0, 0.0, 1.0]), terms([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]));
+        let [a, c, m] = [&xs, &ys, &both].map(|t| of(t));
+        assert!(a.is(&m) && c.is(&m) && a.is(&c));
+        assert_ne!(a.values[1], c.values[1]);
+        let z = *both.iter().find(|t| t.ways & 0b110000 != 0).expect("the slab's term");
+        assert!(!z.is(&m));
+    }
 }

@@ -187,3 +187,62 @@ fn batched_undefined_cases_are_each_points_own() {
     assert!(kinds.contains(&("division by zero", Some("guarded".to_string()))), "{kinds:?}");
     assert!(kinds.contains(&("ln of a negative", Some("else".to_string()))), "{kinds:?}");
 }
+
+/// Every operation's batched gradient, its output in an operand's slot and
+/// apart from it, against one point at a time, at zeros, infinities, NaN
+/// and huge values, over more points than a batch and not a whole number.
+#[test]
+fn every_operations_batched_gradient_is_each_points_own() {
+    let v = [f64::NEG_INFINITY, -1.5, -1.0, -0.0, 0.0, 0.3, 1.0, 2.0, 1e300, f64::INFINITY, f64::NAN];
+    let mut pts = Vec::new();
+    for a in v {
+        for b in v {
+            for c in v {
+                pts.push([a, b, c]);
+            }
+        }
+    }
+    assert!(pts.len() > L && !pts.len().is_multiple_of(L));
+    let ctx = Ctx::new(0.0, vec![]);
+    let check = |name: String, tape: &Tape| {
+        for n in [1, 3, 8, 13, 16, 31, 32, 50, L, pts.len()] {
+            let got = eval_grads(tape, &ctx, &pts[..n]);
+            for (p, g) in pts[..n].iter().zip(got) {
+                let d = eval_dual(tape, &ctx, *p);
+                assert_eq!(g.map(f64::to_bits), [d[0], d[1], d[2], d[3]].map(f64::to_bits), "{name} at {p:?} in {n}");
+            }
+        }
+    };
+    // In its operand's slot (x y - z dies into it), and apart (y + z read after).
+    let fields = |g: &mut Graph, op: &dyn Fn(&mut Graph, u32, u32) -> u32| {
+        let (x, y, z) = (g.var(Var::X), g.var(Var::Y), g.var(Var::Z));
+        let xy = g.mul(x, y);
+        let e1 = g.sub(xy, z);
+        let e2 = g.add(y, z);
+        let e3 = g.mul(z, x);
+        let in_place = op(g, e1, e2);
+        let apart = op(g, e2, e3);
+        let apart = g.mul(apart, e2);
+        let f = g.add(in_place, apart);
+        g.add(f, e3)
+    };
+    for op in UnOp::ALL {
+        let mut g = Graph::new();
+        let f = fields(&mut g, &|g, a, _| g.un(op, a));
+        let tape = Tape::new(&g, f);
+        assert!(tape.code.iter().any(|i| matches!(i.op, Op::Un(o) if o == op) && i.out == i.a), "{op:?} in place");
+        check(format!("{op:?}"), &tape);
+    }
+    for op in BinOp::ALL {
+        let mut g = Graph::new();
+        let f = fields(&mut g, &|g, a, b| g.bin(op, a, b));
+        check(format!("{op:?}"), &Tape::new(&g, f));
+        // Both operands the output's slot.
+        let mut g = Graph::new();
+        let f = fields(&mut g, &|g, a, _| g.bin(op, a, a));
+        check(format!("{op:?} of one operand"), &Tape::new(&g, f));
+    }
+    let mut g = Graph::new();
+    let f = fields(&mut g, &|g, a, b| g.select(a, b, a));
+    check("select".into(), &Tape::new(&g, f));
+}

@@ -14,6 +14,7 @@ mod docs;
 mod dynamics;
 mod help;
 mod models;
+mod receipt;
 mod require;
 mod studies;
 mod topology;

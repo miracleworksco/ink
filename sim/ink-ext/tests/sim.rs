@@ -2686,9 +2686,12 @@ fn toleranced(src: &str, overrides: &[(String, ink::lang::Given)]) -> Result<ink
 fn material_the_samples_miss_beside_a_part_is_not_settled_and_a_plain_part_is() {
     // A 0.001 mm foil (and a 0.005 mm web) from post to post above a bar,
     // on 1 mm cells: between the samples, the mesh still one piece, so no
-    // separation shows it. The lines between the samples outside the part
+    // separation shows it. The planes through the samples outside the part
     // meet it, joining the material the cells hold in two places apart:
-    // not settled, naming it. The bar and posts alone: decided.
+    // not settled, naming it. So does a rod 0.02 mm square between the
+    // lines through the samples on every grid, written as the root of a
+    // distance, which no sample's tangent plane reaches: it crossed none
+    // of those lines, and `< 1` held. The bar and posts alone: decided.
     let part = |extra: &str| {
         format!(
             "(def bar (box 10 4 4))
@@ -2698,12 +2701,209 @@ fn material_the_samples_miss_beside_a_part_is_not_settled_and_a_plain_part_is() 
 (require stiff (max-displacement s < 1))"
         )
     };
-    for web in ["(move (box 10 1 0.001) 0 0 3.2)", "(move (box 10 4 0.005) 0 0 3.2)"] {
+    for web in ["(move (box 10 1 0.001) 0 0 3.2)", "(move (box 10 4 0.005) 0 0 3.2)", "(sqrt (max 0 (move (box 9 0.02 0.02) 0 0 3.25)))"] {
         let c = checks(&part(web)).remove(0).1;
         assert!(c.status == ink::claims::Status::Unknown && format!("{c:?}").contains("samples missed"), "{web}: {c:?}");
     }
     let c = checks(&part("")).remove(0).1;
     assert_eq!(c.status, ink::claims::Status::Holds, "{c:?}");
+}
+
+#[test]
+fn material_the_samples_miss_beside_a_face_they_see_is_not_settled_however_near() {
+    // A cantilever 20 x 2 x 0.5 on 0.25 mm cells, its face on the cells'
+    // plane, with rods 0.03 mm square written as the root of a distance (no
+    // sample's tangent plane reaches them) under it, joined to it only at its
+    // root and its tip. Four rows a cell apart, within a cell of the beam's
+    // cells all along, read as its surface and the beam alone read (0.0065
+    // against about 0.0040); a row a sample under its face lay where the
+    // samples beside it were taken as its face, and was not looked for. A web
+    // under it all along is its own load path too. Each is not settled,
+    // naming the place; the beam alone is decided.
+    let beam = |extra: &str| {
+        let rods = |zs: &[f64]| {
+            let r: Vec<String> = zs.iter().flat_map(|z| (1..8).map(move |k| format!("(sqrt (max 0 (move (box 20.4 0.03 0.03) 9.7 {} {z})))", 0.25 * k as f64))).collect();
+            format!("(min {})", r.join(" "))
+        };
+        let extra = match extra {
+            "rows" => rods(&[-0.25, -0.5, -0.75, -1.0]),
+            "near" => rods(&[-0.0775]),
+            "web" => "(sqrt (max 0 (move (box 19 0.02 0.8) 9.5 1 -0.4)))".to_string(),
+            _ => String::new(),
+        };
+        format!(
+            "(def block (move (box 4 2 4.5) -2 1 0.25))
+(def beam (move (box 20 2 0.5) 10 1 0.25))
+(def tab (move (box 0.5 2 1.6) 19.75 1 -0.3))
+(study s (shape (min block beam tab {extra})) (elastic (E 200000MPa) (nu 0.3)) (fix root (- x -3.99)) (load tip (force 0 0 -0.01N) (region (- 19.9 x))) (res 0.25))
+(require stiff (max-displacement s < 0.005))"
+        )
+    };
+    for extra in ["rows", "near", "web"] {
+        let c = checks(&beam(extra)).remove(0).1;
+        assert!(c.status == ink::claims::Status::Unknown && format!("{c:?}").contains("samples missed"), "{extra}: {c:?}");
+    }
+    let c = checks(&beam("")).remove(0).1;
+    assert_eq!(c.status, ink::claims::Status::Fails, "{c:?}");
+    // A thin plate (under one sample thick, z in [-0.85s, -0.05s] on s = 0.0625)
+    // whose seen samples' nearest face is the far face (normal pointing down):
+    // a hidden rod above it must not be taken as the plate's own face.
+    let s = 0.0625_f64;
+    let rods_above: Vec<String> = (1..8).map(|k| format!("(sqrt (max 0 (move (box 20.4 0.03 0.03) 9.7 {} {})))", 0.25 * k as f64, 0.4 * s)).collect();
+    let thin_plate = format!(
+        "(def block (move (box 4 2 4.5) -2 1 0.25))
+(def plate (move (box 20 2 {}) 10 1 {}))
+(def tab (move (box 0.5 2 1.6) 19.75 1 0.25))
+(study s (shape (min block plate tab (min {}))) (elastic (E 200000MPa) (nu 0.3)) (fix root (- x -3.99)) (load tip (force 0 0 0.01N) (region (- 19.9 x))) (res 0.25))
+(require stiff (max-displacement s < 1))",
+        0.8 * s,
+        -0.45 * s,
+        rods_above.join(" ")
+    );
+    let c = checks(&thin_plate).remove(0).1;
+    assert!(c.status == ink::claims::Status::Unknown && format!("{c:?}").contains("samples missed"), "thin plate: {c:?}");
+}
+
+#[test]
+fn a_foil_the_cells_drop_as_slivers_is_not_settled_and_a_faces_own_skin_is() {
+    // Foils 0.002 and 0.001 mm thick, 0.25 to 1 mm under a cantilever on
+    // 0.25 mm cells, joined to it only at its root and its tip, are seen by
+    // the samples, but fill under 3% of their cells: dropped as slivers, the
+    // beam alone was read (0.0065 against about 0.0047) and `< 0.005`
+    // failed. Each joins the cells kept in two places apart: not settled,
+    // naming it. The beam alone is decided.
+    let beam = |foil: &str| {
+        let foils: Vec<String> = [-0.25, -0.5, -0.75, -1.0].iter().map(|z| format!("(move (box 20.4 1.8 {foil}) 9.7 1 {z})")).collect();
+        let extra = if foil.is_empty() { String::new() } else { format!("(min {})", foils.join(" ")) };
+        format!(
+            "(def block (move (box 4 2 4.5) -2 1 0.25))
+(def beam (move (box 20 2 0.5) 10 1 0.25))
+(def tab (move (box 0.5 2 1.6) 19.75 1 -0.3))
+(study s (shape (min block beam tab {extra})) (elastic (E 200000MPa) (nu 0.3)) (fix root (- x -3.99)) (load tip (force 0 0 0.01N) (region (- 19.9 x))) (res 0.25))
+(require stiff (max-displacement s < 0.005))"
+        )
+    };
+    for foil in ["0.002", "0.001"] {
+        let c = checks(&beam(foil)).remove(0).1;
+        assert!(c.status == ink::claims::Status::Unknown && format!("{c:?}").contains("drops as a sliver"), "{foil}: {c:?}");
+    }
+    let c = checks(&beam("")).remove(0).1;
+    assert_eq!(c.status, ink::claims::Status::Fails, "{c:?}");
+    // A bar's top face 1e-4 mm past a cell's plane leaves a sheet of
+    // slivers on it, which a fix keeps the cells under from taking: over
+    // the hold's cells (x < 1.5), or along the whole face where the fix
+    // holds it. Against the bar's own cells all along, with no air between,
+    // they are its skin, and the study is settled.
+    for (fix, sheet) in [("(fix wall (- x 1.5))", 1.5 * 2.0 * 1e-4), ("(fix top (- z 0.9))", 20.0 * 2.0 * 1e-4)] {
+        let src = format!(
+            "(def bar (max (- (abs (- x 10)) 10) (- (abs y) 1) (- z 1.0001) (- -1 z)))
+(study s (shape bar) (elastic (E 1000MPa) (nu 0)) {fix} (load tip (pressure -10MPa) (region (- 19.999 x))) (res 0.5))
+(require stiff (max-displacement s < 1))"
+        );
+        let r = solve(&src, "s", 0.5).report;
+        assert!(
+            (r.sliver_volume / sheet - 1.0).abs() < 1e-6 && r.incomplete.is_empty(),
+            "{fix}: {} mm^3 of slivers for {sheet}, {:?}",
+            r.sliver_volume,
+            r.incomplete.iter().map(|e| e.reason(&r)).collect::<Vec<_>>()
+        );
+        if fix.contains("wall") {
+            let c = checks(&src).remove(0).1;
+            assert_eq!(c.status, ink::claims::Status::Holds, "{c:?}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "known wrong: material within the sample box a seen face crosses is that sample's own, and not looked for"]
+fn material_the_samples_miss_within_a_seen_faces_own_sample_box_is_not_settled() {
+    // The cantilever above with its underside 0.1 mm into a cell, so the
+    // sample box it crosses reaches 0.0375 mm under it, and a row of the
+    // rods within that: they lie in a box that sees material, the walk
+    // takes them as its own, and the beam alone is decided.
+    let rods: Vec<String> = (1..8).map(|k| format!("(sqrt (max 0 (move (box 20.4 0.03 0.03) 9.7 {} 0.07875)))", 0.25 * k as f64)).collect();
+    let src = format!(
+        "(def block (move (box 4 2 4.5) -2 1 0.35))
+(def beam (move (box 20 2 0.5) 10 1 0.35))
+(def tab (move (box 0.5 2 1.6) 19.75 1 -0.2))
+(study s (shape (min block beam tab (min {}))) (elastic (E 200000MPa) (nu 0.3)) (fix root (- x -3.99)) (load tip (force 0 0 -0.01N) (region (- 19.9 x))) (res 0.25))
+(require stiff (max-displacement s < 0.005))",
+        rods.join(" ")
+    );
+    let c = checks(&src).remove(0).1;
+    assert!(c.status == ink::claims::Status::Unknown && format!("{c:?}").contains("samples missed"), "{c:?}");
+}
+
+#[test]
+fn a_film_hidden_by_slivers_on_a_graded_field_is_not_settled() {
+    // The hidden films of material-stiff-film-hidden.case and
+    // material-stiff-film-smooth.case, scaled onto 2 mm cells so they run in
+    // the everyday suite. Two slivers beside a jump (`select`) stiff film
+    // inflate the floor box's nested ranges so `variation_resolved` alone
+    // passes, while `gentle` sees the jump's unbounded slope and leaves the
+    // claim not settled. The smooth graded bar without the film still
+    // settles.
+    let study = |e: &str| {
+        format!(
+            "(def part (move (box 20 10 2) 10 0 0))
+(study pull (shape part) (elastic (E (* 1MPa {e})) (nu 0))
+ (fix root (- x 0.1)) (load end (force 1000N 0 0) (region (- 19 x))) (res 2))
+(require strong (max-stress pull < 110MPa (excluding support-margin buckling)))"
+        )
+    };
+    let smooth = "(max 600 (min 2000 (- 2000 (* 700 y))))";
+    let with_film = "(select (max (- 0.070 y) (- y 0.083)) 2680 (select (max (- 0.003 y) (- y 0.029)) 1070 (select (max (- 0.157 y) (- y 0.189)) 1910 (max 600 (min 2000 (- 2000 (* 700 y)))))))";
+    let c = checks(&study(with_film)).remove(0).1;
+    assert_eq!(c.status, ink::claims::Status::Unknown, "hidden jump film: {c:?}");
+    let c = checks(&study(smooth)).remove(0).1;
+    assert_eq!(c.status, ink::claims::Status::Holds, "smooth graded bar: {c:?}");
+    // The film on steep finite slopes (2e4 MPa/mm here) beside one soft dip,
+    // found by search to pass the ranges and the slope ratio, in E and 1/E,
+    // on the floor box (on 0.2 mm cells, held at 96.9 against about 129):
+    // only what the cells' centres take bounds it (`seen`), and its cells
+    // are left not of one material. (On 2 mm cells its grids disagree too,
+    // so the claim's status does not tell.)
+    let finite = "(max (min 2667.4 (- 2667.4 (* 20063.8 (- (abs (- y 0.0396591)) 0.00301139)))) (min (max 1590.86 (+ 1590.86 (* 20063.8 (- (abs (- y 0.219162)) 0.00534251)))) (max 600 (min 2000 (- 2000 (* 700 y))))))";
+    let s = solve(&study(finite), "pull", 2.0);
+    assert!(s.report.material_left.is_some(), "hidden film on finite slopes: {:?}", s.report.warnings);
+}
+
+#[test]
+fn a_stiff_skin_against_an_outer_face_is_not_settled() {
+    // A stiff 2600 MPa skin against the outer face y = -4 (clamped to 2600
+    // into air), ramping down to 2000 at the face floor box's centre
+    // y = -3.875 (on 2 mm cells, floor = 0.25 mm). Every grid's face-cell
+    // centre reads 2000, while an air neighbour at y = -4.125 reads 2600;
+    // ignoring air neighbours in `seen` catches the 30% skin instead of
+    // falsely holding `< 60 MPa` (true stress in the skin is 65 MPa).
+    // A smooth linear gradient reaching the outer face still settles.
+    let study = |e: &str| {
+        format!(
+            "(def part (move (box 20 8 4) 10 0 0))
+(study pull (shape part) (elastic (E (* 1MPa {e})) (nu 0))
+ (fix root (- x 0.1)) (load end (force 1600N 0 0) (region (- 19 x))) (res 2))
+(require strong (max-stress pull < 60MPa (excluding support-margin buckling)))"
+        )
+    };
+    let skin = "(max 2000 (min 2600 (- 2000 (* 4800 (+ y 3.875)))))";
+    let c = checks(&study(skin)).remove(0).1;
+    assert_eq!(c.status, ink::claims::Status::Unknown, "outer-face stiff skin: {c:?}");
+    let s = solve(&study(skin), "pull", 2.0);
+    assert!(s.report.material_left.is_some(), "outer-face stiff skin material_left: {:?}", s.report.warnings);
+    // Same outer-face stiff skin paired with a V-shaped soft dip one floor box
+    // inside (y = -3.625, bottoming at 1400): must also be caught (rules out
+    // linear extrapolation from the inward neighbour across the centre).
+    let skin_with_dip = "(min (max 2000 (min 2600 (- 2000 (* 4800 (+ y 3.875))))) (+ 1400 (* 4800 (abs (+ y 3.625)))))";
+    let c = checks(&study(skin_with_dip)).remove(0).1;
+    assert_eq!(c.status, ink::claims::Status::Unknown, "outer-face stiff skin with inward dip: {c:?}");
+    let s = solve(&study(skin_with_dip), "pull", 2.0);
+    assert!(s.report.material_left.is_some(), "outer-face stiff skin + dip material_left: {:?}", s.report.warnings);
+    // Smooth linear gradient reaching the outer face y = -4 (E = 2000 at y=4 to 2160 at y=-4):
+    let smooth_face = "(- 2080 (* 20 y))";
+    let s = solve(&study(smooth_face), "pull", 2.0);
+    assert!(s.report.material_left.is_none(), "smooth graded bar to outer face left material: {:?}", s.report.warnings);
+    let c = checks(&study(smooth_face)).remove(0).1;
+    assert_eq!(c.status, ink::claims::Status::Holds, "smooth graded bar to outer face: {c:?}");
 }
 
 fn checks(src: &str) -> Vec<(String, ink::claims::Check)> {
@@ -4834,10 +5034,14 @@ fn a_yield_gradients_bound_closes_on_its_factor_as_the_cells_shrink() {
     // A bound is the least the factor can be: a claim it holds holds, with
     // no value; a false one is unknown, never failed. (The fix's edge, its
     // stress singular, is the support margin's: left out here.) It holds
-    // past what a stress's read may miss: `> 19`, not `> 20`.
+    // past what a stress's read and its grid error may miss: `> 19`, not
+    // `> 20`. Asked on 0.5 mm cells: on 1 mm the grids (21.55, 21.2, 21.08
+    // on 4, 2, 1 mm) converge faster than their elements can, and keep
+    // three times their whole movement (1.42): 18.84 to unbounded, not
+    // settled. On 0.5 mm, 21.19 within 0.38: 19.99 and up.
     let claims = format!(
         "{}\n(require away (min-safety-factor s > 19 (excluding support-margin)))\n(require high (min-safety-factor s > 22 (excluding support-margin)))",
-        src.replace("(region (- 19 x))))", "(region (- 19 x))) (res 1))")
+        src.replace("(region (- 19 x))))", "(region (- 19 x))) (res 0.5))")
     );
     for (name, c) in checks(&claims) {
         let want = if name == "away" { ink::claims::Status::Holds } else { ink::claims::Status::Unknown };

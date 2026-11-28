@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// The package's commands.
 pub(crate) static COMMANDS: [Command; 1] = [Command {
     name: "solve",
-    options: &[Opt::reads("study"), Opt::reads("res"), Opt::reads("points"), Opt::writes("render"), Opt::reads("size"), Opt::reads("keys")],
+    options: &[Opt::reads("study"), Opt::reads("res"), Opt::reads("points"), Opt::writes("render"), Opt::reads("size"), Opt::reads("keys"), Opt::reads("plain")],
     help: "Run a (study ...): finite elements on the implicit shape, no mesh. Elastic: displacement, stress, safety
                 factor and buckling factor under fixes and loads, or the lowest natural frequencies ((modes n)); heat:
                 temperatures and flux, steady or over time ((transient ...)). Every number is an estimate; ink require
@@ -25,6 +25,7 @@ pub(crate) static COMMANDS: [Command; 1] = [Command {
                 [--study NAME] (needed where the file has more than one) [--res MM] (the cell size; default the study's)
                 [--points '[[x,y,z]]'] (probe displacement and stress, or temperature, at points)
                 [--render FILE.png] (the part coloured by stress or temperature, deformed) [--size PX] [--keys K]
+                [--plain] (the setup and results in words: where each fix and load landed, the material, the bodies)
                 example: ink solve examples/beam.ink",
     tool: r#"Runs a (study ...): FEA, elastic (with buckling, or modes) or heat (steady or transient). {"study": "load", "res": 1, "points": [[0, 0, 10]], "render": "stress.png", "size": 1024, "keys": "von_mises_mpa"}"#,
     run: ink_lang::command::Run::Model(cmd_solve),
@@ -379,6 +380,14 @@ fn cmd_solve(s: &mut ModelView, a: &Args) -> Result<J, InkError> {
     // A solve is an estimate, as a claim on it is: no guaranteed bound.
     out["accuracy"] = J::Null;
     out["estimate"] = json!(format!("a finite-cell solve on cells of {} mm, not a bound", sv.sol.h));
+    // Where its supports and loads landed, its material's sources, the bodies it left out.
+    crate::receipt::add(&mut out, s, &sv, &name);
+    if a.get("plain").is_some() {
+        if a.get("points").or(a.get("render")).is_some() {
+            return Err(InkError::msg("--plain does not combine with --points or --render"));
+        }
+        return Ok(json!({"plain": crate::receipt::words::of(&out)}));
+    }
 
     if let (Some(_), Err(why)) = (a.get("points").or(a.get("render")), sv.sol.valid()) {
         return Err(InkError::msg(format!("study '{name}' failed, so it has nothing to probe or render: {why}")));

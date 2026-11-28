@@ -1,16 +1,20 @@
 //! What the command-line tests share: running ink, a scratch directory of
-//! each test's own, models written into it, and readers of the files ink
-//! writes (STL, GLB) that do not use the kernel.
+//! each test's own, models written into it, readers of the files ink
+//! writes (STL, GLB) that do not use the kernel, and a doc's blocks and the
+//! answers it shows. The kernel's tests and, by path, those built on it
+//! (sim's ink-ext/tests/cli/common.rs) share this one file: the including
+//! module names the binary under test and the folder its files are found
+//! from, as INK and ROOT.
 #![allow(dead_code)]
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// The repository: fixtures, examples and benchmarks are found from it.
-pub const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-/// The binary under test.
-pub const INK: &str = env!("CARGO_BIN_EXE_ink");
+/// The binary under test, and the folder its fixtures, examples and
+/// benchmarks are found from: the including module's.
+pub use super::{INK, ROOT};
+
 /// Threads per ink call (RAYON_NUM_THREADS), unless a test sets its own.
 pub const THREADS: &str = "4";
 
@@ -60,7 +64,7 @@ fn answered(what: &str, r: Run) -> Value {
     let ok = d["ok"].as_bool() == Some(true);
     let want = if !ok {
         1
-    } else if d["all_yes"] == Value::Bool(false) || d["all_yes"] == Value::Bool(false) {
+    } else if d["all_yes"] == Value::Bool(false) {
         3
     } else {
         0
@@ -77,6 +81,11 @@ pub fn root(rel: &str) -> String {
 /// A fixture in tests/fixtures.
 pub fn fixture(name: &str) -> String {
     root(&format!("tests/fixtures/{name}"))
+}
+
+/// INK_NO_CACHE is set: checks of what the cache keeps are skipped.
+pub fn no_cache() -> bool {
+    std::env::var_os("INK_NO_CACHE").is_some()
 }
 
 /// Whether a refusal says the binary was built without a package a call
@@ -261,7 +270,15 @@ pub fn pretty(v: &Value) -> String {
 /// A claim's or pair's answer as tests name it: its status, and ` estimate`
 /// after one that holds or fails with no guaranteed accuracy (null).
 pub fn verdict(row: &Value) -> String {
-    let st = row["status"].as_str().unwrap_or("?");
+    let st = match row["status"].as_str() {
+        Some(s) => s,
+        None => match row["verdict"].as_str() {
+            Some("yes") => "holds",
+            Some("no") => "fails",
+            Some(_) => "unknown",
+            None => "?",
+        },
+    };
     if matches!(st, "holds" | "fails") && row.get("accuracy").is_none_or(Value::is_null) { format!("{st} estimate") } else { st.to_string() }
 }
 
@@ -427,5 +444,113 @@ impl Glb {
             out.push(roots.len());
         }
         out
+    }
+}
+
+/// A fenced block of a Markdown text: the marker comment on the line
+/// before it (`<!-- run -->`'s `run`), its language, its text and its line.
+#[derive(Debug)]
+pub struct Block {
+    pub marker: Option<String>,
+    pub lang: String,
+    pub body: String,
+    pub line: usize,
+}
+
+/// The fenced blocks of a Markdown text, each with the marker comment on the
+/// last non-blank line before it.
+pub fn blocks(text: &str) -> Vec<Block> {
+    let mut out = vec![];
+    let mut lines = text.lines().enumerate();
+    let mut last: Option<&str> = None;
+    while let Some((i, l)) = lines.next() {
+        if let Some(lang) = l.strip_prefix("```") {
+            let mut body = String::new();
+            for (_, b) in lines.by_ref() {
+                if b.starts_with("```") {
+                    break;
+                }
+                body += b;
+                body.push('\n');
+            }
+            let marker = last.and_then(|m| m.trim().strip_prefix("<!--")).and_then(|m| m.strip_suffix("-->")).map(|m| m.trim().to_string());
+            out.push(Block { marker, lang: lang.trim().to_string(), body, line: i + 1 });
+            last = None;
+        } else if !l.trim().is_empty() {
+            last = Some(l);
+        }
+    }
+    out
+}
+
+/// An answer as shown: JSON whose numbers are kept as written (a string
+/// "\u{1}LITERAL"), so they are compared to the digits shown.
+pub fn shown(text: &str) -> Value {
+    let (mut s, mut chars, mut in_str) = (String::new(), text.chars().peekable(), false);
+    while let Some(c) = chars.next() {
+        if in_str {
+            s.push(c);
+            if c == '\\' {
+                s.extend(chars.next());
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            in_str = true;
+            s.push(c);
+        } else if c == '-' || c.is_ascii_digit() {
+            let mut lit = String::from(c);
+            while let Some(&d) = chars.peek().filter(|d| d.is_ascii_digit() || matches!(d, '.' | 'e' | 'E' | '+' | '-')) {
+                lit.push(d);
+                chars.next();
+            }
+            s += &format!("\"\\u0001{lit}\"");
+        } else {
+            s.push(c);
+        }
+    }
+    serde_json::from_str(&s).unwrap_or_else(|e| panic!("a shown answer is not JSON ({e}):\n{text}"))
+}
+
+/// Whether the number `got` reads as `lit` to the digits `lit` shows; a
+/// whole number shown (no point, no exponent) is that number exactly.
+pub fn same_number(lit: &str, got: f64) -> bool {
+    if !lit.contains(['.', 'e', 'E']) {
+        return lit.parse::<f64>().is_ok_and(|w| w == got);
+    }
+    let (mant, exp) = lit.split_once(['e', 'E']).map_or((lit, 0), |(m, e)| (m, e.parse::<i32>().unwrap()));
+    let decimals = mant.split_once('.').map_or(0, |(_, d)| d.len() as i32);
+    let want: f64 = lit.parse().unwrap();
+    (got - want).abs() <= 0.5 * 10f64.powi(exp - decimals) * (1.0 + 1e-9)
+}
+
+/// Where the answer `got` differs from the part of it shown, `want`.
+pub fn differs(want: &Value, got: &Value, at: &str) -> Vec<String> {
+    match (want, got) {
+        (Value::String(w), _) if w.starts_with('\u{1}') => match got.as_f64() {
+            Some(g) if same_number(&w[1..], g) => vec![],
+            _ => vec![format!("{at}: shown {}, got {got}", &w[1..])],
+        },
+        (Value::Object(w), Value::Object(g)) => w
+            .iter()
+            .flat_map(|(k, v)| match g.get(k) {
+                Some(gv) => differs(v, gv, &format!("{at}.{k}")),
+                None => vec![format!("{at}.{k}: shown, but not in the answer")],
+            })
+            .collect(),
+        (Value::Array(w), Value::Array(g)) if w.iter().any(Value::is_object) => {
+            let mut rest = g.iter();
+            let mut out = vec![];
+            for (i, wv) in w.iter().enumerate() {
+                if !rest.by_ref().any(|gv| differs(wv, gv, "").is_empty()) {
+                    out.push(format!("{at}[{i}]: shown, but no later item of the answer is it: {}", wv.to_string().replace("\\u0001", "")));
+                    break;
+                }
+            }
+            out
+        }
+        (Value::Array(w), Value::Array(g)) if w.len() == g.len() => w.iter().zip(g).enumerate().flat_map(|(i, (a, b))| differs(a, b, &format!("{at}[{i}]"))).collect(),
+        _ if want == got => vec![],
+        _ => vec![format!("{at}: shown {want}, got {got}")],
     }
 }

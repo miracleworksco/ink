@@ -341,7 +341,7 @@ fn estimated(v: &mut ModelView, claim: &Claim, roots: &[u32], tol: f64, opts: Cl
             // The claim with each band's param at a value (`ends`: one per band).
             let at_ends = |v: &mut ModelView, n: u32, ends: &[f64]| {
                 let at: Vec<(Var, u32)> = band.iter().zip(ends).map(|(&(k, _), &x)| (Var::Param(k as u32), v.doc.g.constant(x))).collect();
-                v.doc.g.subst(n, &at)
+                v.subst(n, &at)
             };
             // Where what it says is empty moves one way with each band's param at every point
             // (Tape::param_way: through sums, min, max, negations and the like only), it is emptiest
@@ -350,8 +350,8 @@ fn estimated(v: &mut ModelView, claim: &Claim, roots: &[u32], tol: f64, opts: Cl
             // value. Else every value is asked at once, and its ends are the bands' all low and all
             // high.
             let ways: Option<Vec<i8>> = inside.and_then(|f| {
-                let tape = Tape::new(&v.doc.g, f);
-                band.iter().map(|&(k, _)| tape.param_way(k as u32).map_or(Some(1), |w| (w != 0).then_some(w))).collect()
+                let ks: Vec<u32> = band.iter().map(|&(k, _)| k as u32).collect();
+                v.param_ways(f, &ks).into_iter().map(|w| w.map_or(Some(1), |w| (w != 0).then_some(w))).collect()
             });
             let end = |k: usize, w: f64, up: bool| v.ctx.params[k] + if up { w } else { -w };
             let corners: Vec<Vec<f64>> = match &ways {

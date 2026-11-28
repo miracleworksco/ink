@@ -1,5 +1,6 @@
 //! Tests for dynamics answers, with shared model fixtures and claim readers.
 
+mod bounded;
 mod couplings;
 mod drive_balance;
 mod effort;

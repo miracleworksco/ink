@@ -1,0 +1,14 @@
+; A 20 x 10 x 2 bar (x 0..20, y -5..5) fixed over its first 0.01 mm, pulled by 1000 N over its last mm, nu 0.
+; E(y): 2000 for y < 0, a slope 2000 -> 600 across the 0.2 mm cell y 0..0.2, 600 beyond. In that cell's first
+; floor box (y 0..0.025): a stiff film, 2667 over y 0.0037..0.0043 on sides of finite slope (2e5 MPa/mm), and one
+; soft dip to 1591 on the same slope at y 0.0214..0.0225, found by search to pass the smoothness tests: the floor
+; box's ranges grow as a smooth field's, and its slope is within 8 times what its range allows, in E and in 1/E.
+; No ratio to the box's range tells it: the dip widens the range. No cell's centre lies in the film, so on every
+; grid the cells take the field without it; the centres of its box and of the boxes round it take 2000 at most,
+; and the box reaches 2667, so its cells split and, at the floor, are left not settled.
+; truth: strong fails about 129 (the film, 8 um at its foot, carries 0.03% of the load, so the field without it is the field; its axial strain is continuous across it, so it carries 2667 / 2000 times the stress beside it, 96.6 at x 2.02 on these cells without the film: 129, outside the support margin)
+(import "std")
+(def part (move (box 20 10 2) 10 0 0))
+(study pull (shape part) (elastic (E (* 1MPa (max (min 2667.4 (- 2667.4 (* 200638 (- (abs (- y 0.00396591)) 0.000301139)))) (min (max 1590.86 (+ 1590.86 (* 200638 (- (abs (- y 0.0219162)) 0.000534251)))) (max 600 (min 2000 (- 2000 (* 7000 y)))))))) (nu 0))
+ (fix root (- x 0.01)) (load end (force 1000N 0 0) (region (- 19 x))) (res 0.2))
+(require strong (max-stress pull < 110MPa (excluding support-margin buckling)))

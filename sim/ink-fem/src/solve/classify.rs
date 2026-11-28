@@ -30,10 +30,10 @@ pub(super) fn classify(st: &Study) -> (Vec<Classified>, bool, Option<([i64; 3], 
         /// A cut cell's pieces.
         Cut(Vec<Classified>),
     }
-    // Material between the samples (`slivers`): each cell whose samples see
-    // none has its lines between them walked, and where it found some.
-    // none has its lines between them walked once every cell's samples are
-    // known (a line beside a sample inside the part is that sample's face).
+    // Material between the samples (`slivers`): each cell with a sample
+    // that sees none has its planes through them walked once every cell's
+    // samples are known (beside a seen sample, material within its plane is
+    // its face), and where it found some.
     let to_walk: std::sync::Mutex<Vec<([i64; 3], V3, Arc<Tape>)>> = std::sync::Mutex::new(Vec::new());
     let masks: std::sync::Mutex<std::collections::HashMap<[i64; 3], u64>> = std::sync::Mutex::new(std::collections::HashMap::new());
     let out: Vec<Out> = descend(
@@ -48,8 +48,11 @@ pub(super) fn classify(st: &Study) -> (Vec<Classified>, bool, Option<([i64; 3], 
             }
             let ctr = center(grid, c.i);
             let (pts, occ, material) = st.sampled(t, ctr, h);
-            if material == 0 {
+            // (a cell all of whose samples see material has no box to walk)
+            if material != u64::MAX {
                 to_walk.lock().unwrap().push((c.i, ctr, t.clone()));
+            }
+            if material == 0 {
                 return None;
             }
             masks.lock().unwrap().insert(c.i, material);
@@ -76,7 +79,7 @@ pub(super) fn classify(st: &Study) -> (Vec<Classified>, bool, Option<([i64; 3], 
     let in_full = |i: [i64; 3]| sizes.iter().any(|&z| full.get(&i.map(|v| v - v.rem_euclid(z))).is_some_and(|&b| b == z));
     let seen = |i: [i64; 3]| masks.contains_key(&i) || in_full(i);
     let cell_bits = |c: [i64; 3]| masks.get(&c).copied().unwrap_or(if in_full(c) { u64::MAX } else { 0 });
-    let lat = slivers::Lattice { o: center(grid, [0; 3]).map(|v| v - 0.5 * h), s: h / 4.0, cell: &cell_bits };
+    let lat = slivers::Lattice { o: center(grid, [0; 3]).map(|v| v - 0.5 * h), s: h / 4.0, cell: &cell_bits, shape: &s.shape, planes: slivers::Planes::new() };
     let to_walk = to_walk.into_inner().unwrap();
     let missed: Vec<([i64; 3], V3)> = to_walk.par_iter().filter_map(|(i, ctr, t)| slivers::missed_in_cell(t, ctx, *i, *ctr, h, &lat).map(|at| (*i, at))).collect();
     let missed_at = slivers::changes_connection(missed, &seen);

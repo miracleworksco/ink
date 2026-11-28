@@ -7,7 +7,11 @@
 ; passes 50 and settles by 0.3 s at 43.74 deg, 1.26 short of 45 (a PD under gravity holds
 ; the weight's 50 N mm with that much error: 50.4 / 40); the gate swings through closed and
 ; back, its spring and gravity trading its energy, never past 80. The gate hangs from its
-; hinge's line alone, beside the servo: nothing joins them.
+; hinge's line alone, beside the servo: nothing joins them. Each motion is known to within
+; what its bodies' measured masses move it: the gate's claim, 0.001 deg of room, is inside
+; what its leaf's inertia (known to 1-2%) shifts its swing by in time, 0.4 ms, at an even
+; step beside a turning point, so it is not settled.
+; expect-status: gate-within unknown
 (import "std")
 
 ; A TowerPro MG996R, from its A-F drawing: the case 40.9 x 20, 26.8 below its

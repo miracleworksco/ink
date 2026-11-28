@@ -1,5 +1,46 @@
 # Changes
 
+## 0.2.1
+
+**A bridge over walls at an angle holds.** `unbridged` and
+`unbridged-along` can now read a roof over upright walls at any angle to x
+and y (a slanted channel, a closed channel turned with `rotate-z`) using an
+exact polynomial roof certificate, so one bridged along the directions
+asked holds, where before only a failure could be shown. `unbridged-along`
+holds only by bridges along its own direction: a roof of boxes no longer
+passes it by a bridge along x or y, and diagonal directions no longer pass
+when folded-constant rounding loses an edge.
+
+**`ink require` names the parts that touch nothing.** Where it checks
+the parts' placement at the start of the motion, it names each group of
+parts no other part comes within 1 mm of, and no relation joins
+(`LOOSE`; `placement.loose`): a plate lifted off its standoffs, a lid
+whose hinge pin was deleted. It changes no verdict.
+
+**Every simulation prints a setup receipt.** Finite-element studies now
+record their boundary conditions, loads, material properties, and mesh
+settings alongside the answer, so a silent setup mistake is visible on the
+first read.
+
+**Stricter FEA and dynamics soundness.** Studies refuse to settle when a
+thin needle, material film on a graded field, thin foil dropped as slivers,
+or material missed beside a seen face could change the answer; inverse
+dynamics and ratings bound carried and published mass uncertainties
+through the equations rather than using point estimates alone, and zero-
+inertia rows no longer blow up on floating-point rounding.
+
+**Cavity proofs decide placed CAD parts.** `voids` now follows each term's
+air individually across faces written twice and waits past an eighth of
+its budget before trusting an early forecast, proving 0 voids on placed
+bearings and toothed gears that previously stalled.
+
+**Faster checks and motion analysis.** Link-by-link swept boxes and
+pipelined moving-pair checks speed up `ink interfere` up to 10–22× on
+large assemblies; `ink require` ratings runs are 2–3× faster via cached
+lookups and factored mass-uncertainty perturbations; cold STL grid
+sampling is ~3× faster; and `ink-core` tape compilation and gradient
+evaluation are 22–48% cheaper with identical results.
+
 ## 0.2.0
 
 ### Upgrading a 0.1 file

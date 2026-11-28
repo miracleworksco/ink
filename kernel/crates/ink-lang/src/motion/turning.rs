@@ -509,7 +509,7 @@ pub(super) fn sweeps(v: &mut ModelView, roots: &[u32], span: (f64, f64), far: f6
         let Some((lo, hi, _)) = local else { continue };
         // A cost, not a proof: a placement no isometry is not measured.
         let Some(iso) = Isometry::over(&v.doc.g, &at.r, &at.t, &Ctx { t_span: Some(span), ..v.ctx.clone() }) else { continue };
-        let Some(pieces) = swept(&v.doc.g, &v.ctx, &iso, (lo, hi), span, false) else { continue };
+        let Some(pieces) = swept(&v.doc.g, &v.ctx, &Sweep::from(&iso), (lo, hi), span, false) else { continue };
         let hull = pieces.iter().map(|p| p.1).reduce(ink_core::v3::box_union).expect("pieces");
         let (own, travel) = (size((lo, hi)), size(hull));
         if own > 0.0 && travel > far * own {

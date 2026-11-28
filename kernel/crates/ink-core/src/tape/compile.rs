@@ -151,6 +151,7 @@ impl Tape {
             ssa.push(ins);
         }
         let mut t = Self::from_ssa(ssa);
+        (t.fixed, t.pmask, t.pread, t.plist) = Self::fixed_of(&t.ssa);
         t.forms = forms;
         t.grids = grids.iter().map(|&gi| g.grids[gi as usize].clone()).collect();
         t.opaque = g.opaque.iter().copied().filter(|o| tags.contains(o)).collect();
@@ -163,7 +164,7 @@ impl Tape {
     /// The array is built whole, from values: written a slice at a time,
     /// then returned, it was read back wider than written, which stalled
     /// (a tenth of the Falcon swerve check's time, in tape compilation).
-    #[inline]
+    #[inline(always)]
     pub fn reads(ssa: &[Ins], i: usize) -> ([u32; 6], usize) {
         // args() leaves 0 past its count, as the array's tail is.
         let ([a, b, c], k) = ssa[i].args();
@@ -252,18 +253,48 @@ impl Tape {
         }
     }
 
+    /// The tape of `ssa`: its slots, and what follows from its
+    /// instructions alone. What is fixed (`fixed`, `pmask`, `pread`,
+    /// `plist`) is the model's: the caller's to set (`fixed_of`, for a tape
+    /// of the model; a tape derived from another keeps the other's).
     pub(super) fn from_ssa(ssa: Vec<Ins>) -> Tape {
         BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let n = ssa.len();
-        // Each slot is kept until its value's last use.
-        let mut last = vec![0usize; n];
-        for i in 0..n {
-            let (args, k) = Self::uses(&ssa, i);
+        // One walk finds each value's last use as `uses` reads it (each
+        // slot is kept until it), each min or max of a and a + c with its
+        // c and each remainder with its p (by instruction, their slots set
+        // once known), and the instructions that can jump: floors, atan2s
+        // and selects whose conditions read no x, y or z (those may switch
+        // at a moment of the scope, eval::moment, where scope_run forks
+        // them).
+        let (mut last, mut space) = (vec![0u32; n], vec![false; n]);
+        let (mut apart, mut remainders, mut jumps) = (Vec::new(), Vec::new(), Vec::new());
+        let mut derivs = false;
+        for (i, ins) in ssa.iter().enumerate() {
+            let (mut args, mut k) = Self::reads(&ssa, i);
+            space[i] = matches!(ins.op, Op::Var(Var::X | Var::Y | Var::Z)) || args[..k].iter().any(|&a| space[a as usize]);
+            match ins.op {
+                Op::Un(UnOp::Floor) | Op::Bin(BinOp::Atan2) => jumps.push(i as u32),
+                Op::Select if !space[ins.a as usize] => jumps.push(i as u32),
+                Op::Deriv(d) => derivs |= d < 3,
+                _ => {}
+            }
+            let order = match Self::apart_of(&ssa, i) {
+                Some((c, neg)) => {
+                    apart.push((i as u32, c, neg));
+                    Some(c)
+                }
+                None => Self::remainder_of(&ssa, i).inspect(|&p| remainders.push((i as u32, p))),
+            };
+            if let Some(c) = order {
+                args[k] = c;
+                k += 1;
+            }
             for &a in &args[..k] {
-                last[a as usize] = i;
+                last[a as usize] = i as u32;
             }
         }
-        last[n - 1] = usize::MAX;
+        last[n - 1] = u32::MAX;
 
         let mut slot = vec![0u32; n];
         let mut free: Vec<u32> = Vec::new();
@@ -285,7 +316,7 @@ impl Tape {
             let (args, k) = Self::uses(&ssa, i);
             for j in 0..k {
                 let a = args[j] as usize;
-                if last[a] == i && !args[..j].contains(&args[j]) {
+                if last[a] == i as u32 && !args[..j].contains(&args[j]) {
                     free.push(slot[a]);
                 }
             }
@@ -297,8 +328,54 @@ impl Tape {
             c.out = s;
             code.push(c);
         }
-        let apart = (0..n).filter_map(|i| Self::apart_of(&ssa, i).map(|(c, neg)| (i as u32, slot[c as usize], neg))).collect();
-        let remainders = (0..n).filter_map(|i| Self::remainder_of(&ssa, i).map(|p| (i as u32, slot[p as usize]))).collect();
+        for e in &mut apart {
+            e.1 = slot[e.1 as usize];
+        }
+        for e in &mut remainders {
+            e.1 = slot[e.1 as usize];
+        }
+        let mut slopes = Vec::new();
+        if derivs {
+            slopes = vec![false; n];
+            for i in (0..n).rev() {
+                if let Op::Deriv(k) = ssa[i].op
+                    && k < 3
+                {
+                    slopes[ssa[i].b as usize] = true;
+                }
+                if slopes[i] {
+                    let (args, k) = ssa[i].args();
+                    args[..k].iter().for_each(|&a| slopes[a as usize] = true);
+                }
+            }
+        }
+        Tape {
+            ssa,
+            code,
+            nslots: nslots as usize,
+            grids: Vec::new(),
+            opaque: Vec::new(),
+            fixed: Vec::new(),
+            pmask: Vec::new(),
+            pread: Vec::new(),
+            plist: Vec::new(),
+            slopes,
+            forms: Vec::new(),
+            jumps,
+            joins: Default::default(),
+            promises: Default::default(),
+            axes: Default::default(),
+            levels: Default::default(),
+            apart,
+            remainders,
+        }
+    }
+
+    /// Of a tape of the model, `ssa`: per instruction, whether it is fixed
+    /// (Tape::fixed), the bits of the params it reads (`pmask`), and which
+    /// those are (`pread`, `plist`).
+    fn fixed_of(ssa: &[Ins]) -> (Vec<bool>, Vec<u64>, Vec<(u32, u32, u32)>, Vec<u32>) {
+        let n = ssa.len();
         let (mut fixed, mut pmask) = (vec![false; n], vec![0u64; n]);
         for (i, ins) in ssa.iter().enumerate() {
             let (args, k) = ins.args();
@@ -334,54 +411,6 @@ impl Tape {
             };
         }
         let pread = (0..n).filter(|&i| range[i].1 > 0).map(|i| (i as u32, range[i].0, range[i].1)).collect();
-        let mut slopes = vec![false; n];
-        for i in (0..n).rev() {
-            if let Op::Deriv(k) = ssa[i].op
-                && k < 3
-            {
-                slopes[ssa[i].b as usize] = true;
-            }
-            if slopes[i] {
-                let (args, k) = ssa[i].args();
-                args[..k].iter().for_each(|&a| slopes[a as usize] = true);
-            }
-        }
-        if !slopes.contains(&true) {
-            slopes = Vec::new();
-        }
-        // Selects whose conditions read no x, y or z: those may switch at
-        // a moment of the scope (eval::moment), where scope_run forks them.
-        let mut space = vec![false; n];
-        for (i, ins) in ssa.iter().enumerate() {
-            let (args, k) = Self::reads(&ssa, i);
-            space[i] = matches!(ins.op, Op::Var(Var::X | Var::Y | Var::Z)) || args[..k].iter().any(|&a| space[a as usize]);
-        }
-        let jumps = (0..n as u32)
-            .filter(|&i| match ssa[i as usize].op {
-                Op::Un(UnOp::Floor) | Op::Bin(BinOp::Atan2) => true,
-                Op::Select => !space[ssa[i as usize].a as usize],
-                _ => false,
-            })
-            .collect();
-        Tape {
-            ssa,
-            code,
-            nslots: nslots as usize,
-            grids: Vec::new(),
-            opaque: Vec::new(),
-            fixed,
-            pmask,
-            pread,
-            plist,
-            slopes,
-            forms: Vec::new(),
-            jumps,
-            joins: Default::default(),
-            promises: Default::default(),
-            axes: Default::default(),
-            levels: Default::default(),
-            apart,
-            remainders,
-        }
+        (fixed, pmask, pread, plist)
     }
 }

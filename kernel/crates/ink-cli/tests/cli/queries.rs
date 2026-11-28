@@ -111,6 +111,53 @@ fn an_interfere_with_cli_timeout_stops_cleanly_and_reports_what_finished() {
     assert!(done.get("stopped").is_none() && done["overlapping_pairs"].as_u64().unwrap_or(0) >= 1, "{}", pretty(&done));
 }
 
+/// Stopped during the upgrade pass on moving pairs, interfere keeps every
+/// holding pair's earlier sampled answer instead of overwriting it with
+/// unknown, and finishes promptly once the time limit passes.
+#[test]
+fn an_interfere_stopped_during_upgrades_keeps_its_decided_pairs() {
+    let sc = Scratch::new("st-interfere-upgrade-stop");
+    let model = "(import \"std\")\n(t-span 0 3s)\n(def centres (* 0.5 (- 200 (* 2 pi 25))))\n(def moved (* 30 (/ t 1s)))\n\
+         (def tread (belt-loop-path (vec (vec (* -0.5 centres) 0 25 1) (vec (* 0.5 centres) 0 25 1))))\n\
+         (body slat (shape (move (box 18.5 4 50) 10 -2 0)))\n(body roller (shape (cylinder-z 24.8 56)))\n\
+         (assembly root (instance r0 roller (at (move (* -0.5 centres) 0 0)) (turn z (rad->deg (/ (neg moved) 25))))\n\
+          (for i (range 6) (instance slat-$i slat (path-link-at tread (- (* i 20) moved) 20))))\n";
+    let f = sc.model("belt.ink", model);
+    let log = sc.path("progress.jsonl");
+    // Give enough time for the first pass to decide all pairs so the stop lands
+    // inside the upgrade pass (`between`), while still stopping before all
+    // upgrades finish.
+    let (at, (d, cpu)) = once_the_work_runs(2.0, |at| {
+        _ = std::fs::remove_file(&log);
+        let (limit, stop) = stop_at(at);
+        let (d, cpu) = fresh(&sc, ["interfere", &f]).env("INK_DEADLINE", limit).env("INK_PROGRESS", &log).cpu_past(stop);
+        let all_begun = d["pairs"].as_array().is_some_and(|p| p.iter().all(|p| !has(&p["hint"], "not checked")));
+        (d["stopped"] == json!(true) && all_begun, (d, cpu))
+    });
+    // Record the first decided status reported for each pair (from the first
+    // pass, before upgrades). Stopping an upgrade must never turn a pair that
+    // already held into unknown.
+    let mut first_decided: BTreeMap<String, String> = BTreeMap::new();
+    for l in std::fs::read_to_string(&log).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        if let Some(st) = l["status"].as_str()
+            && st != "unknown"
+        {
+            first_decided.entry(l["done"].to_string()).or_insert_with(|| st.to_string());
+        }
+    }
+    let pairs = d["pairs"].as_array().cloned().unwrap_or_default();
+    let clobbered: Vec<&Value> =
+        pairs.iter().filter(|p| first_decided.get(&p["pair"].to_string()).is_some_and(|was| verdict(p) == "unknown" || (was == "fails" && verdict(p) != "fails"))).collect();
+    let every = pairs.len() as f64 + n(&d["pairs_apart_by_bounding_boxes"]) == (7 * 6 / 2) as f64;
+    assert!(
+        cpu < 2.0 * PAST_CPU_S && every && !first_decided.is_empty() && clobbered.is_empty(),
+        "{cpu:.2} CPU s past stop at {at} s, {} clobbered of {} decided: {}",
+        clobbered.len(),
+        first_decided.len(),
+        pretty(&d)
+    );
+}
+
 #[test]
 fn mass_reads_the_materials_density_else_its_density_attr_and_a_density_named_that_a_body_lacks_is_an_error() {
     // petg's 1270 kg/m^3 is 0.00127 g/mm^3, so a 20 mm cube is 10.16 g; its
@@ -444,6 +491,30 @@ fn a_published_mass_whose_volume_does_not_settle_loads_and_says_so() {
     assert_eq!(report["requirements"][0]["status"], "unknown");
     message_has(&report["requirements"][0]["unavailable"], &["sheet.mass-density", "measurement bounds", "0.00000005..0.023"]);
     assert_eq!(report["requirements"][1]["status"], "fails");
+}
+
+/// A published mass on a thread: 35 g on a T8 x 100 lead screw (four
+/// starts, a trapezoid on the thread's angle and height, its crests and
+/// roots cylinders), 0.0093 g/mm³. Its crests and roots meet its flanks at
+/// edges, so their boxes' slopes span two faces; bounded so, its volume
+/// was 0.0061..0.0235 g/mm³ in density, past the range, and what read it
+/// unknown. Bounded on each face apart, it holds.
+#[test]
+fn a_published_mass_on_a_thread_is_read() {
+    let sc = Scratch::new("st-lead-screw");
+    let screw = sc.model(
+        "screw.ink",
+        "(import \"std\")\n\
+         (def k pi)\n\
+         (def a (* 4 (atan2 y x)))\n\
+         (def w (/ (atan2 (abs (- (* (sin (* k z)) (cos a)) (* (cos (* k z)) (sin a)))) (+ (* (cos (* k z)) (cos a)) (* (sin (* k z)) (sin a)))) k))\n\
+         (def r (len2 x y))\n\
+         (def flank (+ (* (sin (deg->rad 15)) (- r 3.5)) (* (cos (deg->rad 15)) (- w 0.5))))\n\
+         (body screw (shape (max (min (- r 2.75) (max (- r 4) flank)) (slab-z 0 100))) (attr mass 35g))\n\
+         (require light (integral screw (attr density) < 1000g))\n",
+    );
+    let report = sc.ink(["require", &screw]).any();
+    assert_eq!(report["requirements"][0]["status"], "holds", "{}", pretty(&report));
 }
 
 #[test]

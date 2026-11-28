@@ -346,17 +346,26 @@ impl ParamProvider for Simulating {
         .map_err(Refused::from))
     }
 
-    /// A following error is an estimate known to within its band either
-    /// way (Simulation::band, at the moment it is read at): a value claim
-    /// holds where it holds over the band, fails where it fails over all of
-    /// it, and is undecided between; its derivatives to within that times
-    /// its own frequency's powers (a ringing there).
+    /// The motion is known to within what the bodies' masses are known to
+    /// move it (Simulation::mass_band, at the moment it is read at), and a
+    /// following error, an estimate, to within its band too
+    /// (Simulation::band), its derivatives to within that times its own
+    /// frequency's powers (a ringing there): a value claim holds where it
+    /// holds over the bands, fails where it fails over all of them, and is
+    /// undecided between. None: every mass exact, a coordinate read.
     fn error(&self, params: &[f64], _t: f64) -> Option<Vec<f64>> {
-        let Of::Joint(_) = &self.of else { return None };
         let sim = self.run.sim().ok()?;
         let (i, unit) = self.component(&sim).ok()?;
-        let (w, f) = (unit * sim.band(i, params[self.owns[5]]), sim.own(i));
-        Some(vec![w, w * f, w * f * f, w * f.powi(3), w * f.powi(4), 0.0])
+        let at = params[self.owns[5]];
+        let mut w: Vec<f64> = sim.mass_band(i, at).iter().map(|x| unit * x).collect();
+        if let Of::Joint(_) = &self.of {
+            let (b, f) = (unit * sim.band(i, at), sim.own(i));
+            w.iter_mut().enumerate().for_each(|(d, x)| *x += b * f.powi(d as i32));
+        } else if w.iter().all(|x| *x == 0.0) {
+            return None;
+        }
+        w.push(0.0);
+        Some(w)
     }
 
     fn reads(&self) -> Option<Vec<usize>> {

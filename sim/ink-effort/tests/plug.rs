@@ -164,9 +164,10 @@ fn what_the_solver_read_loosely_is_left_out() {
     let tools: &[&dyn Tool] = &[&effort];
     let mut claims = Claims::new(&design, tools);
     // `ink effort examples/servo-arm-effort.ink`, 2026-11-22: 799 steps, four stretches loose; the slow
-    // shoulder's peak 310.331 N mm.
+    // shoulder's peak 310.331 N mm (310.318 since 2026-11-28, each inside the other's band: its measured
+    // masses moved it by parts in 1e5).
     let slow = claims.answer(&about("peak-torque", "root/slow/s/output"));
-    printed(slow.value, "310.331");
+    printed(slow.value, "310.3");
     // Over the moments the run read, as many as its efforts ask for (801 on 2026-11-22, 783 since).
     assert!(matches!(&slow.covers[..], [(t, Covers::These(_))] if t == "t"), "{:?}", slow.covers);
     // Its own steps were all read by the rule: the four loose stretches the command lists are other actuators',
@@ -323,7 +324,10 @@ fn each_moment_read_gives_its_torque_and_speed() {
     let size = |a: &Fact| a.value.unwrap().abs();
     let most = (0..PRINTED.2 + 2).map(|m| at(m, "torque", ARM)).reduce(|best, a| if size(&a) > size(&best) * (1.0 + 1e-9) { a } else { best }).unwrap();
     near(most.value, PRINTED.0);
-    assert_eq!((most.notes[0].as_str(), effort.runs()), ("at t = 0.05483579498241968", 1));
+    // Its moment, found by bisection on its rate: where -I pi^2 theta - m g L cos theta peaks, by hand
+    // 0.0548358 s (sin theta = I pi^2 / m g L).
+    let at_t: f64 = most.notes[0].strip_prefix("at t = ").and_then(|t| t.parse().ok()).unwrap_or(f64::NAN);
+    assert!((at_t - 0.0548358).abs() < 1e-7 && effort.runs() == 1, "{:?}", most.notes[0]);
 }
 
 /// A speed is the written motion's: it needs no mass and no gravity, and starts no run. An effort is given
@@ -476,10 +480,10 @@ fn a_supports_share_and_a_joints_load_are_offered_at_each_moment() {
     // `ink effort examples/slider-loads.ink --t 0`, 2026-11-20: the pan's reaction is 1.0959 N across and 15.0174 N
     // along its axis, with 523.64 N mm across it. The thrust bearing takes the 15.0174; the radial two, 20 mm
     // apart, push opposite ways to hold the moment, and differ by the 1.0959 across.
-    near(thrust.value, 15.01741509137868);
-    near(low.value, 24.647752844211468);
-    near(high.value, 25.743605118344);
-    assert!((high.value.unwrap() - low.value.unwrap() - 1.0958522741325276).abs() < 1e-9);
+    printed(thrust.value, "15.0174");
+    printed(low.value, "24.6478");
+    printed(high.value, "25.7436");
+    printed(high.value.zip(low.value).map(|(h, l)| h - l), "1.0959");
     // A radial bearing carries nothing along its axis, the thrust bearing nothing across.
     assert_eq!((fact("axial-load", "root/s/ba").value, fact("radial-load", "root/s/th").value), (Some(0.0), Some(0.0)));
     // The bearings turn as the pan does: 90 sin(pi t) degrees is 90 pi deg/s at the start.

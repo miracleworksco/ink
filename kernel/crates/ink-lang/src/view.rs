@@ -92,6 +92,9 @@ pub struct ModelView {
     reaches: HashMap<(u32, Scope), Reach>,
     /// Per field: proven bounds (None: empty), inside its reach.
     boxes: HashMap<(u32, Scope), Option<(V3, V3, f64)>>,
+    /// A reach found ahead of the question asking it (`reach_ahead`),
+    /// taken once, by the `reach` asking it.
+    ahead: Option<((u32, Scope), Reach)>,
     /// Per field: its tape clipped to its reach (`clipped`): claims about
     /// one part of a big assembly read the assembly's tape again and again.
     tapes: HashMap<(u32, Scope), Arc<Tape>>,
@@ -122,6 +125,10 @@ pub struct ModelView {
     /// Per field: whether it is the same at every moment (reads no t,
     /// directly or through a solve that does), once found.
     timeless: HashMap<u32, bool>,
+    /// Per field and params: the way it moves with each (`param_ways`).
+    ways: HashMap<(u32, Vec<u32>), Vec<Option<i8>>>,
+    /// Per field and substitution: the field substituted (`subst`).
+    substs: HashMap<(u32, Vec<(Var, u32)>), u32>,
     /// The param claims over a motion range t as (motion::ranged), once
     /// made (`t_param`).
     t_param: Option<u32>,
@@ -226,6 +233,7 @@ impl ModelView {
             motion: None,
             by_file: None,
             reaches: HashMap::new(),
+            ahead: None,
             boxes: HashMap::new(),
             tapes: HashMap::new(),
             outcomes: HashMap::new(),
@@ -238,6 +246,8 @@ impl ModelView {
             inputs: HashMap::new(),
             unsolved: Vec::new(),
             timeless: HashMap::new(),
+            ways: HashMap::new(),
+            substs: HashMap::new(),
             t_param: None,
             upgrades: Vec::new(),
             search_boxes: ink_kernel::query::BOXES,
@@ -599,8 +609,9 @@ impl ModelView {
         if let Some(why) = crate::validity::numbers(&self.doc, &self.ctx, &[fact.value]) {
             return Err(why);
         }
-        let providers = self.doc.providers();
-        if let Some(k) = self.doc.params_read(&[fact.value]).into_iter().find(|&k| providers.owner(k).is_some()) {
+        // A solve's params (its provider's: Doc::keep_form), found from the solves themselves: compiling
+        // the providers clones every form's tapes, and a rating's formula is asked this at every moment.
+        if let Some(k) = self.doc.params_read(&[fact.value]).into_iter().find(|&k| self.doc.solves.iter().any(|s| s.owns.contains(&k))) {
             return Err(format!("it reads '{}', which ink works out at a run (a solve, an estimate): a fact does not read one yet", self.doc.params[k].name));
         }
         if g.may_lack_a_result(fact.value) {
@@ -1415,9 +1426,11 @@ impl ModelView {
         if let Some(r) = self.reaches.get(&key) {
             return *r;
         }
-        let r = match self.slab(f) {
-            Some(s) => crate::plane_reach(&self.doc.g, self.doc.domain(), s, &self.ctx),
-            None => self.doc.reach(f, &self.ctx),
+        let ahead = if self.plane { None } else { self.ahead.take_if(|(k, _)| *k == key) };
+        let r = match (ahead, self.slab(f)) {
+            (Some((_, r)), _) => r,
+            (None, Some(s)) => crate::plane_reach(&self.doc.g, self.doc.domain(), s, &self.ctx),
+            (None, None) => self.doc.reach(f, &self.ctx),
         };
         self.reaches.insert(key, r);
         r
@@ -1459,6 +1472,34 @@ impl ModelView {
         out
     }
 
+    /// The way field `f` moves with each param of `ks` (Tape::param_way),
+    /// found once per field and params: a claim measured at each moment of
+    /// a motion asks it again at each (claims' estimated, of its bands),
+    /// and it reads neither the moment nor any value.
+    pub(crate) fn param_ways(&mut self, f: u32, ks: &[u32]) -> Vec<Option<i8>> {
+        let key = (f, ks.to_vec());
+        if let Some(w) = self.ways.get(&key) {
+            return w.clone();
+        }
+        let tape = Tape::new(&self.doc.g, f);
+        let w: Vec<Option<i8>> = ks.iter().map(|&k| tape.param_way(k)).collect();
+        self.ways.insert(key, w.clone());
+        w
+    }
+
+    /// `f` with the vars of `map` replaced (Graph::subst), built once per
+    /// field and map: a claim measured at each moment of a motion builds
+    /// the same at each (claims' estimated: its bands at their ends).
+    pub(crate) fn subst(&mut self, f: u32, map: &[(Var, u32)]) -> u32 {
+        let key = (f, map.to_vec());
+        if let Some(&n) = self.substs.get(&key) {
+            return n;
+        }
+        let n = self.doc.g.subst(f, map);
+        self.substs.insert(key, n);
+        n
+    }
+
     /// `reach` of each of `fs`, found at once, in parallel.
     pub fn reach_all(&mut self, fs: &[u32]) {
         use rayon::prelude::*;
@@ -1477,6 +1518,32 @@ impl ModelView {
             })
             .collect();
         self.reaches.extend(todo.into_iter().zip(found));
+    }
+
+    /// `reach` of `f` over `at` (a scope the view is not at: a motion's
+    /// span), to find ahead of the question that asks it there, under
+    /// `at_point(at)`, which forgets what it finds after: its key, and its
+    /// search, which reads its tape and context alone, so a caller with
+    /// many questions (interfere's moving pairs, each judged over the motion
+    /// before it is measured: validity::outside) runs theirs side by side
+    /// as it asks the ones before (`found_ahead`): its key, None where the
+    /// view has it, and its search (`reach_search`).
+    pub(crate) fn reach_ahead(&mut self, at: &Ctx, f: u32) -> Option<(u32, Scope)> {
+        let whole = std::mem::replace(&mut self.ctx, at.clone());
+        let key = (f, self.scope(&[f]));
+        self.ctx = whole;
+        (!self.reaches.contains_key(&key)).then_some(key)
+    }
+
+    /// The search `reach_ahead` keys.
+    pub(crate) fn reach_search(&self, at: &Ctx, f: u32) -> ReachSearch {
+        ReachSearch { tape: Arc::new(Tape::new(&self.doc.g, f)), window: self.doc.domain(), at: at.clone() }
+    }
+
+    /// The reach `reach_ahead` keyed, found: the next `reach` asking it
+    /// takes it (one found before and not taken is forgotten).
+    pub(crate) fn found_ahead(&mut self, key: (u32, Scope), r: Reach) {
+        self.ahead = Some((key, r));
     }
 
     /// `bounds` of each of `fs`, found at once, in parallel.
@@ -1618,17 +1685,24 @@ impl ModelView {
     }
 
     /// `prove`, of "inside a and not inside b" where `except` is (a, b), f
-    /// being max(a, -b) (query::Except).
-    pub fn prove_except(&mut self, f: u32, except: Option<(u32, u32)>, res: Option<f64>, tol: f64) -> (Proof, bool) {
+    /// being max(a, -b) (query::Except); with the tape it searched, f
+    /// clipped to where it looked (a's reach, which holds all of f's
+    /// material: f is no lower than a). What confirms its points reads
+    /// that tape: f's own reach is not searched for (a search that would
+    /// find no more of f than a's does, and on a larger tape).
+    pub fn prove_except(&mut self, f: u32, except: Option<(u32, u32)>, res: Option<f64>, tol: f64) -> (Proof, bool, Arc<Tape>) {
         let opts = self.proof_options(res, tol);
-        let Some(except) = except else { return self.prove_with(f, &opts) };
+        let Some(except) = except else {
+            let (p, whole) = self.prove_with(f, &opts);
+            return (p, whole, self.clipped(f));
+        };
         let (a, b) = except;
         let r = self.reach(crate::claims::subset_reach(a, b));
         let clip = self.clip_to(f, r);
         let Reach { lo, hi, whole } = r;
         let tape = Arc::new(Tape::new(&self.doc.g, clip));
         let e = ink_kernel::query::Except { a: self.clipped(a), b: Arc::new(Tape::new(&self.doc.g, b)) };
-        (ranged::prove_except(&tape, Some(&e), &self.ctx, lo, hi, &opts), whole)
+        (ranged::prove_except(&tape, Some(&e), &self.ctx, lo, hi, &opts), whole, tape)
     }
 
     /// `prove` with these options.
@@ -1965,6 +2039,19 @@ impl Scope {
     }
 }
 
+/// A reach's search (ModelView::reach_ahead): what `reach` finds there.
+pub(crate) struct ReachSearch {
+    tape: Arc<Tape>,
+    window: (V3, V3),
+    at: Ctx,
+}
+
+impl ReachSearch {
+    pub(crate) fn run(&self) -> Reach {
+        crate::reach_of(&self.tape, self.window, &self.at)
+    }
+}
+
 /// How far, as a fraction of a body's size, an instance's numbers may move
 /// a point of it from where its world field has it, for its placement to be
 /// rigid (`ModelView::rigid`). A turn's numbers are off by rounding (1e-16
@@ -2096,5 +2183,52 @@ mod spanning_tests {
         let mut tilted = turn.clone();
         tilted[7][1] = 1e-5;
         check(&tilted, false, 3);
+    }
+}
+
+#[cfg(test)]
+mod asked_tests {
+    use super::*;
+    use crate::{Claim, Value};
+
+    fn view(src: &str) -> ModelView {
+        static CORE: crate::Registry = crate::Registry::new(&[]);
+        let doc = crate::Doc::load_str_in(&CORE, src, "t", std::path::Path::new("."), &[]).unwrap();
+        let (ctx, _) = doc.ctx_at(&[], 0.0).unwrap();
+        ModelView::new(doc, ctx)
+    }
+
+    /// A subset's search looks where a's material is, and its points are
+    /// confirmed on the field it searched: max(a, -b) is never clipped to
+    /// a reach of its own, a search that finds no more of it and, for a
+    /// part turning over the motion (a belt's tooth round its loop), runs
+    /// to its limit to say it is not bounded.
+    #[test]
+    fn a_subset_searches_no_reach_of_its_own_field() {
+        let src = "(import \"std\")\n(t-span 0 1s)\n(body pin (shape (box 1 1 1)))\n(body ring (shape (cylinder-z 10 2)))\n\
+                   (assembly root (instance p pin (at (move 5 0 1) (rot-z (* 360 (/ t 1s))))) (instance r ring (at)))\n\
+                   (require inside (subset (shape-of root/p) (shape-of root/r)))";
+        let mut v = view(src);
+        v.set_motion(v.doc.t_span).unwrap();
+        let r = crate::claims::run_asserts(&mut v, None, false, crate::claims::ClaimOptions::default()).unwrap();
+        assert_eq!(r.asserts.len(), 1);
+        let Claim::Subset(a, b) = v.doc.asserts[0].claim else { panic!("a subset") };
+        let f = crate::claims::subset_field(&mut v.doc.g, a, b);
+        assert!(v.tapes.keys().any(|k| k.0 == a), "a's own field is clipped to its reach");
+        assert!(!v.tapes.keys().any(|k| k.0 == f), "the subset's field was clipped to a reach of its own");
+    }
+
+    /// A fact that reads what a solve sets (an estimate's guard) is no
+    /// number yet, and is refused saying so; one of numbers is read.
+    #[test]
+    fn a_fact_reading_a_solved_param_is_refused() {
+        let v = view("(def e (estimate-when 2 (> 1 0) \"why\"))\n(def n (+ 2 3))");
+        let of = |name: &str| {
+            let Some(Value::Field(value, _)) = v.doc.def(name).cloned() else { panic!("{name} is no field") };
+            crate::Stated { what: name.into(), under: vec![], frame: None, value, unit: None, file: "t".into(), line: 1 }
+        };
+        assert_eq!(v.stated(&of("n")), Ok((5.0, None)));
+        let refused = v.stated(&of("e")).expect_err("e reads the estimate's guard");
+        assert!(refused.contains("which ink works out at a run"), "{refused}");
     }
 }

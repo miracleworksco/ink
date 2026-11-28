@@ -65,17 +65,14 @@ pub(crate) struct Springs {
 /// The springs at a state: each line's stretch per unit of each released
 /// joint's deviation (N mm of work per N of tension), stiffness and
 /// pretension; each joint's stiffness (0 where none is stated), its drive's
-/// value, rate and acceleration (radians a turn), its heft (what it
-/// carries: g mm^2 of their inertia about its axis's origin a turn, their
-/// mass g a slide), against which its inertia along itself is none, and
-/// the mass it carries (g).
+/// value, rate and acceleration (radians a turn), and the mass it carries
+/// (g).
 pub struct At {
     pub g: Vec<Vec<f64>>,
     pub kl: Vec<f64>,
     pub t0: Vec<f64>,
     pub kj: Vec<f64>,
     pub drive: Vec<[f64; 3]>,
-    pub heft: Vec<f64>,
     pub mass: Vec<f64>,
 }
 
@@ -382,11 +379,11 @@ impl Model {
             .collect()
     }
 
-    /// The springs at `ctx` (At), given each joint's heft and mass.
-    pub(crate) fn springs_at(&self, ctx: &Ctx, frames: &[(V3, V3, bool)], heft: Vec<f64>, mass: Vec<f64>) -> At {
+    /// The springs at `ctx` (At), given the mass each joint carries.
+    pub(crate) fn springs_at(&self, ctx: &Ctx, frames: &[(V3, V3, bool)], mass: Vec<f64>) -> At {
         let s = self.springs.as_ref().expect("a model with springs");
         let nr = s.joints.len();
-        let mut at = At { g: Vec::new(), kl: Vec::new(), t0: Vec::new(), kj: vec![0.0; nr], drive: Vec::new(), heft, mass };
+        let mut at = At { g: Vec::new(), kl: Vec::new(), t0: Vec::new(), kj: vec![0.0; nr], drive: Vec::new(), mass };
         for l in &s.lines {
             let p: V3 = l.p.each_ref().map(|e| e.at(ctx));
             let u: V3 = l.u.each_ref().map(|e| e.at(ctx));
@@ -811,7 +808,7 @@ mod tests {
     /// pull on the joint goes with it.
     #[test]
     fn a_slack_line_pulls_nothing() {
-        let at = super::At { g: vec![vec![1.0, -1.0]], kl: vec![10.0], t0: vec![5.0], kj: vec![0.0, 2.0], drive: vec![[0.0; 3]; 2], heft: vec![1.0; 2], mass: vec![1.0; 2] };
+        let at = super::At { g: vec![vec![1.0, -1.0]], kl: vec![10.0], t0: vec![5.0], kj: vec![0.0, 2.0], drive: vec![[0.0; 3]; 2], mass: vec![1.0; 2] };
         // Taut: 5 + 10 (0.2 - 0) = 7 N, pulling joint 0 back by its 2 N of stretch.
         assert_eq!(at.tensions(&[0.2, 0.0]), [7.0]);
         assert_eq!(at.force(&[0.2, 0.0]), [-2.0, 2.0]);

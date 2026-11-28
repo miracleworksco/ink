@@ -197,6 +197,43 @@ pub(crate) const PROPERTY_SHRINK: f64 = 1e-6;
 /// bounds' outward rounding, not a variation (`PROPERTY`).
 pub(crate) const PROPERTY_ROUNDING: f64 = 1e-9;
 
+/// How much steeper than its range a property may be over a box for its
+/// variation to be resolved there: the box's side times the bound on the
+/// field's slope over it (`interval::lipschitz`), over its range. 1 for an
+/// affine field, 4 for a quadratic least or greatest at the box's centre
+/// (the steepest `variation_resolved` takes, its order 2): twice that.
+/// Ranges alone are blind to what lies between their boxes' faces: a jump
+/// film (a `select` between values, a step) in a floor box beside two
+/// slivers tuned to grow its ranges as a smooth field's grow passed
+/// (`< 110 MPa` held at 96.6 against 129). A jump has no finite slope bound
+/// over the box, so its cells split and, at the floor, stay not settled.
+/// A steep film of finite slope passes it beside slivers that widen the
+/// box's range, which any ratio to that range allows: what the cells' own
+/// values see bounds it (`PROPERTY_UNSEEN`).
+pub(crate) const PROPERTY_STEEP: f64 = 8.0;
+
+/// How far a property may reach over a box beyond what the box's centre and
+/// the centres of the 26 boxes of its size round it (inside the part) take,
+/// as a share of that value, for its variation to be resolved there (every
+/// floor box, `property`): a cell takes its centre's value (a cut cell, its
+/// samples'), so what lies beyond them is missed alike on every grid, and
+/// the ladder cannot see it. Neighbour centres outside the part (in air) are
+/// ignored without extrapolation, so every bound comes strictly from values
+/// taken inside the part (preventing both an air-clamped outer skin and an
+/// inward dip from widening the face's allowed range). A field monotone along each axis reaches
+/// nothing beyond them; a smooth one only near its extremes, by its
+/// curvature times the square of the cell's side. A film between the centres
+/// reaches its own contrast beyond them, which nothing else in the box can
+/// hide: a sliver beside it moves no centre's value unless it lies at one,
+/// and there the cells take it. Ranges and slopes alone are blind to this: a
+/// film 2667 against 1972 on steep finite slopes (2e5 MPa/mm), beside one
+/// soft dip that made its floor box's ranges grow as a smooth field's and
+/// its slope ratio pass, held `< 110 MPa` at 96.9 against about 129. Each
+/// side is held to the centres' on that side, a share of its own value: so
+/// k's least holds 1/k's greatest to the same share (a soft film in series),
+/// and nothing a centre takes on the other side widens it.
+pub(crate) const PROPERTY_UNSEEN: f64 = 0.01;
+
 /// Whether a material property's variation over a cell is resolved at the
 /// cell's size: its ranges over boxes about the cell's centre a quarter, a
 /// half and the whole of its side, `r`, `r2`, `r4`. A claim's ladder reads

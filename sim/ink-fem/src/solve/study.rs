@@ -1,7 +1,9 @@
 //! What a solve fixes before its cells (`Study`): the grid over the part,
 //! the samples of a cell, and the material fields' reads over a box.
 
-use crate::cells::{AIR, K, MATERIAL, MAX_DEPTH, PROPERTY, PROPERTY_ROUNDING, PROPERTY_SHRINK, THIN, pieces, sample_chords, thin_and_resolved, variation_resolved};
+use crate::cells::{
+    AIR, K, MATERIAL, MAX_DEPTH, PROPERTY, PROPERTY_ROUNDING, PROPERTY_SHRINK, PROPERTY_STEEP, PROPERTY_UNSEEN, THIN, pieces, sample_chords, thin_and_resolved, variation_resolved,
+};
 use crate::element::sample_xi;
 use crate::eval::{Ctx, eval_interval, eval_points};
 use crate::occupancy::{Classified, Cov, at_xi, occupied_spread, spread_moments};
@@ -10,7 +12,7 @@ use crate::surface::{Facet, part_surface, surface_samples};
 use crate::tape::Tape;
 use crate::{Boundary, Fix, Held, Physics, RegionSel, Setup};
 use ink_core::tape::Names;
-use ink_core::{V3, grid, interval};
+use ink_core::{V3, eval, grid, interval};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -228,6 +230,92 @@ impl<'a> Study<'a> {
         (0..r.len()).all(|k| variation_resolved(width(&quarter[k]), width(&half[k]), width(&r[k])))
     }
 
+    /// Each property's slopes over a box of side `size` about `ctr`
+    /// (`eval_interval_grad`), where it varies (its range `r`), and k's
+    /// where 1/k does.
+    pub(super) fn slopes(&self, ctr: V3, size: f64, r: &[interval::I]) -> Vec<Option<interval::G>> {
+        let half = 0.5 * size * (1.0 - PROPERTY_SHRINK);
+        let b: [interval::I; 3] = std::array::from_fn(|a| interval::I::new(ctr[a] - half, ctr[a] + half));
+        let inv = self.series && width(&r[self.props.len()]) != 0.0;
+        self.props.iter().enumerate().map(|(k, t)| (width(&r[k]) != 0.0 || k == 0 && inv).then(|| eval::eval_interval_grad(t, self.ctx, b))).collect()
+    }
+
+    /// Whether each property (and `1/k` where `series` averages in series) is
+    /// no steeper over a box of side `size` (their ranges `r` over it, their
+    /// slopes `g`) than its range allows (`PROPERTY_STEEP`): rejects jumps
+    /// (`select`, steps) and features steeper than that ratio, including
+    /// soft films in series where `1/k` is steep while `k`'s contrast is
+    /// small next to `k`'s range.
+    pub(super) fn gentle(&self, size: f64, r: &[interval::I], g: &[Option<interval::G>]) -> bool {
+        let steep = |g: &Option<interval::G>, over: f64, w: f64| g.as_ref().is_some_and(|g| interval::lipschitz(g) / over * size <= PROPERTY_STEEP * w);
+        let n = self.props.len();
+        (0..n).all(|k| width(&r[k]) == 0.0 || steep(&g[k], 1.0, width(&r[k])))
+            && (!self.series || width(&r[n]) == 0.0 || r[0].lo > 0.0 && r[0].hi.is_finite() && steep(&g[0], r[0].lo * r[0].lo, width(&r[n])))
+    }
+
+    /// Whether each property's range over a box of side `size` about `ctr`
+    /// (`r`) reaches no further beyond what the centres of the box and of
+    /// the 26 of its size round it take (`at(k)`: property k's value at the
+    /// box's centre, and its least and greatest there) than PROPERTY_UNSEEN
+    /// of that, on each side: a film between them is missed by the cells on
+    /// every grid. Where its bounds reach further, the range is taken no
+    /// wider than its slopes allow from the centre's value (`within`): a
+    /// field written as a polynomial is bounded wider than it is (a
+    /// smoothstep's flank, over a 0.25 mm box, 2.4 times its range), which
+    /// reached past the centres on a monotone field. Where that still
+    /// reaches too far, its eight halves are so taken: a slope bound's reach
+    /// is first order in the box's side, and a smooth field's least or
+    /// greatest beyond the centres second.
+    pub(super) fn seen(&self, ctr: V3, size: f64, r: &[interval::I], at: impl Fn(usize) -> (f64, f64, f64)) -> bool {
+        let Study { ctx, ref props, .. } = *self;
+        let half = 0.5 * size * (1.0 - PROPERTY_SHRINK);
+        let whole: [interval::I; 3] = std::array::from_fn(|a| interval::I::new(ctr[a] - half, ctr[a] + half));
+        // Each half from the box's centre to its (shrunk) face: together the box.
+        let halves: Vec<V3> = (0..8).map(|i| std::array::from_fn(|a| ctr[a] + 0.25 * size * if i >> a & 1 == 1 { 1.0 } else { -1.0 })).collect();
+        let half_box =
+            |c: V3| -> [interval::I; 3] { std::array::from_fn(|a| if c[a] < ctr[a] { interval::I::new(ctr[a] - half, ctr[a]) } else { interval::I::new(ctr[a], ctr[a] + half) }) };
+        let mut v = Vec::new();
+        props.iter().zip(r).enumerate().all(|(k, (t, r))| {
+            if width(r) == 0.0 {
+                return true;
+            }
+            let (centre, lo, hi) = at(k);
+            if !centre.is_finite() || !lo.is_finite() || !hi.is_finite() {
+                return false;
+            }
+            let inside = |b: interval::I| b.hi <= hi + (PROPERTY_UNSEEN + PROPERTY_ROUNDING) * hi.abs() && b.lo >= lo - (PROPERTY_UNSEEN + PROPERTY_ROUNDING) * lo.abs();
+            inside(*r) || inside(within(*r, centre, &eval::eval_interval_grad(t, ctx, whole), half)) || {
+                eval_points(t, ctx, &halves, &mut v);
+                halves.iter().zip(&v).all(|(&c, &at)| {
+                    let b = half_box(c);
+                    inside(within(eval_interval(t, ctx, b, None), at, &eval::eval_interval_grad(t, ctx, b), 0.25 * size))
+                })
+            }
+        })
+    }
+
+    /// `seen` over a box of side `size` about `ctr`, the centres round it
+    /// inside the part read here (ignoring neighbours outside the part).
+    pub(super) fn seen_round(&self, ctr: V3, size: f64, r: &[interval::I]) -> bool {
+        let pts: Vec<V3> = (0..27).map(|i| std::array::from_fn(|a| ctr[a] + ((i / 3usize.pow(a as u32) % 3) as f64 - 1.0) * size)).collect();
+        let mut sv = Vec::new();
+        eval_points(&self.s.shape, self.ctx, &pts, &mut sv);
+        let in_part: [bool; 27] = std::array::from_fn(|j| sv[j] <= 0.0);
+        let values: Vec<Vec<f64>> = self
+            .props
+            .iter()
+            .map(|t| {
+                let mut v = Vec::new();
+                eval_points(t, self.ctx, &pts, &mut v);
+                v
+            })
+            .collect();
+        self.seen(ctr, size, r, |k| {
+            let round: [f64; 27] = std::array::from_fn(|j| values[k][j]);
+            seen_bounds(&round, &in_part)
+        })
+    }
+
     /// A cell's material: (PROPERTY where not resolved, PROPERTY where it
     /// is): its (thin, resolved) bits. Resolved where the cell, as judged,
     /// and every box of the floor's size tiling it pass `variation_resolved`
@@ -242,14 +330,67 @@ impl<'a> Study<'a> {
     /// its quarter (r >= J), at least 0.8 J more over its half; in the ring
     /// to its half, more than J / 2.25 beyond it; past its half, at least
     /// 0.16 J within it (J <= r4 <= r + 5 d1 <= 6.25 d1). What a film can
-    /// hide behind lies inside one floor cell, as an interface's does.
+    /// hide behind lies inside one floor cell, as an interface's does, and
+    /// there only the field's slope tells it from what grows as a smooth
+    /// field's does: the cell, as judged, is `gentle` too, which no jump in
+    /// it is (judged so over every floor box too, a smooth field's solve
+    /// took twice as long, for no jump the cell's own box does not hold).
+    /// A film on steep finite slopes is as gentle as the box's range lets
+    /// it be, which slivers beside it widen: every floor box is `seen` too,
+    /// reaching no further than the centres of the floor's boxes round it
+    /// take. (Judged by a coarser cell's own centres only, a film within
+    /// what they take would pass, though no cell reads it at its strain: a
+    /// stiff one at a bent bar's face, as stiff as a centre a cell deeper.)
     pub(super) fn property(&self, ctr: V3, size: f64, level: u8) -> (u8, u8) {
         let Study { ref props, tiles, .. } = *self;
         if props.is_empty() || self.hulls(ctr, size).iter().all(|i| width(i) == 0.0) {
             return (0, PROPERTY);
         }
-        let judged = |n: usize| tiling(ctr, size, n).all(|c| self.resolved_box(c, size / n as f64, &self.hulls(c, size / n as f64)));
-        if judged(tiles) && judged(tiles << (MAX_DEPTH - level)) { (0, PROPERTY) } else { (PROPERTY, 0) }
+        let side = size / tiles as f64;
+        let judged = tiling(ctr, size, tiles).all(|c| {
+            let r = self.hulls(c, side);
+            self.resolved_box(c, side, &r) && self.gentle(side, &r, &self.slopes(c, side, &r))
+        });
+        // Every floor box, `seen` by the centres of the floor's boxes round
+        // it: each property read once over them (n + 2 a side).
+        let n = tiles << (MAX_DEPTH - level);
+        let floor = size / n as f64;
+        let floors = || {
+            let m = n + 2;
+            let lattice: Vec<V3> = (0..m * m * m).map(|i| std::array::from_fn(|a| ctr[a] - 0.5 * size + floor * ((i / m.pow(a as u32) % m) as f64 - 0.5))).collect();
+            let mut shape_v = Vec::new();
+            eval_points(&self.s.shape, self.ctx, &lattice, &mut shape_v);
+            let values: Vec<Vec<f64>> = props
+                .iter()
+                .map(|t| {
+                    let mut v = Vec::new();
+                    eval_points(t, self.ctx, &lattice, &mut v);
+                    v
+                })
+                .collect();
+            tiling(ctr, size, n).enumerate().all(|(i, c)| {
+                let at = |a: usize| i / n.pow(a as u32) % n + 1;
+                let idx = |o: [usize; 3]| o[0] + m * (o[1] + m * o[2]);
+                let in_part: [bool; 27] = std::array::from_fn(|j| shape_v[idx(std::array::from_fn(|a| at(a) + j / 3usize.pow(a as u32) % 3 - 1))] <= 0.0);
+                // A floor box whose centre lies in air and whose entire box is
+                // proven outside the part holds no material.
+                if !in_part[13] {
+                    let half = 0.5 * floor * (1.0 - PROPERTY_SHRINK);
+                    let b: [interval::I; 3] = std::array::from_fn(|a| interval::I::new(c[a] - half, c[a] + half));
+                    if eval_interval(&self.s.shape, self.ctx, b, None).lo > 0.0 {
+                        return true;
+                    }
+                }
+                let r = self.hulls(c, floor);
+                self.resolved_box(c, floor, &r)
+                    && self.seen(c, floor, &r, |k| {
+                        let v = &values[k];
+                        let round: [f64; 27] = std::array::from_fn(|j| v[idx(std::array::from_fn(|a| at(a) + j / 3usize.pow(a as u32) % 3 - 1))]);
+                        seen_bounds(&round, &in_part)
+                    })
+            })
+        };
+        if judged && floors() { (0, PROPERTY) } else { (PROPERTY, 0) }
     }
 
     /// A cell's samples (side `size`, at `ctr`): their points, the material
@@ -463,7 +604,7 @@ impl<'a> Study<'a> {
         // planar cut use its exact coordinate: a sample nudged into
         // the solid can otherwise put bore pressure on an internal face.
         if !mirrors.is_empty() {
-            for (fc, samples) in facets.iter().zip(points.chunks_exact_mut(4)) {
+            for (fc, samples) in facets.iter().zip(points.as_chunks_mut::<4>().0) {
                 if let Some((axis, at)) = self.cut_face(fc) {
                     for p in samples {
                         p[axis] = at;
@@ -532,7 +673,9 @@ impl<'a> Study<'a> {
                 }
                 let r = self.hulls(p, THIN * size);
                 let holds = |&(k, v): &(usize, f64)| r[k].lo <= v && v <= r[k].hi;
-                if !ends.iter().any(holds) || !self.resolved_box(p, THIN * size, &r) {
+                if !ends.iter().any(holds) || !self.resolved_box(p, THIN * size, &r) || {
+                    !self.gentle(THIN * size, &r, &self.slopes(p, THIN * size, &r)) || !self.seen_round(p, THIN * size, &r)
+                } {
                     continue;
                 }
                 ends.retain(|e| !holds(e));
@@ -543,6 +686,33 @@ impl<'a> Study<'a> {
             false
         }
     }
+}
+
+/// Property bounds seen at a box's centre and its 26 same-size neighbours
+/// inside the part (`in_part[j]` = `shape(p_j) <= 0.0`). Neighbours outside
+/// the part (in air) and non-finite values are ignored, so neither a skin
+/// clamped into air nor an inward dip extrapolated across the centre can
+/// widen the allowed range beyond values actually taken inside the part.
+fn seen_bounds(round: &[f64; 27], in_part: &[bool; 27]) -> (f64, f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for j in 0..27 {
+        if in_part[j] && round[j].is_finite() {
+            lo = lo.min(round[j]);
+            hi = hi.max(round[j]);
+        }
+    }
+    (round[13], lo, hi)
+}
+
+// A property's range `r` over a box reaching `h` from its centre along
+// each axis (its slopes `g`, its centre's value `at`), no wider than the
+// slopes allow from that value: the mean value theorem, along the segment
+// from the centre.
+fn within(r: interval::I, at: f64, g: &interval::G, h: f64) -> interval::I {
+    let reach = h * g.d.iter().map(|d| interval::mag(*d)).sum::<f64>().min(3f64.sqrt() * g.l);
+    let (lo, hi) = (r.lo.max(at - reach), r.hi.min(at + reach));
+    if lo <= hi { interval::I { lo, hi } } else { r }
 }
 
 // A range within rounding of its value (bounds round outward at each

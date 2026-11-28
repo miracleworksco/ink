@@ -36,11 +36,20 @@ pub(crate) fn over_span(v: &mut ModelView, claim: Claim, bound: Option<u32>, spa
             if sampled.status != Status::Holds || sampled.motion.as_ref().is_none_or(|s| s.basis.is_some()) {
                 return Ok(None);
             }
+            if ink_kernel::stop::reached() {
+                return Ok(None);
+            }
             let (why, answer) = sampled.motion.as_ref().map_or((String::new(), None), |s| (s.left.clone().unwrap_or_default(), s.left_answer.as_deref().cloned()));
             let alone = ClaimOptions { beside: false, ..opts };
             let c = between(v, asked, bound, span, alone, sampled.clone(), why, answer, limit);
             v.set_moment(t0)?;
             let c = c?;
+            // Past the call's time limit, an unfinished upgrade leaves the
+            // earlier sampled answer standing instead of overwriting it with
+            // unknown.
+            if c.status == Status::Unknown && ink_kernel::stop::reached() {
+                return Ok(None);
+            }
             // The sampled answer, as it was, where every step held; one decided with t ranged (its
             // period asked in pieces) is finished as any such answer is.
             let sampled = c.status == Status::Holds && !c.motion.as_ref().is_some_and(|s| s.ranged);
@@ -245,11 +254,17 @@ fn between(
     // The search over the whole span ended at its limit of boxes (or would have passed it): one over a
     // step, given BETWEEN_BOXES, ends sooner. None is asked. First, where the motion repeats, its one
     // period is asked in pieces, each a search of its own (`in_pieces`): that answer is the claim's
-    // over the span, whatever the whole search left.
-    if let Ranged::Decided(c) = ranged(v, claim, bound, span, ClaimOptions { in_pieces: true, ..opts })? {
+    // over the span, whatever the whole search left. Past the call's time limit nothing more is
+    // asked: every step is left, the limit's.
+    if !ink_kernel::stop::reached()
+        && let Ranged::Decided(c) = ranged(v, claim, bound, span, ClaimOptions { in_pieces: true, ..opts })?
+    {
         return Ok(c);
     }
-    if limit {
+    if ink_kernel::stop::reached() {
+        stopped += 1;
+        gaps.extend(todo.drain(..));
+    } else if limit {
         gaps.extend(todo.drain(..));
     }
     let boxes = std::mem::replace(&mut v.search_boxes, BETWEEN_BOXES);

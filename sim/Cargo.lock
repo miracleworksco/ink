@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "ink"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-core",
  "ink-io",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "ink-carried"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-core",
  "ink-lang",
@@ -156,11 +156,11 @@ dependencies = [
 
 [[package]]
 name = "ink-claims"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "ink-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink",
  "ink-claims",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "ink-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libm",
  "num-rational",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "ink-dynamics"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-carried",
  "ink-core",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "ink-effort"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-claims",
  "ink-dynamics",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "ink-ext"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink",
  "ink-claims",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "ink-fem"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-core",
  "ink-kernel",
@@ -231,14 +231,14 @@ dependencies = [
 
 [[package]]
 name = "ink-formula"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-claims",
 ]
 
 [[package]]
 name = "ink-io"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "crc32fast",
  "ink-core",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "ink-kernel"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-core",
  "libm",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "ink-lang"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "harfrust",
  "ink-core",
@@ -280,11 +280,11 @@ dependencies = [
 
 [[package]]
 name = "ink-mma"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "ink-ratings"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-claims",
  "ink-formula",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "ink-sim"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-core",
  "ink-fem",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "ink-study"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-claims",
  "ink-lang",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "ink-topology"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink-core",
  "ink-kernel",

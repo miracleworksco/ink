@@ -797,11 +797,19 @@ impl Doc {
                 return Ok(Value::Region { certain, possible });
             }
             "bridge-support" if self.scope == Scope::STD => {
-                let [f, bed, angle, height, depth, limit, step] = args else { return Err(self.err(e, "usage: (bridge-support FIELD BED ANGLE HEIGHT DEPTH LIMIT STEP)")) };
+                let usage = "usage: (bridge-support FIELD BED ANGLE HEIGHT DEPTH LIMIT STEP DIRS), DIRS a vec of (vec dx dy)";
+                let [f, bed, angle, height, depth, limit, step, dirs] = args else { return Err(self.err(e, usage)) };
                 let (f, bed) = (self.field(f, env)?, self.field(bed, env)?);
                 let (angle, height, depth) = (self.field(angle, env)?, self.field(height, env)?, self.field(depth, env)?);
                 let (limit, step) = (self.field(limit, env)?, self.field(step, env)?);
-                let flags = self.bridge_support(f, bed, angle, height, depth, limit, step);
+                let Value::Vec(list) = self.eval(dirs, env)? else { return Err(self.err(dirs, usage)) };
+                let mut along = Vec::new();
+                for d in list.iter() {
+                    let Value::Vec(xy) = d else { return Err(self.err(dirs, usage)) };
+                    let [x, y] = &xy[..] else { return Err(self.err(dirs, usage)) };
+                    along.push([self.as_field(x.clone(), dirs)?, self.as_field(y.clone(), dirs)?]);
+                }
+                let flags = self.bridge_support(f, bed, angle, height, depth, limit, step, &along);
                 return Ok(Value::list(flags.map(|f| Value::Field(f, None)).into()));
             }
             "ranged" => {

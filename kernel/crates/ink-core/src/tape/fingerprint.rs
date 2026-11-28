@@ -186,9 +186,11 @@ impl Tape {
         let mut h = rustc_hash::FxHasher::default();
         let Tape { ssa, grids, opaque, fixed, pmask, pread, plist, slopes, forms, .. } = self;
         h.write_usize(ssa.len());
-        for &Ins { op, out, a, b, c } in ssa {
+        // Three words an instruction (its kind is small, and its out its
+        // own index).
+        for &Ins { op, out: _, a, b, c } in ssa {
             let (k, v) = Tape::op_words(op);
-            [k, v, out as u64, a as u64, b as u64, c as u64].into_iter().for_each(|w| h.write_u64(w));
+            [v, k << 32 | a as u64, (b as u64) << 32 | c as u64].into_iter().for_each(|w| h.write_u64(w));
         }
         grids.iter().for_each(|g| h.write_usize(std::sync::Arc::as_ptr(g) as usize));
         forms.iter().for_each(|f| h.write_usize(std::sync::Arc::as_ptr(f) as usize));

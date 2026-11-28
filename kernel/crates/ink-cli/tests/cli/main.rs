@@ -9,6 +9,11 @@
 //! call is mostly small and serial; every core each costs more CPU and is
 //! slower with the tests beside it).
 
+/// The binary under test.
+pub const INK: &str = env!("CARGO_BIN_EXE_ink");
+/// The kernel: fixtures, examples and benchmarks are found from it.
+pub const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
 mod assemblies;
 mod benchmarks;
 mod commands;

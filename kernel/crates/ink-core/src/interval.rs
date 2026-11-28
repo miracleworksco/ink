@@ -465,7 +465,10 @@ pub const DEG: I = I { lo: 57.295779513082316, hi: 57.29577951308232 };
 /// Every result is rounded outward only where it is inexact (see `down`):
 /// exact ones stay exact, so a field that is exactly 0 on a face bounds
 /// to 0 there, a rotation's partials (a cosine times 1) stay points, and
-/// opposite faces' slopes cancel exactly.
+/// opposite faces' slopes cancel exactly. Each op past the min and max is
+/// its own function, so this is small enough to take inline where interval
+/// evaluation runs it an instruction at a time.
+#[inline(always)]
 pub fn bin(op: BinOp, a: I, b: I) -> (I, u8) {
     match op {
         BinOp::Add => (add_o(a, b), BOTH),
@@ -494,25 +497,28 @@ pub fn bin(op: BinOp, a: I, b: I) -> (I, u8) {
         }
         BinOp::Atan2 => (atan2(a, b), BOTH),
         BinOp::Pow => (pow(a, b), BOTH),
-        // Nondecreasing in both arguments; with one side <= 0 it is max,
-        // exact, and otherwise one library call (hypot, which neither
-        // overflows nor underflows on the way), allowed 4 ulps (`ulps_un`).
-        BinOp::Emax => {
-            let c = if b.hi <= 0.0 && b.hi < a.lo {
-                FIRST
-            } else if a.hi <= 0.0 && a.hi < b.lo {
-                SECOND
-            } else {
-                BOTH
-            };
-            let hypot = |x: f64, y: f64| x > 0.0 && y > 0.0;
-            let lo = emax_f64(a.lo, b.lo);
-            let hi = emax_f64(a.hi, b.hi);
-            let lo = if hypot(a.lo, b.lo) { widen(I::point(lo), 4).lo } else { lo };
-            let hi = if hypot(a.hi, b.hi) { widen(I::point(hi), 4).hi } else { hi };
-            (I::new(lo, hi), c)
-        }
+        BinOp::Emax => emax(a, b),
     }
+}
+
+/// Nondecreasing in both arguments; with one side <= 0 it is max, exact,
+/// and otherwise one library call (hypot, which neither overflows nor
+/// underflows on the way), allowed 4 ulps (`ulps_un`). As `bin`, which
+/// argument always wins.
+fn emax(a: I, b: I) -> (I, u8) {
+    let c = if b.hi <= 0.0 && b.hi < a.lo {
+        FIRST
+    } else if a.hi <= 0.0 && a.hi < b.lo {
+        SECOND
+    } else {
+        BOTH
+    };
+    let hypot = |x: f64, y: f64| x > 0.0 && y > 0.0;
+    let lo = emax_f64(a.lo, b.lo);
+    let hi = emax_f64(a.hi, b.hi);
+    let lo = if hypot(a.lo, b.lo) { widen(I::point(lo), 4).lo } else { lo };
+    let hi = if hypot(a.hi, b.hi) { widen(I::point(hi), 4).hi } else { hi };
+    (I::new(lo, hi), c)
 }
 
 pub fn select(c: I, a: I, b: I) -> (I, u8) {

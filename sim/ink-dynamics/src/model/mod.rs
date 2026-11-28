@@ -19,6 +19,7 @@
 //! in the efforts, the reactions and the balances alike (Model::couple).
 
 mod bodies;
+mod bounded;
 mod build;
 mod couplings;
 mod drives;
@@ -39,6 +40,7 @@ pub mod springs;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use self::bounded::Plan;
 pub use self::build::riding;
 pub(crate) use self::build::{carried, joint_axis};
 pub use self::couplings::{Friction, Site, losses, unfed_need};
@@ -156,6 +158,7 @@ struct Placement {
     r: [Num; 9],
     dr: [Num; 9],
     p: [Num; 3],
+    dp: [Num; 3],
     dt2: [Num; 12],
     dq: Vec<(usize, [Num; 12])>,
 }
@@ -417,6 +420,9 @@ struct Strip {
     /// Mass per mm along the material (g): its profile measured cut to its
     /// length, spread evenly along it.
     mass: f64,
+    /// How far its mass per mm can be from `mass` (g): its measure's proven
+    /// bounds, at what its density is known to. Infinite: not known.
+    err: f64,
     shift: Num,
     length: Num,
     closed: bool,
@@ -665,6 +671,12 @@ pub struct Model {
     /// Steps chosen, by span and whom for: the efforts, or a claim on a
     /// reaction (Serve::claim).
     chosen: Mutex<HashMap<(u64, u64, Option<usize>), Arc<Chosen>>>,
+    /// What the bodies and loads sum into over a step, by the step's ends
+    /// (bounded.rs); None where something read has no bound over it.
+    swept: Mutex<HashMap<(u64, u64), Option<Arc<bounded::Swept>>>>,
+    /// What its efforts read includes a param a solve on t sets at each
+    /// moment, which no bound over a step here follows (Model::bounded).
+    reads_moment: bool,
     /// Where it is a load's model at its written moments: the file and the
     /// target to build its model of states from, and that model once built
     /// (where an actuator's limits cross, where along its speed they begin
@@ -756,6 +768,13 @@ pub struct Moment {
     /// their speeds and gravity need), and each actuator's command there
     /// (None: it has none): what a simulation steps by (simulate.rs).
     pub gm: Vec<Vec<f64>>,
+    /// The heft of each of gm's rows, what its diagonal sums: each body's
+    /// mass times its speed squared per unit of the row, and its turning
+    /// squared times its inertia's diagonal there. A row whose inertia is
+    /// within ROUNDING of it carries none: an idler given none, its centre
+    /// measured a hair off its axis, sums m r^2 there and m r^2 less in its
+    /// own inertia to rounding, of either sign (simulate::forces).
+    pub heft: Vec<f64>,
     pub command: Vec<Option<f64>>,
     /// Along each joint released for springs (springs.rs), in order: the
     /// effort what it carries needs along its deviation (N a slide, N mm per

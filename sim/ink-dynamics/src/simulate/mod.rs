@@ -23,7 +23,9 @@
 //! Kane's method and Autolev form them); a loop closed by a solve is
 //! followed by the solve and its implicit-function rates, so its closure
 //! holds at every state and needs no stabilization (coordinate
-//! partitioning, Wehage and Haug 1982). A released joint carrying no
+//! partitioning, Wehage and Haug 1982). A coordinate or released joint
+//! whose inertia is within rounding of its heft (Moment::heft) carries
+//! none, whatever the rounding's sign. A released joint carrying no
 //! inertia along itself (an idler given none) is held where the springs
 //! leave it at each state (Guyan's condensation, as the modes do).
 //!
@@ -65,7 +67,8 @@
 // - trajectory: the simulated motion and its quintic Hermite reading
 // - types: what a simulation reports (Stepped, Springs, ...), Fail, Layout
 // - forces: the accelerations at a state (Eval), the springs' hold
-// - linalg: LU, Cholesky, the springs' modes, the spectral radius
+// - linalg: LU, Cholesky, the springs' modes, the spectral radius, e^X
+// - masses: the motion's sensitivity to what the masses are known to
 // - simulation: Simulation and its progress, started and read
 // - following: what the springs did (following errors, modes, rest)
 // - stepping: the step loop, switches, error scales, the Jacobian
@@ -75,6 +78,7 @@ mod following;
 mod forces;
 mod integrators;
 mod linalg;
+mod masses;
 mod simulation;
 mod stepping;
 mod trajectory;

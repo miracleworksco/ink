@@ -198,7 +198,7 @@ impl Doc {
                     clauses.push(OwnedClause { package: package.name(), head, kept, reads, file: file.clone(), scope, line });
                 }
                 let [limits, speed_limits] = bounds.map(|b| b.map(|l| (l.0, l.1)));
-                Some(Joint { turn, axis, anchor, below, drive, text, limits, speed_limits, clauses })
+                Some(Joint { turn, axis, anchor, below, motion: m, drive, text, limits, speed_limits, clauses })
             }
             None => None,
         };

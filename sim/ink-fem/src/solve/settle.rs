@@ -3,12 +3,12 @@
 //! unresolved.
 
 use crate::Boundary;
-use crate::cells::{AIR, ALL, MATERIAL, MIN_FRACTION, Numbering, PROPERTY, PROPERTY_SHRINK, number, place};
+use crate::cells::{AIR, ALL, K, MATERIAL, MAX_DEPTH, MIN_FRACTION, Numbering, PROPERTY, PROPERTY_SHRINK, lattice, number, place};
 use crate::element::moved_moments;
 use crate::eval::eval_points;
 use crate::laminate::Laminate;
-use crate::occupancy::{Classified, at_xi, glued_gap, spread_moments};
-use crate::{laminate, memory};
+use crate::occupancy::{Classified, at_xi, center, glued_gap, spread_moments};
+use crate::{laminate, memory, slivers};
 use ink_core::V3;
 use rayon::prelude::*;
 
@@ -58,6 +58,9 @@ pub(super) struct Slivers {
     pub(super) taken_by: std::collections::HashMap<([i64; 3], u8, [u16; 3]), Vec<(Classified, [i64; 3])>>,
     pub(super) left: Vec<Classified>,
     pub(super) volume: f64,
+    /// Of those left, the first that is not a face's own skin nor a tip
+    /// (`dropped_apart`): where, and what it joins.
+    pub(super) apart: Option<(V3, String)>,
 }
 
 /// What the cells leave unresolved, for the report: an interface stepped
@@ -113,7 +116,14 @@ pub(super) fn settle(st: &Study, cur: Vec<Classified>, short: bool, said: bool) 
     // one reaches (a hold's own slivers are the hold's: `slivers` below),
     // nor one of several pieces of a cell, nor across two materials: those
     // are dropped as before, and counted.
-    let slivers = absorb_slivers(st, &classified, slivers);
+    let mut slivers = absorb_slivers(st, &classified, slivers);
+    // A sliver left is dropped with its material, which is harmless only
+    // where it is a skin on the part's face or a tip of it: a foil a
+    // sixtieth of a cell thick, joined under a cantilever at its root and
+    // its tip and seen by every grid's samples, was dropped whole, and the
+    // beam alone read (0.00654 for about 0.0047). Sorted by what it joins
+    // (`dropped_apart`), as material the samples miss is.
+    slivers.apart = dropped_apart(st, &classified, &slivers.left);
     if classified.is_empty() {
         return Err("the study shape has no material inside its bounds".into());
     }
@@ -319,7 +329,72 @@ fn absorb_slivers(st: &Study, classified: &[Classified], mut slivers: Vec<Classi
     // (The slivers still dropped: a fix's reach, several pieces, another material.)
     let slivers_left = slivers;
     let sliver_volume = slivers_left.iter().map(|c| c.frac * place(grid, c).1.powi(3)).sum();
-    Slivers { taken, gained, taken_by, left: slivers_left, volume: sliver_volume }
+    Slivers { taken, gained, taken_by, left: slivers_left, volume: sliver_volume, apart: None }
+}
+
+/// Of the slivers left (`left`), dropped with their material, the first
+/// cluster that changes what the part is (`slivers::joins`, as material
+/// the samples miss is sorted): a foil, web or ligament joining the cells
+/// kept (`classified`) in two places apart, or beside them over more than
+/// a tip's cells, or joining none. A cluster each of whose slivers' samples
+/// touch a kept cell's (as `number` joins cut cells: no air between) is
+/// the part's own skin, under 3% of a cell thick, and changes nothing: a
+/// bar's face a hair past a cell's plane leaves such a sheet all along it
+/// where a fix keeps the cell beside from taking it.
+fn dropped_apart(st: &Study, classified: &[Classified], left: &[Classified]) -> Option<(V3, String)> {
+    let Study { ref grid, .. } = *st;
+    let left: Vec<&Classified> = left.iter().filter(|sl| sl.moments.as_ref().is_some_and(|m| m[0] > 1e-12 * 8.0 * sl.coef)).collect();
+    if left.is_empty() {
+        return None;
+    }
+    let at = |idx: [i64; 3]| -> &[Classified] {
+        if !st.in_grid(idx) {
+            return &[];
+        }
+        let l = st.lin(idx);
+        let a = classified.partition_point(|c| st.lin(c.idx) < l);
+        &classified[a..a + classified[a..].iter().take_while(|c| c.idx == idx).count()]
+    };
+    // (a cell's box and its samples' boxes that see material, in samples
+    // of the finest cells: each axis from, to)
+    let k = K as i64;
+    let cell_box = |c: &Classified| -> [[i64; 2]; 3] {
+        let (lo, side) = lattice(c, MAX_DEPTH);
+        std::array::from_fn(|a| [lo[a] * k, (lo[a] + side) * k])
+    };
+    let meet = |a: &[[i64; 2]; 3], b: &[[i64; 2]; 3]| (0..3).all(|x| a[x][0] <= b[x][1] && b[x][0] <= a[x][1]);
+    let samples = |c: &Classified, toward: &[[i64; 2]; 3]| -> Vec<[[i64; 2]; 3]> {
+        let (lo, side) = lattice(c, MAX_DEPTH);
+        (0..64i64)
+            .filter(|&i| c.mask >> i & 1 == 1)
+            .map(|i| {
+                let p = [i % k, i / k % k, i / (k * k)];
+                std::array::from_fn(|a| [lo[a] * k + p[a] * side, lo[a] * k + (p[a] + 1) * side])
+            })
+            .filter(|b| meet(b, toward))
+            .collect()
+    };
+    let touches = |sl: &Classified, o: &Classified| -> bool {
+        let (bs, bo) = (cell_box(sl), cell_box(o));
+        if !meet(&bs, &bo) {
+            return false;
+        }
+        let (a, b) = (samples(sl, &bo), samples(o, &bs));
+        a.iter().any(|x| b.iter().any(|y| meet(x, y)))
+    };
+    let skin: Vec<([i64; 3], bool)> = left
+        .par_iter()
+        .map(|sl| {
+            let against = (0..27i64).any(|n| at(std::array::from_fn(|a| sl.idx[a] + [n % 3, n / 3 % 3, n / 9][a] - 1)).iter().any(|o| touches(sl, o)));
+            (sl.idx, against)
+        })
+        .collect();
+    let mut own: std::collections::HashMap<[i64; 3], bool> = std::collections::HashMap::new();
+    for (i, against) in skin {
+        *own.entry(i).or_insert(true) &= against;
+    }
+    let found: Vec<([i64; 3], V3)> = own.keys().map(|&i| (i, center(grid, i))).collect();
+    slivers::joins(found, &|i| !at(i).is_empty(), &|i| own.get(&i).copied().unwrap_or(true)).map(|(_, at, what)| (at.map(|v| (v * 1000.0).round() / 1000.0), what))
 }
 
 fn glued(st: &Study, classified: &[Classified]) -> Option<(usize, V3, f64)> {

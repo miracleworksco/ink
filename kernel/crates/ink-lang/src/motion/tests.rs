@@ -293,8 +293,9 @@ fn a_wanted_guard_on_t_takes_a_scope_over_its_range_and_a_motion() {
 /// The moving items' boxes are found side by side, each once, and each is
 /// the box found of it alone, at one thread or four: wheels turning about
 /// their axes (copies of one body, swept), one about a tilted axis (a turn
-/// of floats, no exact isometry: its bounds over the span), a belt growing
-/// with t, and a post at rest.
+/// of floats, no exact isometry: swept a factor at a time), one about an
+/// axis that moves (no turn proven: its bounds over the span), a belt
+/// growing with t, and a post at rest.
 #[test]
 fn moving_items_are_boxed_alike_side_by_side_and_alone() {
     let src = "(import \"std\")\n(t-span 0 1s)\n(def drive (* 90 (/ t 1s)))\n\
@@ -302,7 +303,7 @@ fn moving_items_are_boxed_alike_side_by_side_and_alone() {
                (body belt (shape (box (+ 2 (* 20 (/ t 1s))) 2 2)))\n\
                (assembly root (instance a wheel (at) (turn z drive)) (instance b wheel (at (move 0 0 5)) (turn z drive))\n\
                (instance c wheel (at (rot 0.57735 0.57735 0.57735 120) (move 0 0 10)) (turn z (/ drive 9))) (instance d belt (at (move 0 20 0)))\n\
-               (instance p post (at (move 9 9 9))))";
+               (instance e wheel (at (rot 1 (/ t 1s) 0 30) (move 0 0 -10))) (instance p post (at (move 9 9 9))))";
     let planned = || {
         let mut v = view(src, (0.0, 1.0));
         v.set_motion(Some((0.0, 1.0))).unwrap();
@@ -323,9 +324,48 @@ fn moving_items_are_boxed_alike_side_by_side_and_alone() {
     assert_eq!(shown(&one), shown(&alone));
     let label = |k: usize| items[k].label.rsplit('/').next().unwrap().to_string();
     let by: std::collections::HashMap<String, &ItemBox> = (0..items.len()).map(|k| (label(k), &one[k])).collect();
-    // Both paths are taken: swept pieces for an exact turn, the span's
-    // bounds for the tilted one; the belt holds its growth; the post is still.
-    assert!(!by["a"].2.is_empty() && !by["b"].2.is_empty(), "{by:?}");
-    assert!(by["c"].2.is_empty() && by["c"].0.is_some() && by["d"].0.is_some_and(|b| b.1[0] >= 11.0), "{by:?}");
+    // Both paths are taken: swept pieces for the turns, exact or tilted,
+    // the span's bounds for the one about a moving axis; the belt holds its
+    // growth; the post is still.
+    assert!(!by["a"].2.is_empty() && !by["b"].2.is_empty() && !by["c"].2.is_empty(), "{by:?}");
+    assert!(by["e"].2.is_empty() && by["e"].0.is_some() && by["d"].0.is_some_and(|b| b.1[0] >= 11.0), "{by:?}");
     assert!(by["p"].2.is_empty() && by["p"].0.is_some(), "{by:?}");
+}
+
+/// A roller turning about an axis tilted by floats, on an arm turning
+/// about another (as a CAD export places an intake's rollers: each joint's
+/// anchor a turn about an axis such as (0.57735, 0.57735, 0.57735)), is no
+/// isometry proven whole (its composed entries' angles do not cancel) but
+/// is swept a factor at a time, each near a rotation. Across each piece,
+/// its box's corners, moved as the placement's numbers move them, are in
+/// the piece's box, and the placed field is inside the solid where the
+/// body's centre is moved; no piece is more than twice the body across.
+#[test]
+fn a_turn_about_a_tilted_axis_under_another_is_swept() {
+    let src = "(import \"std\")\n(t-span 0 1s)\n(body roller (shape (move (box 6 2 2) 3 0 0)))\n\
+               (assembly arm (instance r roller (at (rot 0.57735 0.57735 0.57735 120) (move 20 0 0)) (turn z (* 720 (/ t 1s)))))\n\
+               (assembly root (instance a arm (at (rot 1 1 0 30) (move 0 0 5)) (turn z (* 90 (/ t 1s)))))";
+    let mut v = view(src, (0.0, 1.0));
+    v.set_motion(Some((0.0, 1.0))).unwrap();
+    let items = v.doc.items("root").unwrap();
+    let (_, at) = items[0].instance.clone().unwrap();
+    assert!(Isometry::over(&v.doc.g, &at.r, &at.t, &Ctx { t_span: Some((0.0, 1.0)), ..v.ctx.clone() }).is_none());
+    let (b, whole, pieces) = item_boxes(&mut v, &items).remove(0);
+    assert!(whole && b.is_some() && !pieces.is_empty());
+    let entries: Vec<Tape> = at.r.iter().flatten().chain(&at.t).map(|&n| Tape::new(&v.doc.g, n)).collect();
+    let f = v.doc.placed_field(&items[0]);
+    let field = Tape::new(&v.doc.g, f);
+    for &((t0, t1), (lo, hi)) in &pieces {
+        assert!((0..3).all(|k| hi[k] - lo[k] <= 12.0), "{lo:?} {hi:?}");
+        for u in [0.0, 0.3, 0.5, 0.7, 1.0] {
+            let c = Ctx { t: t0 + u * (t1 - t0), t_span: None, ..v.ctx.clone() };
+            let e: Vec<f64> = entries.iter().map(|x| ink_core::eval::eval_point(x, &c, [0.0; 3])).collect();
+            let moved = |q: V3| -> V3 { std::array::from_fn(|j| e[9 + j] + (0..3).map(|k| e[3 * j + k] * q[k]).sum::<f64>()) };
+            for corner in 0..8 {
+                let p = moved(std::array::from_fn(|k| if corner >> k & 1 == 1 { [6.0, 1.0, 1.0][k] } else { [0.0, -1.0, -1.0][k] }));
+                assert!((0..3).all(|k| lo[k] <= p[k] && p[k] <= hi[k]), "t {}: {p:?} outside {lo:?} {hi:?}", c.t);
+            }
+            assert!(ink_core::eval::eval_point(&field, &c, moved([3.0, 0.0, 0.0])) < -0.9, "t {}", c.t);
+        }
+    }
 }

@@ -112,6 +112,9 @@ pub struct Study {
     /// A fix moves its region: the study has no compliance
     /// (MOVED_COMPLIANCE).
     pub moved: bool,
+    /// Each material property given, and where it came from: `(E 2100MPa)`
+    /// as written, or the `(material name)` that gave it.
+    pub material_from: Vec<(String, String)>,
 }
 
 /// The sim package: `(study ...)`.

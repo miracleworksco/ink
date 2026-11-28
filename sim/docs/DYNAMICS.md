@@ -65,12 +65,12 @@ ink require examples/arm.ink
 
 ```json
 {"counts": {"yes": 1},
- "requirements": [{"name": "effort-limits:root/j/arm", "verdict": "yes", "value": 43.0}]}
+ "requirements": [{"name": "effort-limits:root/j/arm", "verdict": "yes", "value": 43.1}]}
 ```
 
 Its value is the margin at its nearest, 43.1 N mm to spare, less the
-0.08 the arm's measured mass, centre and inertia can move the effort
-within their proven bounds: 43.0. A motor too weak,
+0.015 the arm's measured mass, centre and inertia can move the effort
+within their proven bounds: 43.08. A motor too weak,
 `(effort-limits -100N*mm 100N*mm)`, fails, with a moment it falls short (`t`).
 
 ### Forms
@@ -150,11 +150,12 @@ deg/s or mm/s.
   the duty at most the torque Pololu recommends for a continuously
   applied load, `continuous-torque`, and the torque at every moment at
   most its momentary one, where its record gives it). Its joint is `(actuator LO HI)`, the
-  same curve from the same record for the solver, claimed by nothing. The
-  rating is the record's lead curve, at its supply, uncapped: a design
-  that sets the drive's `volts` or `amps` states a limit the rating does
-  not know, and there the joint claims it, `effort-limits`, as before.
-  The others state
+  same curve from the same record for the solver, claimed by nothing. A
+  design that sets the drive's `volts` (a stepper's supply curve) or
+  `amps` (a DC motor's or servo's current cap) passes that argument to
+  the rotor's ratings (`pull-out-torque` reads the matching supply curve,
+  and `current-limit` caps torque by `amps`), so the rating itself holds
+  the drive's setting. The others state
   `effort-limits` always: a rod actuator's line through its
   no-load and full-load points, capped at its rated force; and the five
   hand-written NEMA steppers' pull-out curve at their supply `volts`. Its rotor's inertia is its
@@ -837,7 +838,8 @@ them (after anything the design states):
 Each is read at every moment of the motion (`ink effort`'s: the efforts'
 steps), as it is there, and the rating's answer is the worst moment's. A
 load is an estimate within what the masses it rests on can move it, each
-body's mass, centre and inertia anywhere in its proven bounds. A reaction's peak between those moments is left out,
+body's mass, centre and inertia, and each carried body's mass per mm,
+anywhere in its proven bounds. A reaction's peak between those moments is left out,
 and each fact says so. A moment across a joint's axis is left out of its part's
 `radial-load`, saying how much: a shaft's rating is of a force at a
 point. Where a coupling (a belt, a mesh, a screw) pulls on what a joint
@@ -1058,7 +1060,9 @@ carriage). The mass matrix is every rigid body's measured inertia along
 the coordinates and released joints; the stiffness matrix each spring's
 stretch per unit of each, squared, times its K. Directions moving no body
 are dropped; those with stiffness and no inertia (an idler given
-`(attr spin-inertia 0)`) are condensed out (Guyan); then K φ = ω² M φ.
+`(attr spin-inertia 0)`; an inertia within a billionth of what its
+bodies' masses and inertias sum to there is none, as a simulation reads
+it) are condensed out (Guyan); then K φ = ω² M φ.
 A mode is held where some spring stretches along it, each spring judged
 on its own (a stretch under a millionth of its stretch per unit of each
 coordinate times the mode's motion along it is none), and its ω² is its
@@ -1182,11 +1186,13 @@ including claims on the simulated coordinate.
   of its tolerances (each deviation held to 1e-6 of the largest so far at
   the parts it moves, at least a nanometre), and 0.3 more for each period
   of the springs' fastest mode stepped. The band is measured, no bound
-  (DYNAMICS-VALIDATION.md); a claim within it of its bound is undecided.
+  (DYNAMICS-VALIDATION.md); a claim within it, and its masses' band
+  (below), of its bound is undecided.
   An actuator whose joint is released supplies its spring's force, its
   stiffness times its following error, which its effort-limits and
   effort-rms claims and `ink effort` read (`basis` `spring`), within its
-  stiffness times the band at the span's end. An actuator whose
+  stiffness times the band at the span's end and its masses' band (at
+  the moment; over the span, its largest). An actuator whose
   coordinates move what the springs release has its effort claims
   `unknown`, as have a reaction carrying a part they move and a sprung
   coupling's tension, each saying why.
@@ -1199,9 +1205,46 @@ coordinate’s acceleration, jerk and snap are also measured. These include
 interior polynomial extrema and both sides of interpolation knots. At
 launch its jerk and snap come
   from the first accepted step. An actuator moving only simulated
-  coordinates supplies its clamped command, so its effort claim holds by
-  construction, and says so. What no actuator supplies along a simulated
-  coordinate is never `unpowered`.
+  coordinates supplies its clamped command, within its limits by
+  construction, so its effort-limits claim nothing. What no actuator
+  supplies along a simulated coordinate is never `unpowered`.
+- **Masses**: each body's mass, centre and inertia are measured, each of
+  its ten moments known to its proven bounds (Scope and limits), and the
+  motion is known to within what those move it. Each moment alone at the
+  far side of its bounds moves the motion by its first-order sensitivity:
+  the variational equations stepped beside the motion (the change it
+  makes to the accelerations at each state, by inverse dynamics with that
+  moment moved, and the motion's Jacobian; the exponential midpoint rule
+  on its steps; a released joint's rest moved by what the springs give
+  for it), read between steps by its own quintic Hermite. A simulated
+  coordinate, a following error and their rates to the fourth are each
+  known either way to within the sum of those sizes at the moment read
+  (moments moving it alike are carried as one): a claim within it of its
+  bound is not settled, one past it decided. At an extreme a moment that
+  only shifts the motion in time moves it by nothing. A spinning body
+  read round within what its measure is known to carries that departure
+  at any angle: its centre off its axis each way across it, and its
+  second moment not round about it four ways. A change within the
+  rounding of what it moves is none (a block falling free moves by none
+  of its mass). A body's own published mass (`(attr mass M)` on it, read
+  at the configuration it is published for) is its mass exactly: its
+  moments are the measured ones scaled to it, the scale known as far as
+  its volume is (a curved body so published moves as its mass does). A
+  share of an assembly's published mass, or of a definition's a body is
+  built from, or one read at another configuration, is its density times
+  its measured volume, each known to its bounds: the density's over the
+  volumes it is spread by, and the body's own. A carried body's mass per
+  mm is a source too, at what its profile's measure (and its density) is
+  known to. Against reruns with each moment at either side of its bounds,
+  on a double pendulum and a ringing spring, the band is within 13% where it
+  is a twentieth of its largest (validation.rs's
+  `the_masses_band_is_what_each_measured_moment_moves_the_motion_by`).
+  First order, no bound: a rerun at one side reads its second-order part
+  too, up to 1.8 times the band where a moment's change turns at an
+  extreme of a speed.
+  A claim on an effort, a reaction or a tension in a file whose simulated
+  coordinate has a band is not settled, the band read through its own
+  solve, which carries none (every such solve reads every coordinate).
 - `ink effort`'s `simulated`: the simulated `coordinates`; how far it was
   stepped (`end`), why it stopped short (`stopped` {t, why}, null where it
   ran its span), its `steps`, `rejected` steps and `evaluations`, its
@@ -1222,7 +1265,9 @@ when and why, where the mechanism cannot go on: a dead point of a loop
 (the loop does not close near its last root, or the simulated
 coordinates' generalized inertia has grown 10⁸-fold); a drive past its
 curve's last speed; no inertia along a simulated coordinate pushed along
-it; accelerations not found; a command or state not finite; past 20000
+it (one within a billionth of what its bodies' masses and inertias sum to
+there is none, as the modes read it: an idler given `(attr spin-inertia
+0)` turned by it alone); accelerations not found; a command or state not finite; past 20000
 stages evaluated; friction holding the mechanism still (at rest, no
 acceleration agrees with its couplings' loss: a PD-held lift on a lossy
 screw, a self-locking screw holding its load); a self-locking coupling
@@ -1338,20 +1383,63 @@ effort nothing supplies is past B, undecided under it. The claim's
 `motion.basis` gives the most B over its steps. A claim failing gives the
 first failing step's moment and terms; holding, its value nearest its
 bound over the steps. Between steps it is an estimate, as every effort
-is (`"accuracy": null`, its `solved_inputs` naming its effort).
+is (`"accuracy": null`, its `solved_inputs` naming its effort), unless
+it is bounded there (below).
+
+**Between its moments** an effort claim on a mechanism the bound covers
+is bounded, not estimated. Over each step its effort is inverse dynamics
+in interval arithmetic rounded outward, over every moment of the step at
+once. Each moving body's share is the virtual work of its mass moving
+with its placement x = R u + p: along coordinate k, the integral over its
+mass of (dR_k u + dp_k) . (R″ u + p″ − g), linear in its mass, first
+moment and second moment, so it reads only its placement's second rates
+and its partials along the coordinates; each load acts through its
+point's partial velocities, as at a moment. Every number is read over the
+step as its bound there, its bound at the step's middle and its rate's
+bound over the step, and each sum is the meet of its plain bound and its
+mean value form, which shrinks with the step's square. Each body's
+measured mass, centre and inertia lie anywhere in their proven bounds;
+the drives' constant ratios are inverted in intervals; the limits are
+bounded over the step, so a torque-speed line is read over every speed
+the step passes. A step whose bound lies inside the limits throughout is
+proven. One whose bound crosses a limit is halved while that may settle
+it, at most 4096 halvings in all, and where the claim fails at a halved
+step's middle, past its masses' band, that moment is its witness and the
+halved steps are read (a 5 N bump 0.2 ms wide between 16 even moments, a
+dip 2 µs wide in a rating that follows the speed). A step not settled
+(its bound still crossing a limit at the budget, as a body spinning too
+fast for a step's bound of its rotation leaves it, or crossing at its
+middle within what the masses or the rounding are known to) keeps its
+moments' reading, as above: an estimate there. `motion.basis` says how
+many steps were proven, how many halvings it took, and how many were
+left to their moments. The bound covers a rigid mechanism whose motion is
+written as a field of t, its drives' ratios constant and as many drives
+as coordinates in each set they join. It is not made, and the steps are
+read as above, where the motion is simulated or sprung, moves through a
+solve made again at each moment (a loop's closure), has couplings or a
+carried body's material running round its path, where drives share a
+coordinate (their split rests on their limits) or a drive's ratio moves,
+where a spinning body's departure from round is not known within its
+measure, or where a rating is one number; `motion.basis` says which.
 
 ### Scope and limits
 
 What these answers are:
 
 - Efforts, reactions, shares, tensions and RMS are measured at moments
-  (Steps): estimates, not bounds over the span between them. The masses
+  (Steps): estimates, not bounds over the span between them, but for an
+  effort claim the bound covers (Steps, between its moments), which is
+  bounded over every moment of each step it settles. The masses
   are measured to 2%, and their centres and inertias to the same share
   of their own scale, each proven. An effort, and an RMS effort, carries
-  how far its bodies' measured mass, centre and inertia can move it within
-  those bounds: a claim within that of its limit is not settled.
+  how far its bodies' measured mass, centre and inertia, and its carried
+  bodies' measured mass per mm, can move it within those bounds: a claim
+  within that of its limit is not settled. A
+  simulated motion carries how far they move it, to first order
+  (Simulation, Masses).
 - Modes are a linearisation about a pose; a following error's band is
-  measured, not a bound.
+  measured, not a bound; a simulated motion's masses' band is first order,
+  not a bound.
 
 What is not modelled:
 

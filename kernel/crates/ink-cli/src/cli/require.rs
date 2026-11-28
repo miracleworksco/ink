@@ -192,7 +192,7 @@ pub(crate) fn cmd_require(view: Session, a: &Args) -> Result<J, InkError> {
     // The parts no requirement of ratings asks over (`answer`).
     let mut unasked: Vec<(String, String)> = vec![];
     // Whether its parts are clear of each other at the start of its motion (`placement`), where ratings are asked.
-    let mut placed: Option<Result<Vec<String>, String>> = None;
+    let mut placed: Option<Result<Placed, String>> = None;
     if proved {
         let found = claims(&mut view, a, only, !imports, &|answer, params| row(&proven(answer, params)))?;
         let (answers, params) = &found.at_values;
@@ -276,7 +276,7 @@ pub(crate) fn cmd_require(view: Session, a: &Args) -> Result<J, InkError> {
     let on: Vec<&str> = nodes.iter().filter(|n| n.covered.as_ref().is_some_and(|c| c.goes_on.is_some())).map(|n| n.asked.what.as_str()).collect();
     let loads: Vec<&String> = nodes.iter().filter_map(|n| n.covered.as_ref()).flat_map(|c| &c.loads_left).collect();
     let unheld: Vec<String> = nodes.iter().filter_map(|n| n.covered.as_ref()).flat_map(|c| c.unheld.clone()).collect();
-    let clashes = placed.as_ref().and_then(|p| p.as_ref().ok()).map_or(0, Vec::len);
+    let clashes = placed.as_ref().and_then(|p| p.as_ref().ok()).map_or(0, |p| p.clashes.len());
     PLACEMENT_SAID.with(|said| {
         *said.borrow_mut() = match &placed {
             Some(Ok(_)) if clashes == 0 => "no clash at the start pose".to_string(),
@@ -298,8 +298,8 @@ pub(crate) fn cmd_require(view: Session, a: &Args) -> Result<J, InkError> {
     let none: Vec<String> = nodes.iter().filter_map(|n| n.covered.as_ref()).flat_map(|c| c.states_none.iter().map(|(part, _)| part.clone())).collect();
     let pulls: Vec<String> = nodes.iter().filter_map(|n| n.covered.as_ref()).flat_map(|c| c.pull_unread.iter().map(|(part, _)| part.clone())).collect();
     match &placed {
-        Some(Ok(clashes)) => {
-            out["placement"] = json!({"checked": "at the start of the motion", "clashes": clashes});
+        Some(Ok(p)) => {
+            out["placement"] = json!({"checked": "at the start of the motion", "clashes": p.clashes, "loose": p.loose});
             out["not_checked_here"] = json!([PLACED_AFTER]);
         }
         Some(Err(why)) => out["not_checked_here"] = json!([format!("{PLACEMENT} (not checked here: {why})")]),
@@ -329,8 +329,12 @@ pub(crate) fn cmd_require(view: Session, a: &Args) -> Result<J, InkError> {
         let mut text = String::new();
         // Whether the parts are where they would be built is no requirement's to say: said first, with what checks it.
         match &placed {
-            Some(Ok(clashes)) if clashes.is_empty() => text += PLACED_CLEAR,
-            Some(Ok(clashes)) => text += &format!("NOT COVERED: the parts are not placed as built: {}. {PLACED_AFTER}", clashes.join("; ")),
+            Some(Ok(p)) if p.clashes.is_empty() && p.loose.is_empty() => text += PLACED_CLEAR,
+            Some(Ok(p)) if p.clashes.is_empty() => text += &format!("PLACEMENT: no two parts overlap at the start of the motion. {} {PLACED_AFTER}", p.loose()),
+            Some(Ok(p)) => {
+                text +=
+                    &format!("NOT COVERED: the parts are not placed as built: {}. {}{PLACED_AFTER}", p.clashes.join("; "), p.loose() + if p.loose.is_empty() { "" } else { " " })
+            }
             Some(Err(why)) => text += &format!("{PLACEMENT} (not checked here: {why})"),
             None if nodes.iter().any(|n| n.asked.what.starts_with("relate:")) => text += PLACEMENT,
             None => {}
@@ -365,7 +369,7 @@ const PLACEMENT_PARTS: usize = 60;
 /// motion: `ink interfere`'s own check (boxes first, then the prover on the pairs that may meet), at that one
 /// pose. Ok: the pairs found overlapping, each said. Err: why it was not checked (more than
 /// `PLACEMENT_PARTS` parts, a file with no root). The view is left as it was.
-fn placement(view: &mut Session) -> Result<Vec<String>, String> {
+fn placement(view: &mut Session) -> Result<Placed, String> {
     // A machine that moves: a file with a span of t. (A rig of parts asked as stated, side by side or one over
     // another to compare them, is no assembly to check.)
     if view.motion.or(view.doc.t_span).is_none() {
@@ -377,13 +381,16 @@ fn placement(view: &mut Session) -> Result<Vec<String>, String> {
     }
     let (motion, t) = (view.motion, view.ctx.t);
     let start = motion.or(view.doc.t_span).map_or(t, |(a, _)| a);
-    let check = |view: &mut Session| -> Result<Vec<String>, InkError> {
+    let check = |view: &mut Session| -> Result<Placed, InkError> {
         view.set_motion(None)?;
         view.set_moment(start)?;
         let target = view.doc.target("root");
+        let relations: Vec<(String, String)> = target.as_ref().map_or_else(Vec::new, |t| view.doc.relations_of(t)).into_iter().map(|r| (r.a, r.b)).collect();
+        let loose = ink::lang::loose::loose(view, &items, &relations, LOOSE_GAP)?;
         let plan = ink::lang::interfere::plan(view, items, target.as_ref(), None, None)?;
         let pairs = plan.run(view, None, &|_| None)?;
-        Ok(pairs.iter().filter(|p| p.overlaps()).map(|p| format!("{} and {} overlap in solid", p.items[0], p.items[1])).collect())
+        let clashes = pairs.iter().filter(|p| p.overlaps()).map(|p| format!("{} and {} overlap in solid", p.items[0], p.items[1])).collect();
+        Ok(Placed { clashes, loose })
     };
     let found = check(view).map_err(|e| e.message);
     // (As it was: its moment, then its motion.)
@@ -391,10 +398,39 @@ fn placement(view: &mut Session) -> Result<Vec<String>, String> {
     found.and_then(|found| back.map(|()| found))
 }
 
+/// What the placement check found at the start of the motion: the pairs overlapping in solid, each said, and
+/// the groups of parts that touch nothing of the rest (ink::lang::loose). A clash is not covered and the file
+/// is not all yes; a loose part is named, and changes no verdict: a rig may hang a load where its arm would be.
+struct Placed {
+    clashes: Vec<String>,
+    loose: Vec<Vec<String>>,
+}
+
+impl Placed {
+    /// The loose groups in words, or nothing.
+    fn loose(&self) -> String {
+        if self.loose.is_empty() {
+            return String::new();
+        }
+        let each: Vec<String> = self.loose.iter().map(|g| if g.len() == 1 { g[0].clone() } else { format!("{} (touching only each other)", g.join(", ")) }).collect();
+        let n: usize = self.loose.iter().map(Vec::len).sum();
+        let (s, es, it, they) = if n == 1 { ("", "es", "it", "it was") } else { ("s", "", "them", "they were") };
+        format!(
+            "LOOSE: {n} part{s} touch{es} no other part, none within {LOOSE_GAP} mm and no relation joining {it}: {}. Nothing holds {it}, or what does is no part in \
+             the file (a pin, a standoff, a belt): a requirement answers for {it} as if {they} held.",
+            each.join("; "),
+        )
+    }
+}
+
+/// How near two parts come to touch, mm: a running fit's clearance is less, and a part left where a standoff
+/// or pin held it, more.
+const LOOSE_GAP: f64 = 1.0;
+
 /// The first line where the parts were found clear of each other at the start of the motion, and what is left.
-const PLACED_CLEAR: &str = "PLACEMENT: no two parts overlap at the start of the motion. Not checked here: the rest of the motion (`ink interfere FILE` proves it), and \
-    whether each part touches what it mounts on (`ink render FILE --out look.png` shows it)";
-const PLACED_AFTER: &str = "Not checked here: the rest of the motion (`ink interfere FILE`), and whether each part touches what it mounts on (`ink render FILE --out look.png`)";
+const PLACED_CLEAR: &str = "PLACEMENT: no two parts overlap at the start of the motion. None is proven more than 1 mm from all the rest. Not checked here: the rest \
+    of the motion (`ink interfere FILE` proves it), and what holds each part where it touches (`ink render FILE --out look.png` shows it)";
+const PLACED_AFTER: &str = "Not checked here: the rest of the motion (`ink interfere FILE`), and what holds each part where it touches (`ink render FILE --out look.png`)";
 
 /// What no requirement here checks, said first in every answer that asks ratings or relates parts.
 const PLACEMENT: &str = "PLACEMENT NOT CHECKED: a requirement answers for the parts as they are joined in the file, not for where they sit. Parts may pass through \

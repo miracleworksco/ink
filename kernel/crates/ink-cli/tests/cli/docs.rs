@@ -37,40 +37,6 @@ use crate::common::*;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Debug)]
-struct Block {
-    marker: Option<String>,
-    lang: String,
-    body: String,
-    line: usize,
-}
-
-/// The fenced blocks of a Markdown text, each with the marker comment on the
-/// last non-blank line before it.
-fn blocks(text: &str) -> Vec<Block> {
-    let mut out = vec![];
-    let mut lines = text.lines().enumerate();
-    let mut last: Option<&str> = None;
-    while let Some((i, l)) = lines.next() {
-        if let Some(lang) = l.strip_prefix("```") {
-            let mut body = String::new();
-            for (_, b) in lines.by_ref() {
-                if b.starts_with("```") {
-                    break;
-                }
-                body += b;
-                body.push('\n');
-            }
-            let marker = last.and_then(|m| m.trim().strip_prefix("<!--")).and_then(|m| m.strip_suffix("-->")).map(|m| m.trim().to_string());
-            out.push(Block { marker, lang: lang.trim().to_string(), body, line: i + 1 });
-            last = None;
-        } else if !l.trim().is_empty() {
-            last = Some(l);
-        }
-    }
-    out
-}
-
 /// A command line's words, as a shell splits them (quotes, no expansions),
 /// up to a `#` comment.
 fn words(line: &str) -> Vec<String> {
@@ -97,78 +63,6 @@ fn words(line: &str) -> Vec<String> {
         out.push(w);
     }
     out
-}
-
-/// An answer as shown: JSON whose numbers are kept as written (a string
-/// "\u{1}LITERAL"), so they are compared to the digits shown.
-fn shown(text: &str) -> Value {
-    let (mut s, mut chars, mut in_str) = (String::new(), text.chars().peekable(), false);
-    while let Some(c) = chars.next() {
-        if in_str {
-            s.push(c);
-            if c == '\\' {
-                s.extend(chars.next());
-            } else if c == '"' {
-                in_str = false;
-            }
-        } else if c == '"' {
-            in_str = true;
-            s.push(c);
-        } else if c == '-' || c.is_ascii_digit() {
-            let mut lit = String::from(c);
-            while let Some(&d) = chars.peek().filter(|d| d.is_ascii_digit() || matches!(d, '.' | 'e' | 'E' | '+' | '-')) {
-                lit.push(d);
-                chars.next();
-            }
-            s += &format!("\"\\u0001{lit}\"");
-        } else {
-            s.push(c);
-        }
-    }
-    serde_json::from_str(&s).unwrap_or_else(|e| panic!("a shown answer is not JSON ({e}):\n{text}"))
-}
-
-/// Whether the number `got` reads as `lit` to the digits `lit` shows; a
-/// whole number shown (no point, no exponent) is that number exactly.
-fn same_number(lit: &str, got: f64) -> bool {
-    if !lit.contains(['.', 'e', 'E']) {
-        return lit.parse::<f64>().is_ok_and(|w| w == got);
-    }
-    let (mant, exp) = lit.split_once(['e', 'E']).map_or((lit, 0), |(m, e)| (m, e.parse::<i32>().unwrap()));
-    let decimals = mant.split_once('.').map_or(0, |(_, d)| d.len() as i32);
-    let want: f64 = lit.parse().unwrap();
-    (got - want).abs() <= 0.5 * 10f64.powi(exp - decimals) * (1.0 + 1e-9)
-}
-
-/// Where the answer `got` differs from the part of it shown, `want`.
-fn differs(want: &Value, got: &Value, at: &str) -> Vec<String> {
-    match (want, got) {
-        (Value::String(w), _) if w.starts_with('\u{1}') => match got.as_f64() {
-            Some(g) if same_number(&w[1..], g) => vec![],
-            _ => vec![format!("{at}: shown {}, got {got}", &w[1..])],
-        },
-        (Value::Object(w), Value::Object(g)) => w
-            .iter()
-            .flat_map(|(k, v)| match g.get(k) {
-                Some(gv) => differs(v, gv, &format!("{at}.{k}")),
-                None => vec![format!("{at}.{k}: shown, but not in the answer")],
-            })
-            .collect(),
-        (Value::Array(w), Value::Array(g)) if w.iter().any(Value::is_object) => {
-            let mut rest = g.iter();
-            let mut out = vec![];
-            for (i, wv) in w.iter().enumerate() {
-                if !rest.by_ref().any(|gv| differs(wv, gv, "").is_empty()) {
-                    out.push(format!("{at}[{i}]: shown, but no later item of the answer is it: {}", wv.to_string().replace("\\u0001", "")));
-                    break;
-                }
-            }
-            out
-        }
-        (Value::Array(w), Value::Array(g)) if w.len() == g.len() => w.iter().zip(g).enumerate().flat_map(|(i, (a, b))| differs(a, b, &format!("{at}[{i}]"))).collect(),
-        _ if want == got => vec![],
-        _ => vec![format!("{at}: shown {want}, got {got}")],
-    }
 }
 
 /// One `ink mcp` session in `dir` making the tool call `args`: its answer.

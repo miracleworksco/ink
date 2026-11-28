@@ -570,8 +570,8 @@ fn a_support_slips_past_its_friction() {
     let held = claims_at_moment(&src("x", half_g, 0.6), 0.5);
     let grips = held.iter().find(|c| c.0 == "grips").unwrap();
     // It holds over its band, read at the band's edge: the slip's two
-    // parts' bands taken apart (dynamics-mass-unbanded) put it within 0.0012
-    // of the 0.5 it is exactly.
+    // parts' bands taken apart (each reading's band its own) put it within
+    // 0.0012 of the 0.5 it is exactly.
     assert!(grips.1 == Status::Holds && grips.3 > 0.5 && grips.3 < 0.5012, "{grips:?}");
     let raw = claims_at_moment(&turned(&src("x", half_g, 0.6)), 0.5);
     assert!((raw[0].3 - 0.5).abs() < 1e-9, "{raw:?}");

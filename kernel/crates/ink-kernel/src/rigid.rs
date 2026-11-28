@@ -174,6 +174,27 @@ impl TurnBounds {
         }
         Some(if self.skew == 0.0 { 0.0 } else { interval::bin(BinOp::Div, I::point(self.skew), sub_o(I::point(1.0), I::point(self.skew))).0.hi })
     }
+
+    /// Bounds on the turn r_1 r_2 ... r_n of a placement composed of links
+    /// from each link's own (turn_bounds over the same scope), where the
+    /// composed entries' algebra is too large to read or does not cancel
+    /// (turns about tilted axes, one under another). Its det is theirs
+    /// multiplied. Its skew: with P = r_1 ... r_k and E = P^T P - I,
+    /// E_k = r_k^T E_(k-1) r_k + (r_k^T r_k - I). A symmetric matrix's
+    /// 2-norm is at most its infinity norm, so |r_k^T r_k - I| <= s_k and
+    /// |r_k|^2 <= 1 + s_k there, and 1 + |E| <= the product of 1 + s_k; a
+    /// 3 by 3 matrix's infinity norm is at most sqrt 3 (under 2) times its
+    /// 2-norm. Rotations exactly compose to one exactly: skew 0.
+    pub fn composed(links: &[TurnBounds]) -> TurnBounds {
+        let (mut det, mut grown) = (I::point(1.0), 1.0);
+        for b in links {
+            det = mul_o(det, b.det);
+            if b.skew != 0.0 {
+                grown = interval::mul_up(grown, interval::add_up(1.0, b.skew));
+            }
+        }
+        TurnBounds { det, skew: interval::mul_up(2.0, sub_o(I::point(grown), I::point(1.0)).hi) }
+    }
 }
 
 /// A placement p -> r p + t proven an isometry at every point of a scope
@@ -1349,6 +1370,69 @@ mod tests {
         for k in [86, 128] {
             let r = scaled(&mut g, k);
             assert_eq!(turn_bounds(&g, &r, &ctx), None, "{k}");
+        }
+    }
+
+    /// A product of turns is as near a rotation as its factors say
+    /// (TurnBounds::composed). Products of 1 to 8 factors, each a turn
+    /// about a tilted axis sheared by up to 1e-6, 1e-4, 1e-2 or 1e-1, or scaled
+    /// by as much (where the bound's product is met exactly): the product's
+    /// r^T r - I, measured, is within the skew composed from the factors',
+    /// and for the scales within 2 (the infinity norm against the 2-norm)
+    /// of it. Rotations exactly compose to one exactly; the dets multiply.
+    #[test]
+    fn turns_composed_are_as_near_rotations_as_their_factors() {
+        type M = [[f64; 3]; 3];
+        let mul = |a: &M, b: &M| -> M { std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum())) };
+        let skew = |a: &M| {
+            let e = |i: usize, j: usize| (0..3).map(|k| a[k][i] * a[k][j]).sum::<f64>() - if i == j { 1.0 } else { 0.0 };
+            (0..3).map(|i| (0..3).map(|j| e(i, j).abs()).sum::<f64>()).fold(0.0, f64::max)
+        };
+        let det = |a: &M| a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+        let id: M = std::array::from_fn(|i| std::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+        };
+        let exact = TurnBounds { det: I::point(1.0), skew: 0.0 };
+        assert_eq!(TurnBounds::composed(&[exact; 5]), exact);
+        for trial in 0..300 {
+            let size = [1e-6, 1e-4, 1e-2, 1e-1][trial % 4];
+            let scale = trial % 5 == 0;
+            let (mut p, mut factors) = (id, Vec::new());
+            for _ in 0..1 + trial % 8 {
+                let v = [rand(), rand(), rand()];
+                let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                let u = v.map(|x| x / n);
+                let (s, c) = (3.0 * rand()).sin_cos();
+                let turn: M = std::array::from_fn(|i| {
+                    std::array::from_fn(|j| {
+                        let cross = match (i, j) {
+                            (0, 1) => -u[2],
+                            (1, 0) => u[2],
+                            (0, 2) => u[1],
+                            (2, 0) => -u[1],
+                            (1, 2) => -u[0],
+                            (2, 1) => u[0],
+                            _ => 0.0,
+                        };
+                        (1.0 - c) * u[i] * u[j] + s * cross + if i == j { c } else { 0.0 }
+                    })
+                });
+                let off: M = std::array::from_fn(|i| std::array::from_fn(|j| id[i][j] + size * if scale { id[i][j] } else { rand() }));
+                let f = mul(&turn, &off);
+                // Each factor's own bounds, as turn_bounds gives them: measured,
+                // with room for the floats' rounding (far below `size`).
+                let d = det(&f);
+                factors.push(TurnBounds { det: I::new(d - 1e-12, d + 1e-12), skew: skew(&f) * (1.0 + 1e-9) + 1e-15 });
+                p = mul(&p, &f);
+            }
+            let b = TurnBounds::composed(&factors);
+            assert!(skew(&p) <= b.skew && b.det.contains(det(&p)), "{trial}: {} {:?} {b:?}", skew(&p), det(&p));
+            assert!(!scale || b.skew <= 2.0 * skew(&p) * (1.0 + 1e-6) + 1e-12, "{trial}: {} {b:?}", skew(&p));
         }
     }
 

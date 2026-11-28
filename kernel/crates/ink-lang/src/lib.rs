@@ -60,6 +60,7 @@ pub mod interfere;
 mod load;
 pub mod look;
 mod lookup;
+pub mod loose;
 mod magnitude;
 pub use magnitude::Magnitude;
 pub mod materials;
@@ -706,6 +707,8 @@ pub struct Joint {
     /// C^-1 then FLIP where a CFRAME is given, else the identity. The
     /// instance's placement is this, then the motion, then WHERE.
     pub below: Xf,
+    /// The motion: the turn about `axis` by the drive, or the slide along it.
+    pub motion: Xf,
     pub drive: NodeId,
     pub text: String,
     pub limits: Option<(NodeId, NodeId)>,

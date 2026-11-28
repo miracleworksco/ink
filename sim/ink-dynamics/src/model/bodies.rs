@@ -94,6 +94,7 @@ pub(super) fn strip(
     let strip = Strip {
         label: _label.to_string(),
         mass: if length > 0.0 { m.sums[0] / length } else { 0.0 },
+        err: 0.0,
         shift: num(c.shift),
         length: num(c.length),
         closed: c.closed,
@@ -206,14 +207,37 @@ impl Model {
         (b.mass, b.center, b.inertia) = (mass, center, inertia);
         self.moments.lock().unwrap().clear();
         self.chosen.lock().unwrap().clear();
+        self.swept.lock().unwrap().clear();
     }
 
-    /// Carried body `label`'s mass per mm (g) and its length at the model's
-    /// moment (mm).
+    /// How many measured moments its bodies have (Model::mass_sources'
+    /// sources).
     #[cfg(test)]
-    pub(crate) fn strip(&self, label: &str) -> (f64, f64) {
+    pub(crate) fn mass_source_count(&self) -> usize {
+        self.bodies.iter().map(|b| b.measure.len()).sum()
+    }
+
+    /// Source j (Model::mass_sources' order) moved `by` times the far side
+    /// of its bounds: the body's mass, centre and inertia changed by that
+    /// much of its change, the motion a rerun reads against the band.
+    #[cfg(test)]
+    pub(crate) fn move_source(&mut self, j: usize, by: f64) {
+        let (b, k) = self.bodies.iter().flat_map(|b| (0..b.measure.len()).map(move |k| (b.label.clone(), k))).nth(j).expect("a source");
+        let b = self.bodies.iter_mut().find(|x| x.label == b).expect("its body");
+        let (dm, dc, di) = b.measure[k];
+        b.mass += by * dm;
+        (0..3).for_each(|i| b.center[i] += by * dc[i]);
+        (0..3).for_each(|i| (0..3).for_each(|l| b.inertia[i][l] += by * di[i][l]));
+        self.moments.lock().unwrap().clear();
+        self.swept.lock().unwrap().clear();
+    }
+
+    /// Carried body `label`'s mass per mm (g), what that is known to (g),
+    /// and its length at the model's moment (mm).
+    #[cfg(test)]
+    pub(crate) fn strip(&self, label: &str) -> (f64, f64, f64) {
         let s = self.strips.iter().find(|s| s.label == label).unwrap_or_else(|| panic!("no carried body {label}"));
-        (s.mass, s.length.at(&Ctx::new(0.0, self.params.clone())))
+        (s.mass, s.err, s.length.at(&Ctx::new(0.0, self.params.clone())))
     }
 
     /// Carried body `label`'s mass per mm set to this (g).

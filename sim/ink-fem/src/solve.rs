@@ -45,7 +45,7 @@ use held::held_cells;
 use holds::{Surfaces, hold_fixes};
 use loads::{Loads, loads};
 use over_time::transient;
-use readout::{Buckled, Reactions, Supports, buckling, field_of, fully_held, held_reads, reactions, supports, surface_reads};
+use readout::{Buckled, Reactions, Supports, buckling, field_of, fix_footprints, fully_held, held_reads, reactions, supports, surface_reads};
 use redesign::run_redesign;
 use rigid::{node_reliable, rigid};
 use run::{Modes, Rhs, Run, lift, modal, solve_static};
@@ -131,7 +131,30 @@ pub fn solve(s: &Setup, ctx: &Ctx) -> Result<Solution, String> {
 }
 
 pub fn solve_checked(s: &Setup, ctx: &Ctx) -> Result<Solution, SolveError> {
-    solve_with(s, ctx, None)
+    sized(s, || solve_with(s, ctx, None))
+}
+
+/// `f`, a solve, on as many threads as its grid keeps busy, if that is
+/// fewer than the caller's. A solve is thousands of short parallel loops:
+/// past a point a thread added only waits, and on a busy machine it waits
+/// on threads the others hold. The square root of the grid box's cells,
+/// over 16; a 40 x 10 x 10 mm bar's solve on 32 threads (load 30-45), wall
+/// / CPU s, before: 720 cells (now 2 threads) 0.45 / 0.61 -> 0.37 / 0.32,
+/// 3,500 (4) 0.73 / 1.68 -> 0.58 / 1.01, 21,700 (10) 2.6 / 9.4 -> 2.5 /
+/// 7.7, 82,700 (18) 3.2 / 34 -> 2.8 / 28.5; examples/layout.ink's topology
+/// (2,880 cells, 4) 24 -> 14 CPU s, its part check among them. Its threads
+/// have a command's stack (`f` runs on one); the answer is the same on any
+/// number (`ordered_sum`).
+fn sized<R: Send>(s: &Setup, f: impl FnOnce() -> R + Send) -> R {
+    let cells: f64 = (0..3).map(|i| ((s.hi[i] - s.lo[i]) / s.h).ceil().max(1.0)).product();
+    let threads = (cells.sqrt() / 16.0).ceil().max(1.0) as usize;
+    if threads >= rayon::current_num_threads() {
+        return f();
+    }
+    match rayon::ThreadPoolBuilder::new().num_threads(threads).stack_size(256 << 20).build() {
+        Ok(pool) => pool.install(f),
+        Err(_) => f(),
+    }
 }
 
 /// The assembled static elastic study a redesign drives
@@ -164,11 +187,16 @@ pub trait Assembly {
 /// built on the kernel may): it is handed the
 /// assembled study in place of the one solve, and the solution is that of its
 /// last solve (with its multipliers: the stresses are the scaled material's).
-pub fn solve_redesigned(s: &Setup, ctx: &Ctx, redesign: &mut dyn FnMut(&mut dyn Assembly) -> Result<(), String>) -> Result<Solution, String> {
-    solve_with(s, ctx, Some(redesign)).map_err(|e| e.to_string())
+pub fn solve_redesigned(s: &Setup, ctx: &Ctx, redesign: &mut (dyn FnMut(&mut dyn Assembly) -> Result<(), String> + Send)) -> Result<Solution, String> {
+    sized(s, || solve_with(s, ctx, Some(redesign))).map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
+static LAST_SOLVE_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn solve_with(s: &Setup, ctx: &Ctx, redesign: Option<&mut dyn FnMut(&mut dyn Assembly) -> Result<(), String>>) -> Result<Solution, SolveError> {
+    #[cfg(test)]
+    LAST_SOLVE_THREADS.store(rayon::current_num_threads(), std::sync::atomic::Ordering::Relaxed);
     let t0 = Instant::now();
     let redesigned = redesign.is_some();
     // The grid over the part, a cell's samples, and the material fields.
@@ -252,6 +280,7 @@ fn solve_with(s: &Setup, ctx: &Ctx, redesign: Option<&mut dyn FnMut(&mut dyn Ass
     // load in a fix or by it, what the cells leave unresolved.
     joined.incomplete.extend(joined.duplicate_cut.iter().enumerate().filter(|(_, duplicate)| **duplicate).map(|(fix, _)| Incomplete::DuplicateCut { fix }));
     let Supports { near_support, possible_cuts, unstated_holds, cuts, planes } = supports(&model, &sys, &mut surf);
+    let fix_footprints = fix_footprints(&model, &sys, &mut surf);
     let held_in = fully_held(&model, &sys);
     let near: Vec<bool> = near_support.iter().map(|&f| f != NO_FIX).collect();
     warnings.extend(std::mem::take(&mut joined.insulated_notes));
@@ -310,7 +339,7 @@ fn solve_with(s: &Setup, ctx: &Ctx, redesign: Option<&mut dyn FnMut(&mut dyn Ass
     } else {
         None
     };
-    let Loads { applied, applied_moments, pressure_error, .. } = loads;
+    let Loads { applied, applied_moments, pressure_error, footprints: load_footprints, .. } = loads;
     let report = Report {
         memory_estimate: memory::needed(s, cells.counted),
         cells_full: mesh.n_full,
@@ -371,6 +400,18 @@ fn solve_with(s: &Setup, ctx: &Ctx, redesign: Option<&mut dyn FnMut(&mut dyn Ass
         interface_stepped: stepped,
         surface_measures: surf.measures,
         load_spread,
+        load_footprints,
+        fix_footprints,
+        centroid: {
+            let (mut w, mut m) = (0.0, [0.0; 3]);
+            for c in &sys.cells {
+                let (ctr, size) = place(&st.grid, c);
+                let v = c.frac * size.powi(3);
+                w += v;
+                (0..3).for_each(|a| m[a] += v * ctr[a]);
+            }
+            m.map(|v| v / w.max(1e-300))
+        },
     };
     // What is read at the nodes inside held material.
     let held = held_reads(&model, &sys, &u, &amplitudes, &mut cell_field);
@@ -427,7 +468,7 @@ fn thin_normal_restraint(fx: &Fix, held: f64, facets: &[Facet], samples: &[V3], 
     let axis = fx.dofs.map(|d| if d { 1.0 } else { 0.0 });
     let selected = fx.region.holds_on_surface(ctx, samples, h);
     let mut area = 0.0;
-    for (i, (f, inside)) in facets.iter().zip(selected.chunks_exact(4)).enumerate() {
+    for (i, (f, inside)) in facets.iter().zip(selected.as_chunks::<4>().0).enumerate() {
         if v3::dot(f.normal, normals.as_ref().map_or(axis, |v| v[i])).abs() > 0.9 {
             match inside.iter().filter(|d| **d).count() {
                 4 => area += f.area,
@@ -447,7 +488,7 @@ fn flat_normal_hold(fx: &Fix, facets: &[Facet], samples: &[V3], ctx: &Ctx, h: f6
     let axis = fx.dofs.iter().position(|d| *d)?;
     let selected = fx.region.holds_on_surface(ctx, samples, h);
     let mut plane = None;
-    for (f, inside) in facets.iter().zip(selected.chunks_exact(4)) {
+    for (f, inside) in facets.iter().zip(selected.as_chunks::<4>().0) {
         if f.normal[axis].abs() < 1.0 - 1e-8 || !inside.iter().any(|v| *v) {
             continue;
         }
@@ -462,7 +503,7 @@ fn flat_normal_hold(fx: &Fix, facets: &[Facet], samples: &[V3], ctx: &Ctx, h: f6
     }
     let at = plane?;
     let mut sides = [false; 2];
-    for (f, inside) in facets.iter().zip(selected.chunks_exact(4)) {
+    for (f, inside) in facets.iter().zip(selected.as_chunks::<4>().0) {
         for p in f.corners {
             if p[axis] < at - 1e-8 * h {
                 sides[0] = true;
@@ -527,4 +568,67 @@ pub fn buckled_warning(low: f64, factor: f64, at: V3, h: f64) -> String {
         n(low),
         n(factor)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Boundary, Load};
+    use ink_core::graph::{BinOp, Graph, UnOp, Var};
+    use ink_core::tape::Tape;
+    use std::sync::Arc;
+
+    /// `solve_checked` caps its worker pool to the grid size: a small 4 x 2 x 2
+    /// box (16 cells) asked inside a 4-thread pool runs on 1 thread.
+    #[test]
+    fn solve_checked_caps_threads_on_a_small_grid() {
+        let mut g = Graph::new();
+        let (x, y, z) = (g.var(Var::X), g.var(Var::Y), g.var(Var::Z));
+        let (ax, ay, az) = (g.un(UnOp::Abs, x), g.un(UnOp::Abs, y), g.un(UnOp::Abs, z));
+        let (c2, c1) = (g.constant(2.0), g.constant(1.0));
+        let (dx, dy, dz) = (g.bin(BinOp::Sub, ax, c2), g.bin(BinOp::Sub, ay, c1), g.bin(BinOp::Sub, az, c1));
+        let dxy = g.bin(BinOp::Max, dx, dy);
+        let root = g.bin(BinOp::Max, dxy, dz);
+        let shape = Arc::new(Tape::new(&g, root));
+        let one = Arc::new(Tape::new(&g, c1));
+        let left = g.bin(BinOp::Add, x, c1);
+        let right = g.bin(BinOp::Sub, c1, x);
+        let setup = Setup {
+            physics: Physics::Heat,
+            shape,
+            coef: one,
+            coef_const: Some(1.0),
+            nu: None,
+            strength: None,
+            body: None,
+            fixes: vec![Fix {
+                boundary: Boundary::Support,
+                name: "cold".into(),
+                region: RegionSel::Field(Arc::new(Tape::new(&g, left))),
+                dofs: [true, false, false],
+                value: [Held::Number(0.0), Held::Number(0.0), Held::Number(0.0)],
+                film: None,
+                normal: false,
+                free: vec![],
+                rigid: false,
+            }],
+            loads: vec![Load { name: "hot".into(), region: RegionSel::Field(Arc::new(Tape::new(&g, right))), total: [1.0, 0.0, 0.0], total_t: None, pressure: None, torque: None }],
+            lo: [-2.0, -1.0, -1.0],
+            hi: [2.0, 1.0, 1.0],
+            h: 1.0,
+            pressure_grid: 1.0,
+            tol: 1e-9,
+            support_margin: 0.0,
+            modes: 0,
+            density: None,
+            transient: None,
+            split_as: None,
+            both_ways: false,
+        };
+        let ctx = Ctx::new(0.0, vec![]);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let sol = pool.install(|| solve_checked(&setup, &ctx)).unwrap();
+        assert!(sol.report.converged, "{:?}", sol.report);
+        assert_eq!(LAST_SOLVE_THREADS.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
 }

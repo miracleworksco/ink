@@ -30,7 +30,7 @@ pub struct SolvedStudy {
     pub(super) shape: NodeId,
     /// The shape as its solve read it, where a peak's surface is measured
     /// (`peak_surface`).
-    pub(super) shape_field: (std::sync::Arc<crate::tape::Tape>, Ctx),
+    pub(crate) shape_field: (std::sync::Arc<crate::tape::Tape>, Ctx),
     /// Each peak's surface as measured (`peak_surface`): every claim on the
     /// solve asks for the same peak.
     pub(super) surfaces: std::sync::Mutex<Vec<(V3, Option<(f64, f64)>)>>,

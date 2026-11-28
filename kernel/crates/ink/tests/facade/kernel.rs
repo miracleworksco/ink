@@ -224,8 +224,10 @@ fn cavities_are_counted_by_proof() {
 /// at 0.005 it is a void (an accuracy on the count itself would have let
 /// it hold). A void 0.2
 /// thick counts. Two pieces placed 100 nm apart round a hub, the slit
-/// between them open to the outside, count 0 to the accuracy, where every
-/// cell along the slit was halved to the budget.
+/// between them open to the outside, count 0 outright: each piece's face
+/// slides its air out of the slit on its own (it was set aside, to the
+/// accuracy, where every cell along the slit was halved to the budget).
+/// Sealed by a wall round them, it is thin air set aside.
 #[test]
 fn a_void_count_is_to_its_accuracy() {
     use ink::claims::{ClaimOptions, Held, Status, run_asserts};
@@ -237,27 +239,30 @@ fn a_void_count_is_to_its_accuracy() {
         (require slit-set-aside (cavities slit < 1))
         (require slit-fine (cavities slit < 1) (accuracy 0.005))
         (require void-counts (cavities void < 1))
-        (require apart (cavities stack < 1))");
+        (require apart (cavities stack < 1))
+        (require sealed (cavities (min stack (extrude-z (ring-2d 9.5 12) 0 14)) < 1))");
     let ctx = d.ctx(&[], 0.0).unwrap();
     let mut v = ModelView::new(d, ctx);
     let r = run_asserts(&mut v, None, false, ClaimOptions::default()).unwrap();
     let s: Vec<(&str, Status)> = r.asserts.iter().map(|a| (a.name.as_str(), a.check.status)).collect();
     use Status::{Fails, Holds};
-    assert_eq!(s.iter().map(|x| x.1).collect::<Vec<_>>(), [Holds, Fails, Fails, Holds], "{s:?}");
+    assert_eq!(s.iter().map(|x| x.1).collect::<Vec<_>>(), [Holds, Fails, Fails, Holds, Holds], "{s:?}");
     let aside = |k: usize| match r.asserts[k].check.held {
         Some(Held::SetAside { cells, at: Some(p) }) if cells > 0 => p,
         ref h => panic!("{}: {h:?}", r.asserts[k].name),
     };
-    let (p, q) = (aside(0), aside(3));
+    let (p, q) = (aside(0), aside(4));
     assert!(p[0].abs() <= 1.1 && p[1].abs() <= 1.1 && p[2].abs() <= 0.1, "{p:?}");
     assert!((q[2] - 10.0).abs() <= 0.1 && q[0].hypot(q[1]) >= 4.4, "{q:?}");
+    assert!(matches!(r.asserts[3].check.held, Some(Held::Outright)), "{:?}", r.asserts[3].check);
     assert!(r.asserts[..2].iter().all(|a| a.check.accuracy.is_some()) && r.asserts[0].check.holds_guaranteed(), "{:?}", r.asserts[0].check);
 }
 
 /// A void count its forecast puts past its budget stops there, early, and
 /// says the budget stopped it: a plate 1 mm thick drilled with 320 x 320
-/// holes 1 mm across, some 10 M cells to count, stops within a tenth of
-/// the budget, not at it.
+/// holes 1 mm across, some 10 M cells to count, stops once it has tested an
+/// eighth of the budget (the forecast read before that can be twice too
+/// high), not at it.
 #[test]
 fn a_void_count_forecast_past_its_budget_stops_early() {
     let (mut v, f) = view_of(
@@ -265,7 +270,63 @@ fn a_void_count_forecast_past_its_budget_stops_early() {
          (def f (subtract (move (box 800 800 1) 398.75 398.75 0.5) holes))",
     );
     let c = v.voids(f, None, 0.05).unwrap().unwrap();
-    assert!(c.count().is_none() && c.ended == Some(ink::query::Ended::Limit) && c.cells < ink::voids::MAX_CELLS / 10, "{c:?}");
+    assert!(c.count().is_none() && c.ended == Some(ink::query::Ended::Limit) && c.cells < ink::voids::MAX_CELLS / 8, "{c:?}");
+}
+
+/// A void count trusts its forecast only once it has tested an eighth of
+/// its budget: a ball bearing (two grooved rings, nine balls) turned off
+/// its axes counts no void in 0.46 M cells (its forecast, read from the
+/// first, stopped it undecided at 7 thousand).
+#[test]
+#[ignore = "slow: owed for a change to the void count, its search or its budget"]
+fn a_void_count_reads_its_forecast_past_an_eighth_of_its_budget() {
+    let (mut v, f) = view_of(
+        "(def inner (subtract (extrude-z (ring-2d 6.35 9.5) -3.97 3.97) (torus-z 10.3 2.1)))
+         (def outer (subtract (extrude-z (ring-2d 11.1 14.29) -3.97 3.97) (torus-z 10.3 2.1)))
+         (def balls (pattern-polar (move (sphere 2) 10.3 0 0) 9))
+         (def f (place (min inner outer balls) (at (rot -0.591451463 0.54806052 0.591451463 122.549184089))))",
+    );
+    let c = v.voids(f, None, 0.05).unwrap().unwrap();
+    assert_eq!(c.count(), Some(0), "{c:?}");
+}
+
+/// A gear's hub recess cut with the gear's own outline written again (its
+/// tooth gaps' vertices in the other order) and a turned ring as wide as
+/// the gear: the two terms of each face slide their air each into the
+/// other's cell, round a loop, at every scale. Each term's air, followed on
+/// its own, leaves: no void, in a few thousand cells (208 thousand where
+/// those loops were halved). A void 0.06 mm above the recess, sealed, is
+/// still counted.
+#[test]
+fn a_void_count_follows_each_terms_air_round_a_face_written_twice() {
+    let gear = "(def gap (polygon (vec (vec 9.8 -1.95 0.09) (vec 8.6 -1.3 0.015) (vec 8.6 1.3 0.09) (vec 9.8 1.95) (vec 11 2.2) (vec 11 -2.2))))
+        (def pag (polygon (vec (vec 11 -2.2) (vec 11 2.2) (vec 9.8 1.95 -0.09) (vec 8.6 1.3 -0.015) (vec 8.6 -1.3 -0.09) (vec 9.8 -1.95))))
+        (fn outline (p) (move (rotate-z (subtract (circle-2d 10) (repeat-polar p 8)) -36.17707) -31.529459 49.040149 0))
+        (def ring (place (revolve-z (polygon (vec (vec 5 -1) (vec 10 -1) (vec 10 3) (vec 5 3)))) (at (rot-z 86.559609) (move -31.529459 49.040149 0))))
+        (def cut (max (extrude-z (subtract (outline pag) (move (circle-2d 5) -31.529459 49.040149 0)) -1 3) ring))
+        (def g (subtract (extrude-z (outline gap) 0 10) cut))";
+    let (mut v, f) = view_of(&format!("{gear} (def f g)"));
+    let c = v.voids(f, None, 0.05).unwrap().unwrap();
+    assert!(c.count() == Some(0) && c.cells < ink::voids::MAX_CELLS / 20, "{c:?}");
+    let (mut v, f) = view_of(&format!("{gear} (def f (subtract g (move (sphere 0.2) -22.493171 46.84117 3.26)))"));
+    let c = v.voids(f, None, 0.05).unwrap().unwrap();
+    assert_eq!(c.count(), Some(1), "{c:?}");
+}
+
+/// Air 100 nm thin between two pieces placed apart round a hub, open to
+/// the outside, is shown to lead out at any accuracy (each piece's face
+/// slides its air out on its own): no void, in a few thousand cells, where
+/// its cells were halved to the budget. Sealed by a wall round them, it may
+/// be a void: undecided, never none.
+#[test]
+fn a_void_count_shows_a_thin_slit_leads_out() {
+    let stack = "(min (extrude-z (circle-2d 4.5) 0 14) (extrude-z (ring-2d 3 10) 0 10) (extrude-z (ring-2d 3 12) 10.0000001 14))";
+    let (mut v, f) = view_of(&format!("(def f {stack})"));
+    let c = v.voids(f, None, 0.0).unwrap().unwrap();
+    assert!(c.count() == Some(0) && c.cells < ink::voids::MAX_CELLS / 100, "{c:?}");
+    let (mut v, f) = view_of(&format!("(def f (min {stack} (extrude-z (ring-2d 9.5 12) 0 14)))"));
+    let c = v.voids(f, None, 0.0).unwrap().unwrap();
+    assert!(c.count().is_none() && c.at_most != Some(0), "{c:?}");
 }
 
 /// A cut flush with a face of the block it cuts, the two written as other
@@ -365,6 +426,27 @@ fn a_mass_is_settled_only_where_its_bounds_show_it() {
         let m = v.moments(f, Some(rho), None).unwrap();
         assert!(m.lo[0] <= mass && mass <= m.hi[0] && (!m.settled || m.error(0) <= query::ACCURACY * m.sums[0]), "{src}: {m:?}");
         assert!(m.settled || m.unsettled().is_some());
+    }
+}
+
+/// A toothed rim on a bore (std's GT2 teeth, 20, their tips filleted to
+/// 0.15 mm) is proven to the accuracy, with its moments: its bounds narrow
+/// slowly until its boxes come down to the fillets (0.35 then 0.45 a
+/// doubling, then 0.71), and a proof projected from those first rates was
+/// given up for cells at 33 thousand boxes, its volume bounded to 5% and
+/// its centre to 0.23 mm across the axis. Its centre is on the axis.
+#[test]
+fn a_toothed_rim_is_proven_with_its_moments() {
+    let (d, t) = tape_of("(max (extrude-z (gt-pulley-teeth-2d 20 2 0) -3 3) (- 2.5 (len2 x y)))");
+    let (t, ctx) = (Arc::new(t), d.ctx(&[], 0.0).unwrap());
+    let (lo, hi, _) = query::bounds(&t, &ctx, [-20.0; 3], [20.0; 3]).unwrap();
+    let m = query::integrate(&t, &[None], true, &ctx, lo, hi, query::Until::Moments(query::ACCURACY));
+    assert!(m.settled && m.sampled.is_none() && m.error(0) <= query::ACCURACY * m.sums[0], "{m:?}");
+    for k in 0..2 {
+        // The centre's bounds along x and y: each first moment's over the mass's, the far ends.
+        let ends = [m.lo[k + 1] / m.lo[0], m.lo[k + 1] / m.hi[0], m.hi[k + 1] / m.lo[0], m.hi[k + 1] / m.hi[0]];
+        let (l, h) = ends.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &e| (l.min(e), h.max(e)));
+        assert!(l + m.about[k] <= 0.0 && 0.0 <= h + m.about[k] && h - l < 0.2, "{k}: {l} {h}");
     }
 }
 
@@ -4323,11 +4405,15 @@ fn unbridged_along_x(shape: &str, accuracy: f64, h: f64, step: f64) {
 }
 
 fn bridge_along(shape: &str, accuracy: f64, h: f64, step: f64, along: Option<(f64, f64)>) -> ink::claims::Status {
-    use ink::claims::{ClaimOptions, run_asserts};
     let check = match along {
         None => format!("(unbridged part 0 45 {h} 10 {step})"),
         Some((dx, dy)) => format!("(unbridged-along part 0 45 {h} 10 {step} {dx} {dy})"),
     };
+    bridge_claim(shape, accuracy, &check)
+}
+
+fn bridge_claim(shape: &str, accuracy: f64, check: &str) -> ink::claims::Status {
+    use ink::claims::{ClaimOptions, run_asserts};
     let d = doc(&format!("{shape} (require bridge (empty {check}) (accuracy {accuracy}))"));
     let ctx = d.ctx(&[], 0.0).unwrap();
     let mut v = ink::view::ModelView::new(d, ctx);
@@ -4573,17 +4659,22 @@ fn unbridged_shelf_joint() {
     }
 }
 
-/// A bearing must cover the whole transverse roof. Exact step-width
-/// contact can miss a grid sample, and a gap over l - 2w cannot use the
-/// unconditional box certificate.
+/// A bearing must cover the whole transverse roof. Bearings exactly one
+/// step wide leave rows whose steps all land on their faces, failing on a
+/// line no witness finds: unknown. Bearings two steps wide flush with the
+/// roof, 8.03 mm apart (over l - 2w, past the unconditional box
+/// certificate), hold: every point has a bearing step ahead and behind at
+/// most floor(8.03) + 2 = k steps apart, shown by the roof certificate,
+/// the walls' faces lining up exactly with the roof's.
 #[test]
 #[ignore = "slow: owed for a change to the bridge check (std's unbridged) or to the bounds it reads"]
 fn unbridged_rectangular_bearing_edges() {
+    use ink::claims::Status::{Holds, Unknown};
     let narrow = "(def part (min (move (box 2 10 5.125) -5 0 2.5625) (move (box 2 10 5.125) 5 0 2.5625) (move (box 12 12 1) 0 0 5.5)))";
     unbridged_along_x(narrow, 0.05, 1.0, 0.8);
-    for (width, centre, roof) in [(1.0, 4.5, 10.0), (2.0, 5.015625, 12.03125)] {
+    for (width, centre, roof, expected) in [(1.0, 4.5, 10.0, Unknown), (2.0, 5.015625, 12.03125, Holds)] {
         let part = format!("(def part (min (move (box {width} 12 5.125) -{centre} 0 2.5625) (move (box {width} 12 5.125) {centre} 0 2.5625) (move (box {roof} 12 1) 0 0 5.5)))");
-        assert_eq!(bridge_at_height_and_step(&part, 0.05, 1.0, 1.0), ink::claims::Status::Unknown);
+        assert_eq!(bridge_at_height_and_step(&part, 0.05, 1.0, 1.0), expected, "{width}");
     }
 }
 
@@ -4599,11 +4690,190 @@ fn unbridged_roof_on_bridged_rib() {
 /// An 8 mm channel at 45 degrees to x and y, closed by end walls square
 /// to it: rows along x or y cross it 11.3 mm long. Read every way it is not
 /// settled, never failed (a bridge may run straight across, 8 mm); read
-/// along x it fails.
+/// along x it fails; read straight across it holds.
 #[test]
 fn unbridged_slanted_channel() {
-    let part = "(def part (subtract (move (box 34 34 8) 0 0 4) (max (- (abs (* 0.7071067811865476 (- y x))) 4) (- (abs (* 0.7071067811865476 (+ x y))) 10) (- z 4))))";
-    unbridged_along_x(part, 0.05, 1.0, 0.8);
+    let part = format!("(def part {})", slanted_channel(8.0));
+    unbridged_along_x(&part, 0.05, 1.0, 0.8);
+    assert_eq!(bridge_along(&part, 0.2, 1.0, 0.8, Some((1.0, -1.0))), ink::claims::Status::Holds);
+    assert!(bridges_shown(&part, "(unbridged-along part 0 45 1 10 0.8 1 -1)"));
+}
+
+/// A channel `width` across at 45 degrees to x and y, 20 mm long, closed by
+/// end walls, under a 4 mm roof.
+fn slanted_channel(width: f64) -> String {
+    let half = width / 2.0;
+    format!("(subtract (move (box 34 34 8) 0 0 4) (max (- (abs (* 0.7071067811865476 (- y x))) {half}) (- (abs (* 0.7071067811865476 (+ x y))) 10) (- z 4)))")
+}
+
+/// Channels along y, each `width` across at x (its centre), 20 mm long,
+/// closed by end walls, under a 4 mm roof: turned with rotate-z, their
+/// walls lie at any angle.
+fn closed_channels(width: f64, at: &[f64]) -> String {
+    let half = width / 2.0;
+    let air: String = at.iter().map(|x| format!(" (max (- (abs (- x {x})) {half}) (- (abs y) 10) (- z 4))")).collect();
+    format!("(subtract (move (box 34 34 8) 0 0 4) (min{air}))")
+}
+
+/// Whether std's bridge check `check` of `part` is shown everywhere at
+/// once by a certificate of its roofs (bridge/prisms.rs, boxes.rs): its
+/// bound on where a ceiling may be unbridged is above 0 over a box holding
+/// the whole part, before any cell is refined or a witness sought.
+fn bridges_shown(part: &str, check: &str) -> bool {
+    let d = doc(&format!("{part} (def bridge {check})"));
+    let ink::lang::Value::Region { possible, .. } = *d.def("bridge").unwrap() else { panic!("{check} is a region") };
+    let ctx = d.ctx(&[], 0.0).unwrap();
+    let mut v = ink::view::ModelView::new(d, ctx);
+    v.scope_question().unwrap();
+    eval_interval(&Tape::new(&v.doc.g, possible), &v.ctx, [I::new(-60.0, 60.0); 3], None).lo > 0.0
+}
+
+/// A ceiling over walls at any angle to x and y holds where its rows do:
+/// a 2 mm channel at 45 degrees, rows along x or y 2.8 mm, read every way;
+/// the same channel along y turned 17 to 63 degrees about z; and an 8 mm
+/// one turned so, read straight across (cos, sin), whatever x and y read.
+/// Its roof's footprint is shown cell by cell from the walls' own faces,
+/// where cells straddling the underside settle nothing.
+#[test]
+fn unbridged_slanted_bearings() {
+    use ink::claims::Status::Holds;
+    assert_eq!(check_bridge(&format!("(def part {})", slanted_channel(2.0)), 0.05), Holds);
+    for angle in [17.0f64, 30.0, 45.0, 63.0] {
+        let turned = |shape: String| format!("(def part (rotate-z {shape} {angle}))");
+        assert_eq!(check_bridge(&turned(closed_channels(2.0, &[0.0])), 0.05), Holds, "{angle}");
+        let (c, s) = (angle.to_radians().cos(), angle.to_radians().sin());
+        let across = format!("(unbridged-along part 0 45 1 10 0.8 {c} {s})");
+        assert!(bridges_shown(&turned(closed_channels(8.0, &[0.0])), &across), "{angle}");
+        // Two channels under one roof, the wall between them a bearing of both.
+        assert!(bridges_shown(&turned(closed_channels(2.0, &[0.0, 5.0])), "(unbridged part 0 45 1 10 0.8)"), "{angle}");
+    }
+}
+
+/// A turn's own direction, (unbridged-along part ... c s) with c and s
+/// from (sin-cos-deg A) as rotate-z reads them: rows along it run exactly
+/// along the turned part's side faces (their normals' dot with it is 0 in
+/// the real numbers, not only within its enclosure), so a slot through a
+/// turned part holds at any angle, open at its ends, and so do walls and a
+/// roof made as separate boxes whose outer faces line up exactly. The
+/// float cosine and sine instead are a whisker off the faces, and the rows
+/// beside one do leave the part (unbridged_slanted_never_bridged_by_the_roof_certificate).
+#[test]
+fn unbridged_turned_along_its_turn() {
+    let slot = "(subtract (move (box 16 12 8) 0 0 4) (move (box 8 20 5) 0 0 2.5))";
+    let boxes = "(min (move (box 2 12 5.125) -5 0 2.5625) (move (box 2 12 5.125) 5 0 2.5625) (move (box 12 12 1) 0 0 5.5))";
+    for angle in [0.0f64, 15.0, 30.0, 45.0, 67.3, 90.0, 135.0, 200.0, -30.0] {
+        let along = format!("(unbridged-along part 0 45 1 10 0.8 (nth (sin-cos-deg {angle}) 1) (nth (sin-cos-deg {angle}) 0))");
+        for shape in [slot, boxes, "(subtract (move (box 16 12 8) 0 0 4) (move (box 8.7 20 5) 0 0 2.5))"] {
+            assert!(bridges_shown(&format!("(def part (rotate-z {shape} {angle}))"), &along), "{angle} {shape}");
+        }
+        assert!(bridges_shown(&format!("(def part (move (rotate-z {slot} {angle}) 3.3 -1.7 0))"), &along), "{angle}");
+    }
+    let along = "(unbridged-along part 0 45 1 10 0.8 (nth (sin-cos-deg 67.3) 1) (nth (sin-cos-deg 67.3) 0))";
+    for shape in [slot, boxes] {
+        assert_eq!(bridge_claim(&format!("(def part (rotate-z {shape} 67.3))"), 0.05, along), ink::claims::Status::Holds, "{shape}");
+    }
+}
+
+/// Never a bridge where its rows fail. Each of these the roof certificate
+/// leaves to the rows, which fail it or leave it unknown: a gap over the
+/// limit across, or over the k - 1 steps a row may run unsupported (9 mm at
+/// steps of 0.8); a row along a channel or a slot through the part; walls
+/// stopping 0.15 mm under the roof, or 0.1 mm under a separate one; a
+/// bearing wall shorter than the roof it carries, or cut by a 1 micron
+/// slit; a cantilever; a block floating; a hole in the roof; a tilted slot;
+/// and a slot through a turned part, read along its own direction: that
+/// direction in floats is not exactly along the part's side faces, so the
+/// rows beside one leave the part within a whisker of it. Read along the
+/// turn exactly: a slot over the k - 1 steps, or read along it, or along a
+/// turn a degree off; walls under a roof 50 nm longer, or one moved 1 micron
+/// along them, or the roof turned 0.0001 degrees off them, or one wall alone.
+#[test]
+fn unbridged_slanted_never_bridged_by_the_roof_certificate() {
+    let along = |dx: f64, dy: f64| format!("(unbridged-along part 0 45 1 10 0.8 {dx} {dy})");
+    let every = "(unbridged part 0 45 1 10 0.8)".to_string();
+    let slot = "(subtract (move (box 16 12 8) 0 0 4) (move (box 8 20 5) 0 0 2.5))";
+    let wall = |w: f64, l: f64, x: f64| format!("(move (box {w} {l} 5.125) {x} 0 2.5625)");
+    let roof = "(move (box 12 12 1) 0 0 5.5)";
+    let mut cases = vec![
+        (slanted_channel(12.0), along(1.0, -1.0)),
+        (slanted_channel(9.0), along(1.0, -1.0)),
+        (slanted_channel(8.0), along(1.0, 0.0)),
+        (slanted_channel(8.0), every.clone()),
+        (slanted_channel(4.0), along(1.0, 1.0)),
+        (format!("(subtract {} (move (rotate-z (box 0.6 0.6 5) 45) 3 3 6.5))", slanted_channel(2.0)), every.clone()),
+        (
+            "(min (subtract (move (box 34 34 4) 0 0 2) (max (- (abs (* 0.7071067811865476 (- y x))) 1) (- (abs (* 0.7071067811865476 (+ x y))) 10))) (move (box 34 34 3) 0 0 5.6))"
+                .to_string(),
+            every.clone(),
+        ),
+        // Plain-number diagonal direction (1, 10): std folds each component's
+        // step offset separately in float, so rows 1e-17 inside the open face
+        // 10x - y = -60 drift out past it before reaching support (both
+        // separate-pieces and one-piece open slots must stay unbridged here).
+        (
+            "(min (max (- (abs (- (* 10 x) y)) 60) (- (abs (- (+ x (* 10 y)) 62)) 18) (slab-z 0 5.125)) (max (- (abs (- (* 10 x) y)) 60) (- (abs (- (+ x (* 10 y)) -62)) 18) (slab-z 0 5.125)) (max (- (- (* 10 x) y) 60) (- (- y (* 10 x)) 60) (- (abs (+ x (* 10 y))) 80) (slab-z 5 6)))"
+                .to_string(),
+            along(1.0, 10.0),
+        ),
+        (
+            "(subtract (max (- (abs (- (* 10 x) y)) 60) (- (abs (+ x (* 10 y))) 80) (slab-z 0 6)) (max (- (abs (+ x (* 10 y))) 44) (slab-z -1 5)))"
+                .to_string(),
+            along(1.0, 10.0),
+        ),
+    ];
+    for angle in [17.0f64, 30.0, 45.0, 63.0] {
+        let (c, s) = (angle.to_radians().cos(), angle.to_radians().sin());
+        let turned = |shape: &str| format!("(rotate-z {shape} {angle})");
+        cases.extend([
+            (turned(&closed_channels(12.0, &[0.0])), along(c, s)),
+            (turned(&closed_channels(8.0, &[0.0])), along(-s, c)),
+            (turned(slot), every.clone()),
+            (turned(slot), along(c, s)),
+            (turned(slot), along(-s, c)),
+            (turned("(min (move (box 2 12 4.85) -5 0 2.425) (move (box 2 12 4.85) 5 0 2.425) (move (box 12 12 0.12) 0 0 5.06))"), along(c, s)),
+            (turned(&format!("(min {} {} {roof})", wall(2.0, 10.0, -5.0), wall(2.0, 10.0, 5.0))), along(c, s)),
+            (turned(&format!("(subtract (min {} {} {roof}) (move (box 3 14 0.001) 5 0 5.0))", wall(2.0, 12.0, -5.0), wall(2.0, 12.0, 5.0))), along(c, s)),
+            (turned(&format!("(min {} (move (box 16 12 1) 2 0 5.5))", wall(2.0, 12.0, -5.0))), along(c, s)),
+            (turned("(move (box 24 16 3) 0 0 6.5)"), along(c, s)),
+            (turned("(subtract (move (box 24 2 24) 0 0 12) (max (slab-x -9 9) (- (abs (- z (+ 12 (* x (tan (deg->rad 40)))))) 0.25)))"), every.clone()),
+        ]);
+        let exact = |a: f64, across: bool| match across {
+            false => format!("(unbridged-along part 0 45 1 10 0.8 (nth (sin-cos-deg {a}) 1) (nth (sin-cos-deg {a}) 0))"),
+            true => format!("(unbridged-along part 0 45 1 10 0.8 (neg (nth (sin-cos-deg {a}) 0)) (nth (sin-cos-deg {a}) 1))"),
+        };
+        let walls = format!("{} {}", wall(2.0, 12.0, -5.0), wall(2.0, 12.0, 5.0));
+        cases.extend([
+            (turned("(subtract (move (box 16 12 8) 0 0 4) (move (box 9 20 5) 0 0 2.5))"), exact(angle, false)),
+            (turned(slot), exact(angle, true)),
+            (turned(slot), exact(angle + 1.0, false)),
+            (turned(&format!("(min {walls} (move (box 12 12.0001 1) 0 0 5.5))")), exact(angle, false)),
+            (turned(&format!("(min {} (move {} 0 0.001 0) {roof})", wall(2.0, 12.0, -5.0), wall(2.0, 12.0, 5.0))), exact(angle, false)),
+            (format!("(min {} (rotate-z {roof} {}))", turned(&format!("(min {walls})")), angle + 0.0001), exact(angle, false)),
+            (turned(&format!("(min {} {roof})", wall(2.0, 12.0, -5.0))), exact(angle, false)),
+            (turned(&format!("(min {walls} {roof})")), exact(angle, true)),
+            (turned(&format!("(min {walls} {roof})")), along(c, s)),
+            (turned(&format!("(subtract {slot} (move (box 0.6 0.6 5) 0 5.8 6.5))")), exact(angle, false)),
+        ]);
+    }
+    for (shape, check) in &cases {
+        let part = format!("(def part {shape})");
+        assert!(!bridges_shown(&part, check), "{part} {check}");
+    }
+    // Those the rows fail, they fail with a witness.
+    for width in [9.0, 12.0] {
+        assert_eq!(bridge_along(&format!("(def part {})", slanted_channel(width)), 0.05, 1.0, 0.8, Some((1.0, -1.0))), ink::claims::Status::Fails, "{width}");
+    }
+}
+
+/// Regression test: `unbridged-along` must honor only the requested direction,
+/// never passing an axis-aligned box roof via a bridge along an unasked axis.
+#[test]
+fn unbridged_along_does_not_pass_by_an_unasked_axis() {
+    use ink::claims::Status::{Fails, Holds};
+    let part = "(def part (min (move (box 2 12 5.125) -5 0 2.5625) (move (box 2 12 5.125) 5 0 2.5625) (move (box 12 12 1) 0 0 5.5)))";
+    assert_eq!(bridge_along(part, 0.05, 1.0, 0.8, Some((1.0, 0.0))), Holds);
+    assert_eq!(bridge_along(part, 0.05, 1.0, 0.8, Some((0.0, 1.0))), Fails);
+    assert_ne!(bridge_along(part, 0.05, 1.0, 0.8, Some((1.0, 1.0))), Holds);
 }
 
 /// A slot drawn with two half-turn arcs is read by polygon's construction,

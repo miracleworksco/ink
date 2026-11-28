@@ -1841,8 +1841,9 @@ gives each command's options.
     integral) is proven within 2% of its estimate; `res` the smallest box
     side. Where the
     rates the bounds narrow at project a proof over 2^18 boxes twice
-    running (a field that jumps, edges everywhere), it is given up after
-    about 32 thousand, and the mass estimated on cells, a 100th of the body's box
+    running (a field that jumps, edges everywhere), three times where the
+    rate is still rising (features smaller than its boxes), it is given up
+    after about 32 or 64 thousand, and the mass estimated on cells, a 100th of the body's box
     and halved until a halving moves it under 1% (`sampled`; the bounds
     the proof reached). The mass and volume given are estimates, proven to
     lie within their bounds (`mass_bounds`, the volume's `bounds`), which
@@ -2104,7 +2105,11 @@ sls-hollow.ink show each holding and failing.
     thinner than the requested accuracy. For a rectangular roof the
     checker can also prove that two bearing walls overlap its underside
     across its full width, including bearings that start at the bed under
-    a shallow groove. A sloped or curved face can pass when its angled
+    a shallow groove. A roof over walls at any angle to x and y (a
+    slanted channel, a part turned with rotate-z) can pass too: where
+    the part is upright prisms written in its own numbers, no param, the
+    checker reads each roof's footprint by the rows' rule along the
+    directions asked. A sloped or curved face can pass when its angled
     segment stays inside, including across overlapping solids.
     The same shared-face rule as for overhangs can certify a flush
     bearing or sloping shelf. Complicated joins can remain `unknown`.
@@ -2524,22 +2529,13 @@ cut, emboss or engrave: `ink std --section lettering`.
   straight beyond z0 and z1.
   - Straight walls are exact: each wall the plane through its drawn
     edge, each corner where two meet, a round between two moving with its
-    corner; where the construction changes with height, that height is
-    known within bounds and a claim there is unknown. An edge that
-    vanishes (going away from z = 0) is trimmed: its wall leaves and its
-    neighbours meet; a convex profile is the meet of its walls'
-    half-planes, so it closes where they meet nowhere, empty beyond. What
-    it cannot build so (two edges vanishing at one height, one beside a
-    round) is refused, but within the allowance of an end, where rounded
-    data degenerate a hair from it, or over a span the floats lose at its
-    size: there by its allowance. Arcs too: each arc's wall a cone (its
-    circle growing or shrinking with z), each corner beside one where its
-    walls meet, its segment read as undrafted (at its chord, or its cone
-    within a kite moving with it). What
-    it cannot build so (a round beside an arc, a flat arc, an edge
-    vanishing beside an arc, a kite it cannot place, and as undrafted an
-    arc of half a turn or more or two corners) is read by its allowance,
-    as above. Drafts all 0 are the profile undrafted.
+    corner. Arcs too: each arc's wall a cone (its circle growing or
+    shrinking with z), each corner beside one where its walls meet, its
+    segment read as undrafted (at its chord, or its cone within a kite
+    moving with it). What it cannot build so (a round beside an arc, a
+    flat arc, a kite it cannot place, and as undrafted an arc of half a
+    turn or more or two corners) is read by its allowance, as above.
+    Drafts all 0 are the profile undrafted.
   - Load time proves the construction holds from z0 to z1, else refuses
     the profile, naming the corner: a round no longer fits or an edge
     would vanish (where CAD would trim the walls), or "ink cannot

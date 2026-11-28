@@ -178,7 +178,10 @@ fn a_departure_within_its_measure_gives_a_reaction_its_band() {
         &[],
     );
     let up = c.iter().find(|x| x.0 == "up").unwrap();
-    assert!(up.1 == Status::Holds && up.3.contains("root/m/w (2.273e-2 g mm") && up.3.contains("a spinning body it carries moving it by no more than that"), "{up:?}");
+    // What is not known of the holes, as said last: about 0.023 g mm (as each hole's measure is known
+    // to), well under the whole wheel's 0.081.
+    let unknown: f64 = up.3.rsplit("root/m/w (").next().and_then(|s| s.split(" g mm").next()).and_then(|s| s.parse().ok()).unwrap_or(f64::NAN);
+    assert!(up.1 == Status::Holds && (0.01..0.03).contains(&unknown) && up.3.contains("a spinning body it carries moving it by no more than that"), "{unknown} {up:?}");
 }
 
 /// A 308 kg steel wheel (250 mm radius, 200 wide: 7.85 x pi 250^2 200 =

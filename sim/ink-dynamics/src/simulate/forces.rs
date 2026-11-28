@@ -1,7 +1,7 @@
 use super::linalg::{Lu, solve};
 use super::types::{Fail, Layout};
-use crate::model::Model;
 use crate::model::springs::At;
+use crate::model::{Model, ROUNDING};
 
 /// The accelerations at a state, and what the step reads of it: the
 /// simulated coordinates' individual generalized inertias (a loop
@@ -19,6 +19,10 @@ pub(super) struct Eval {
     pub(super) two_sided: bool,
     pub(super) tensions: Vec<f64>,
     pub(super) drives: Vec<[f64; 3]>,
+    /// One plus the worst share the couplings lose of the power through
+    /// them (Moment::worst's sites): what a mass's change is widened by
+    /// through them, as an effort's band is.
+    pub(super) lossy: f64,
 }
 
 /// The simulated coordinates' accelerations at moment t, positions `q` and
@@ -113,7 +117,7 @@ pub(super) fn forces(model: &Model, lay: &Layout, t: f64, q: &[f64], v: &[f64], 
     }
     // The residual at accelerations acc, each one's rounding, M, whether a
     // coupling that self-locks is driven back there, and the springs'.
-    type Springy = (Vec<Vec<f64>>, bool, Vec<f64>, Vec<[f64; 3]>);
+    type Springy = (Vec<Vec<f64>>, bool, Vec<f64>, Vec<[f64; 3]>, f64);
     let mut eval = |acc: &[f64]| -> Result<(Vec<f64>, Vec<f64>, Vec<Vec<f64>>, bool, Springy), Fail> {
         // At rest a coupling's loss turns with the direction the motion
         // starts in: read at the speed an instant later.
@@ -165,7 +169,8 @@ pub(super) fn forces(model: &Model, lay: &Layout, t: f64, q: &[f64], v: &[f64], 
         }
         // The springs' pull along each released joint carrying inertia,
         // those carrying none held where the springs leave them.
-        let mut springy: Springy = (Vec::new(), true, Vec::new(), Vec::new());
+        let lossy = 1.0 + m.sites.iter().map(|s| s.worst).fold(0.0, f64::max);
+        let mut springy: Springy = (Vec::new(), true, Vec::new(), Vec::new(), lossy);
         if lay.nr > 0 {
             let st = m.springs.as_ref().expect("the springs at a state of a model with springs");
             held(model, st, &m.fr, lay, &mut d).map_err(Fail::Refused)?;
@@ -175,7 +180,7 @@ pub(super) fn forces(model: &Model, lay: &Layout, t: f64, q: &[f64], v: &[f64], 
                 tol[ns + j] = 16.0 * m.noise_r[w] + 1e-14 * fs[w].abs();
             }
             let (tangent, two_sided) = st.tangent(&d);
-            springy = (condensed(&tangent, lay), two_sided, st.tensions(&d), st.drive.clone());
+            springy = (condensed(&tangent, lay), two_sided, st.tensions(&d), st.drive.clone(), lossy);
         }
         // The deviations' accelerations move what they carry: no state of
         // the model reads them, so their inertia enters by M.
@@ -190,12 +195,20 @@ pub(super) fn forces(model: &Model, lay: &Layout, t: f64, q: &[f64], v: &[f64], 
                 rows.iter().map(|&k| if k < nq { m.f[k] } else { m.fr[k - nq] }).collect::<Vec<_>>()
             )));
         }
-        let mss = rows.iter().map(|&k| rows.iter().map(|&l| m.gm[k][l]).collect()).collect();
+        let mut mss: Vec<Vec<f64>> = rows.iter().map(|&k| rows.iter().map(|&l| m.gm[k][l]).collect()).collect();
+        // One whose inertia is within rounding of its heft carries none
+        // (Moment::heft): read as 0, as one summing to 0 exactly is, not as
+        // a crumb above it whose acceleration is the effort over that crumb.
+        for (a, &k) in rows.iter().enumerate() {
+            if mss[a][a] <= ROUNDING * m.heft[k] {
+                (0..n).for_each(|b| (mss[a][b], mss[b][a]) = (0.0, 0.0));
+            }
+        }
         Ok((r, tol, mss, locked, springy))
     };
-    let (mut r, tol0, mss, mut locked, (keff, two_sided, tensions, drives)) = eval(guess)?;
+    let (mut r, tol0, mss, mut locked, (keff, two_sided, tensions, drives, lossy)) = eval(guess)?;
     let inertia: Vec<_> = (0..ns).map(|i| mss[i][i]).collect();
-    let done = |acc: Vec<f64>| Eval { acc, inertia: inertia.clone(), mss: mss.clone(), keff: keff.clone(), two_sided, tensions: tensions.clone(), drives: drives.clone() };
+    let done = |acc: Vec<f64>| Eval { acc, inertia: inertia.clone(), mss: mss.clone(), keff: keff.clone(), two_sided, tensions: tensions.clone(), drives: drives.clone(), lossy };
     let mut acc = guess.to_vec();
     // M's step, taken from any guess (one within the rounding kept as it is
     // would make the accelerations stick to the last state's, which the

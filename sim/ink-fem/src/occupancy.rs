@@ -188,7 +188,7 @@ pub(crate) fn occupied_parts(tape: &Tape, ctx: &Ctx, pts: &[V3], h: f64) -> Vec<
     // (`MIN_FRACTION`) is seen and then dropped with the slivers, and
     // nothing says so; as it is, its least count is an eighth of a sample,
     // 1/32 of the cell and over the floor, and a foil the points miss is
-    // found by the lines between the samples and told (`slivers`). Exact
+    // found by the planes through the samples and told (`slivers`). Exact
     // there needs the dropped told first.
     let crossed: Vec<usize> = (0..pts.len()).filter(|&i| out[i].0 > 0.0 && out[i].0 < 1.0).collect();
     let (_, faces) = region_faces(tape, ctx, &crossed.iter().map(|&i| pts[i]).collect::<Vec<V3>>(), h, true, true);

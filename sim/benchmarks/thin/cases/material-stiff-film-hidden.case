@@ -2,9 +2,9 @@
 ; E(y): 2000 for y < 0, a slope 2000 -> 600 across the 0.2 mm cell y 0..0.2, 600 beyond. In that cell's first
 ; floor box (y 0..0.025): a stiff film E 2680 at y 0.0070..0.0083 and two slivers, E 1070 at 0.0003..0.0029 and
 ; 1910 at 0.0157..0.0189, tuned by search to pass the smoothness test in E and in 1/E on the cell and every
-; floor box: a film hidden behind other variation inside its own floor box, the material split's stated limit.
+; floor box: a film hidden behind other variation inside its own floor box. Its ranges passed as a smooth field's; its
+; slope has no bound across the film, so its cells are split and, not of one material at the floor, left not settled.
 ; truth: strong fails about 129 (the film, 1.3 um, carries 0.03% of the load, so the field without it is the field; its axial strain is continuous across it, so it carries 2680 / 2000 times the stress beside it, 96.6 at x 2.02 on these cells without the film, grid error 3.5: 129 +- 5, outside the support margin)
-; known: strong (the film is hidden inside a floor cell, so its stress is read as the E beside it gives: low by about 2680 / 2000)
 (import "std")
 (def part (move (box 20 10 2) 10 0 0))
 (study pull (shape part) (elastic (E (* 1MPa (select (max (- 0.0070 y) (- y 0.0083)) 2680 (select (max (- 0.0003 y) (- y 0.0029)) 1070 (select (max (- 0.0157 y) (- y 0.0189)) 1910 (max 600 (min 2000 (- 2000 (* 7000 y))))))))) (nu 0))

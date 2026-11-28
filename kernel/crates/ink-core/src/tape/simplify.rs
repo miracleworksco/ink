@@ -188,7 +188,8 @@ impl Tape {
         let live = self.live(choices);
 
         let mut remap = vec![u32::MAX; n];
-        let mut out: Vec<Ins> = Vec::with_capacity(n);
+        // Per instruction kept, the one of this tape it is.
+        let (mut out, mut ids): (Vec<Ins>, Vec<u32>) = (Vec::with_capacity(n), Vec::with_capacity(n));
         for i in 0..n {
             if !live[i] {
                 continue;
@@ -211,11 +212,13 @@ impl Tape {
             ins.out = out.len() as u32;
             remap[i] = ins.out;
             out.push(ins);
+            ids.push(i as u32);
         }
         // If the root was aliased, everything after its target is dead.
         // Held in its own length, not its parent's: the many simplified
         // tapes of an octree::Local would hold their parents' many times.
         out.truncate(remap[n - 1] as usize + 1);
+        ids.truncate(out.len());
         out.shrink_to_fit();
         let mut t = Tape::from_ssa(out);
         // What is fixed stays as it was: arithmetic on a branch picked for
@@ -223,13 +226,9 @@ impl Tape {
         // value in floats (select(x, c, 2)^2 for x < 0 is c^2 in reals); and
         // so do the params it reads (a branch picked over a param's span
         // keeps reading the param).
-        let kept = || (0..n).filter(|&i| live[i] && pick(i).is_none() && (remap[i] as usize) < t.fixed.len());
-        let restored: Vec<usize> = kept().collect();
-        for &i in &restored {
-            t.fixed[remap[i] as usize] = self.fixed[i];
-            t.pmask[remap[i] as usize] = self.pmask[i];
-        }
-        (t.pread, t.plist) = self.reread(restored.into_iter().map(|i| (remap[i], i)));
+        t.fixed = ids.iter().map(|&i| self.fixed[i as usize]).collect();
+        t.pmask = ids.iter().map(|&i| self.pmask[i as usize]).collect();
+        (t.pread, t.plist) = self.reread(ids.iter().enumerate().map(|(k, &i)| (k as u32, i as usize)));
         t.grids = self.grids.clone();
         t.opaque = self.opaque.clone();
         if t.ssa.iter().any(|ins| matches!(ins.op, Op::Read | Op::CornerReach(..))) {

@@ -85,12 +85,18 @@ motion (boxes, then the prover on the pairs that may meet: about a
 second on a small machine). Parts that overlap in solid are not covered,
 said first and by pair, and the file is not all yes (`placement`); none
 found, the first line says so and the headline reads `no clash at the
-start pose`. Left to `ink interfere FILE` and a render: the rest of the
-motion, and whether each part touches what it mounts on
-(`not_checked_here`). It is skipped, saying why (`PLACEMENT NOT
-CHECKED`), for a file with over 60 parts (a robot of 800 takes
-minutes), one that states no motion (parts asked as stated, not a
-machine assembled), and one with no root.
+start pose`. Then the parts that touch nothing are named (`LOOSE`;
+`placement.loose`, by group): those no part outside their group comes
+within 1 mm of, proven by a clearance, and no relation joins (a contact,
+a mesh, a belt). A pin through a running fit touches; a plate lifted off
+its standoffs, or a lid whose pin was deleted, does not. A loose part
+changes no verdict (a rig may hang a load where its arm would be), and
+what holds a part is not seen: a plate where one of its screws was still
+touches. Left to `ink interfere FILE` and a render: the rest of the
+motion, and what holds each part where it touches (`not_checked_here`).
+It is skipped, saying why (`PLACEMENT NOT CHECKED`), for a file with
+over 60 parts (a robot of 800 takes minutes), one that states no motion
+(parts asked as stated, not a machine assembled), and one with no root.
 
 A yes over a path says what it covered and, first, what it did not
 (`NOT COVERED` in words; fields of its row and of the answer):

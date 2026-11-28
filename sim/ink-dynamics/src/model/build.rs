@@ -168,6 +168,66 @@ fn reads_t_besides(d: &Doc, n: NodeId, through: &HashSet<NodeId>) -> bool {
     false
 }
 
+/// How far a published mass's density (Doc::published: the mass over the
+/// volume it is spread over, measured) is known either way, relative to
+/// itself: its enclosure (Doc::provided_bounds), infinite where it has none.
+/// None: a density no published mass gives (a number, a material's), read as
+/// exact.
+fn published_reach(v: &ModelView, rho: NodeId) -> Option<f64> {
+    let Node::Var(Var::Param(k)) = v.doc.g.nodes[rho as usize] else { return None };
+    if !v.doc.published.iter().any(|p| p.0 == k as usize) {
+        return None;
+    }
+    let value = v.ctx.params[k as usize];
+    Some(match v.doc.provided_bounds(rho, &v.ctx) {
+        Some(b) if value > 0.0 && b.lo.is_finite() && b.hi.is_finite() => (value - b.lo).max(b.hi - value) / value,
+        _ => f64::INFINITY,
+    })
+}
+
+/// The mass (g) body `it` has exactly, where its density `rho` is its own
+/// published mass's (`(attr mass M)` on it, spread over its shape alone) and
+/// its shape is read here as the mass is published: each param it reads at
+/// its value there (its default, or its `mass-params`'s), but those the mass
+/// reads, which it follows, and none ranged. None: a share of an assembly's
+/// mass, its definition's (built from it, its size not the definition's), or
+/// another configuration, whose mass is its density times its volume, each
+/// only as well known as its measure (published_reach).
+fn own_published_mass(v: &ModelView, it: &ink_lang::Item, attrs: &[(String, Value)], rho: NodeId) -> Option<f64> {
+    let d = &v.doc;
+    let Node::Var(Var::Param(k)) = d.g.nodes[rho as usize] else { return None };
+    let (name, _) = it.instance.as_ref()?;
+    let mass = attrs.iter().find_map(|(a, x)| match x {
+        Value::Field(f, _) if a == "mass" => Some(*f),
+        _ => None,
+    })?;
+    // Published for this body, over its shape (Doc::published_mass names the density for it).
+    if d.body(name)?.shape != it.shape || d.params[k as usize].name != format!("{name}.mass-density") || d.g.depends_on(mass, |x| x == Var::T) {
+        return None;
+    }
+    let given: Vec<(usize, f64)> = match attrs.iter().find(|(a, _)| a == "mass-params") {
+        None => Vec::new(),
+        Some((_, Value::Data(g))) => {
+            let pairs = g.value().as_object()?.iter().map(|(n, x)| Some((d.params.iter().position(|p| p.name == *n).or_else(|| d.param_index(n))?, x.as_f64()?)));
+            pairs.collect::<Option<_>>()?
+        }
+        Some(_) => return None,
+    };
+    let follows = d.params_read(&[mass]);
+    let ranged = |p: usize| v.ctx.p_spans.get(p as u32).is_some();
+    if follows.iter().any(|&p| ranged(p)) {
+        return None;
+    }
+    for p in d.params_read(&[it.shape]).into_iter().filter(|p| !follows.contains(p) && !d.solves.iter().any(|s| s.owns.contains(p))) {
+        let published = given.iter().rev().find(|g| g.0 == p).map_or(d.params[p].default, |g| g.1);
+        if v.ctx.params[p] != published || ranged(p) {
+            return None;
+        }
+    }
+    let m = d.scalar(mass, &v.ctx);
+    (m.is_finite() && m > 0.0).then_some(m)
+}
+
 impl Model {
     /// The mechanism under `target` in a view of a load with coordinates
     /// (Doc::with_coordinates): its moving bodies' masses measured (cached
@@ -421,6 +481,8 @@ impl Model {
             springs: None,
             moments: Mutex::new(HashMap::new()),
             chosen: Mutex::new(HashMap::new()),
+            swept: Mutex::new(HashMap::new()),
+            reads_moment: false,
             twin: None,
         };
         // At a state, every joint's speed limits bound the path's speed.
@@ -583,8 +645,17 @@ impl Model {
                 read.extend(path_numbers(&c));
                 read.extend([c.profile, c.length, rho]);
                 read.extend(&entries);
-                let Some((strip, ends, m)) = strip(v, &it.label, &c, &xf, rho, &along, &eps, of, &mut tracker) else {
+                let Some((mut strip, ends, m)) = strip(v, &it.label, &c, &xf, rho, &along, &eps, of, &mut tracker) else {
                     return Err(InkError::msg(format!("{who}: its carried profile is not proven bounded, so its mass is not measured")));
+                };
+                // What its mass per mm is known to: its measure's proven bounds (Measured::error, the
+                // farther side), at a density known to what a published mass's is (never its own exactly:
+                // what is measured is its profile, not the shape the mass is published over).
+                let length = v.doc.scalar(c.length, &v.ctx);
+                strip.err = match published_reach(v, rho).unwrap_or(0.0) {
+                    _ if length <= 0.0 => 0.0,
+                    reach if reach.is_finite() => (m.error(0) * (1.0 + reach) + m.sums[0].abs() * reach) / length,
+                    _ => f64::INFINITY,
                 };
                 model.measured += 1;
                 model.published += usize::from(what.starts_with("published mass"));
@@ -644,31 +715,58 @@ impl Model {
             if let Some(why) = m.unsettled() {
                 unsettled.push(format!("{}: {why}", it.label));
             }
-            let Some(p) = ink_kernel::rigid::mass_props(&m.moments()) else { continue };
-            // Each of its ten moments anywhere in its proven bounds (Measured::error, the farther side). A
-            // published mass is its own, exact, and its other moments are the measured ones scaled to it by
-            // the measured volume: each one's own reach, times the most that scale can be, and its inertia
-            // scaled by as much as the volume is known to (its mass and centre kept).
-            let published = what.starts_with("published mass");
-            let scale = if published { m.error(0) / p.mass.abs() } else { 0.0 };
-            let mut measure: Vec<(f64, V3, M3)> = (usize::from(published)..10)
-                .filter_map(|j| {
-                    let e = m.error(j) * (1.0 + scale);
-                    if !e.is_finite() {
-                        return Some((f64::INFINITY, [0.0; 3], [[0.0; 3]; 3]));
-                    }
-                    let mut s = m.moments();
-                    s.m[j] += e;
-                    let q = ink_kernel::rigid::mass_props(&s).filter(|_| e > 0.0)?;
-                    Some((q.mass - p.mass, std::array::from_fn(|k| q.center[k] - p.center[k]), std::array::from_fn(|r| std::array::from_fn(|c| q.inertia[r][c] - p.inertia[r][c]))))
-                })
-                .collect();
-            if published && scale > 0.0 {
-                measure.push((0.0, [0.0; 3], p.inertia.map(|row| row.map(|x| scale * x))));
+            // A mass published as the body's own (own_published_mass) is its mass exactly: its moments are
+            // the measured ones scaled to it, each one's bounds with them, and the scale known only as far as
+            // the measured volume is. Else its density is known to what a published mass's is
+            // (published_reach), or exactly (a number, a material's).
+            let rho = rho_node.expect("a density");
+            let own = own_published_mass(v, it, &attrs, rho).filter(|_| m.sums[0] > 0.0);
+            let to = own.map_or(1.0, |mass| mass / m.sums[0]);
+            let moments = ink_kernel::rigid::Moments { about: m.about, m: std::array::from_fn(|j| to * m.sums[j]) };
+            let error = |j: usize| to * m.error(j);
+            let Some(p) = ink_kernel::rigid::mass_props(&moments) else { continue };
+            // What all its moments but an exact mass are known to together, relative to themselves: the
+            // volume an own published mass is spread over (e0 / (s0 - e0) = c / (1 - c), so 1 + common =
+            // 1 / (1 - c)), or a published density.
+            let (first, common) = match own {
+                Some(_) => {
+                    let (e0, s0) = (m.error(0), m.sums[0].abs());
+                    (1, if e0 < s0 { e0 / (s0 - e0) } else { f64::INFINITY })
+                }
+                None => (0, published_reach(v, rho).unwrap_or(0.0)),
+            };
+            // Each of its ten moments (but an exact mass) anywhere in its proven bounds (Measured::error,
+            // the farther side), times the most their common factor can be; then that factor, every one of
+            // them moved by it together. Not known, nothing it moves is.
+            let not_known = || vec![(f64::INFINITY, [0.0; 3], [[0.0; 3]; 3])];
+            let change = |s: &ink_kernel::rigid::Moments| -> Option<(f64, V3, M3)> {
+                let q = ink_kernel::rigid::mass_props(s)?;
+                Some((q.mass - p.mass, std::array::from_fn(|k| q.center[k] - p.center[k]), std::array::from_fn(|r| std::array::from_fn(|c| q.inertia[r][c] - p.inertia[r][c]))))
+            };
+            let mut measure: Vec<(f64, V3, M3)> = match common.is_finite() {
+                true => (first..10)
+                    .filter_map(|j| {
+                        let e = error(j) * (1.0 + common);
+                        if !e.is_finite() {
+                            return Some(not_known()[0]);
+                        }
+                        let mut s = moments;
+                        s.m[j] += e;
+                        change(&s).filter(|_| e > 0.0)
+                    })
+                    .collect(),
+                false => not_known(),
+            };
+            if common > 0.0 && common.is_finite() {
+                let mut s = moments;
+                s.m[first..].iter_mut().for_each(|x| *x *= 1.0 + common);
+                measure.extend(change(&s));
             }
-            // What its first and second moments are known to, by their proven bounds (Measured::error), the
-            // second carried from the point they were measured about to its centre.
-            let moved = |k: std::ops::Range<usize>| k.map(|j| m.error(j).powi(2)).sum::<f64>().sqrt();
+            // What its first and second moments are known to, by their proven bounds (Measured::error)
+            // times the shared volume/density factor, the second carried from the point they were
+            // measured about to its centre.
+            let factor = if common.is_finite() { 1.0 + common } else { f64::INFINITY };
+            let moved = |k: std::ops::Range<usize>| k.map(|j| (error(j) * factor).powi(2)).sum::<f64>().sqrt();
             let off = norm(std::array::from_fn(|k| p.center[k] - m.about[k]));
             let known = [moved(1..4), moved(4..10) + 2.0 * off * moved(1..4)];
             // A body round about its spin has its centre on the axis and
@@ -691,8 +789,12 @@ impl Model {
                 }
                 // It repeats about a line of its own along its spin (a wheel moved a hair off its
                 // shaft, a pulley but for its set screw's hole): that much of it is exact, and what is
-                // not known of it is what is not known of its small parts.
-                Some(s) if let Some((c, i, first, second, all)) = own_round(v, it.shape, rho_node, &m, s.axis).filter(|o| o.2 <= known[0]) => {
+                // not known of it is what is not known of its small parts (as measured, scaled with it).
+                Some(s)
+                    if let Some((c, i, first, second, all)) = own_round(v, it.shape, rho_node, &m, s.axis)
+                        .map(|(c, i, f, g, all)| (c, i.map(|r| r.map(|x| to * x)), to * f, to * g, all))
+                        .filter(|o| o.2 <= known[0]) =>
+                {
                     unknown = [first, second];
                     if unknown != [0.0; 2] {
                         model.made_round.push(MadeRound { body: it.label.clone(), first, second });
@@ -1172,6 +1274,9 @@ impl Model {
         // numbers its params otherwise (no coordinates).
         let own: Vec<usize> = coords.iter().map(|c| c.param).collect();
         model.reads = v.doc.params_read(&read).into_iter().filter(|k| !own.contains(k)).map(|k| v.doc.params[k].name.clone()).collect();
+        // A param a solve on t sets at each moment (one made on demand, which the moments do not
+        // follow either), read where an effort reads: nothing bounds it over a step here.
+        model.reads_moment = v.doc.params_read(&read).iter().any(|&k| v.doc.solves.iter().any(|s| s.on_t && s.owns.contains(&k)));
         model.reads_carried = v.doc.params_read(&read_carried).into_iter().filter(|k| !own.contains(k)).map(|k| v.doc.params[k].name.clone()).collect();
         let derivatives = joint_derivatives(v, &eps, joints);
         // The rates made since the view's context have their values at its

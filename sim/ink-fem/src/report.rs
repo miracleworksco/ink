@@ -219,6 +219,19 @@ pub struct Report {
     /// by their share of it): a load less than a cell across is concentrated.
     #[serde(default)]
     pub load_spread: Vec<(String, V3)>,
+    /// Where each load landed (`Footprint`), indexed as `applied` (gravity's
+    /// first): none where it landed nowhere.
+    #[serde(default)]
+    pub load_footprints: Vec<Option<Footprint>>,
+    /// Where each fix holds: the part's surface in its region, and the
+    /// material it holds; indexed as `reactions`, none for a cut of symmetry
+    /// (its plane is its place) or a region the part's surface misses.
+    #[serde(default)]
+    pub fix_footprints: Vec<Option<Footprint>>,
+    /// The centroid of the part's material as its cells hold it (mm): each
+    /// cell's at its centre.
+    #[serde(default)]
+    pub centroid: V3,
     /// The memory the solve was estimated to take before it allocated its
     /// cells (bytes, `memory`).
     #[serde(default)]
@@ -262,6 +275,85 @@ pub struct SurfaceMeasure {
     /// face's its width over the root of 12).
     #[serde(default)]
     pub spread: V3,
+}
+
+/// Where a load or a fix landed, as the solve took it: what a reader checks
+/// a setup by (a force on the wrong end, a clamp where the bolt is not).
+#[derive(Default, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Footprint {
+    /// The box of what it landed on (mm): the surface points it took, or
+    /// the cells its material lies in (then to within a cell), within the
+    /// part's bounds.
+    pub lo: V3,
+    pub hi: V3,
+    /// Its centre (mm): a load's, where its force acts (its material's
+    /// centroid, a pressure's centre of force — for a flat face, its moment
+    /// about the origin is `at` x its total); a fix's, its surface's
+    /// centroid (else its held material's).
+    pub at: V3,
+    /// The material it acts on or holds (mm^3; 0 for a surface's).
+    pub volume: f64,
+    /// The part's surface it acts on or holds (mm^2; 0 for a material's).
+    pub area: f64,
+    /// A pressure's least, mean (by area) and greatest value over it (MPa).
+    pub pressure: Option<[f64; 3]>,
+}
+
+/// A footprint as it is gathered: its box, its weighted centre, its
+/// measures and a pressure's range.
+pub(crate) struct Gather {
+    lo: V3,
+    hi: V3,
+    w: f64,
+    wp: V3,
+    pub(crate) volume: f64,
+    pub(crate) area: f64,
+    /// (least, greatest, its integral over the area)
+    pressure: Option<[f64; 3]>,
+}
+
+impl Gather {
+    pub(crate) fn new() -> Gather {
+        Gather { lo: [f64::INFINITY; 3], hi: [f64::NEG_INFINITY; 3], w: 0.0, wp: [0.0; 3], volume: 0.0, area: 0.0, pressure: None }
+    }
+    /// The box takes in `p`.
+    pub(crate) fn reach(&mut self, p: V3) {
+        for a in 0..3 {
+            self.lo[a] = self.lo[a].min(p[a]);
+            self.hi[a] = self.hi[a].max(p[a]);
+        }
+    }
+    /// A cell's box (`centre`, `size`).
+    pub(crate) fn cell(&mut self, centre: V3, size: f64) {
+        self.reach(centre.map(|c| c - 0.5 * size));
+        self.reach(centre.map(|c| c + 0.5 * size));
+    }
+    /// `p` weighs `w` in the centre.
+    pub(crate) fn weigh(&mut self, p: V3, w: f64) {
+        self.w += w;
+        for a in 0..3 {
+            self.wp[a] += w * p[a];
+        }
+    }
+    /// A pressure's sample: `pressure` (MPa) on `patch` (mm^2) at `p`, its force's magnitude `force` (N).
+    pub(crate) fn press(&mut self, p: V3, pressure: f64, patch: f64, force: f64) {
+        self.reach(p);
+        self.weigh(p, force);
+        self.area += patch;
+        let [lo, hi, sum] = self.pressure.get_or_insert([f64::INFINITY, f64::NEG_INFINITY, 0.0]);
+        (*lo, *hi, *sum) = (lo.min(pressure), hi.max(pressure), *sum + pressure * patch);
+    }
+    /// What it gathered, within the part's bounds `(lo, hi)`; none where nothing landed.
+    pub(crate) fn footprint(self, (part_lo, part_hi): (V3, V3)) -> Option<Footprint> {
+        if (0..3).any(|a| !(self.lo[a] <= self.hi[a] && part_lo[a] <= part_hi[a])) {
+            return None;
+        }
+        let lo: V3 = std::array::from_fn(|a| self.lo[a].clamp(part_lo[a], part_hi[a]));
+        let hi: V3 = std::array::from_fn(|a| self.hi[a].clamp(part_lo[a], part_hi[a]));
+        let at = if self.w > 0.0 { self.wp.map(|v| v / self.w) } else { std::array::from_fn(|a| 0.5 * (lo[a] + hi[a])) };
+        let pressure = self.pressure.map(|[l, h, sum]| [l, if self.area > 0.0 { sum / self.area } else { 0.0 }, h]);
+        Some(Footprint { lo, hi, at, volume: self.volume, area: self.area, pressure })
+    }
 }
 
 /// The standard deviation of `pts`' places along each axis, weighted.

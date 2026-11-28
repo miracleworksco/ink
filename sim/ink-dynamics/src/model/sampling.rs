@@ -547,9 +547,11 @@ impl Model {
         steps = self.turns(steps, (a, b), &rest, &mut loose, &unchecked, serving);
         // A step whose middle, or an end of the span, where the solves do
         // not solve (or their rates are not defined: a dead point) is
-        // unchecked: nothing is found there.
+        // unchecked: nothing is found there. (A moment is unsolved exactly
+        // where its context is not found: asked of that alone, no moment's
+        // dynamics are worked out for it.)
         for s in steps.iter().map(|&s| (s, mid(s))).chain([((a, a), a), ((b, b), b)]) {
-            if !unchecked.contains(&s.0) && self.at(s.1).unsolved.is_some() {
+            if !unchecked.contains(&s.0) && self.ctx(s.1).is_err() {
                 loose.retain(|&l| l != s.0);
                 unchecked.push(s.0);
             }

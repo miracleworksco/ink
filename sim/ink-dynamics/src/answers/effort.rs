@@ -119,7 +119,7 @@ fn a_carried_belt_counts_its_material_moving() {
     );
     m.set_mass("root/d/p", 0.0, [0.0; 3], [[0.0; 3]; 3]);
     assert!(m.deforming.is_empty() && m.carried.iter().map(|(l, _)| l.as_str()).eq(["root/d/b"]), "{:?} {:?}", m.deforming, m.carried);
-    let (lam, len) = m.strip("root/d/b");
+    let (lam, _, len) = m.strip("root/d/b");
     // N mm per rad/s^2 of the pulley: m r^2, g mm^2 as 1e-6 N mm s^2.
     let (r, alpha) = (10.0, 720.0f64.to_radians());
     let want = 1e-6 * lam * len * r * r * alpha;
@@ -633,35 +633,14 @@ fn a_rating_dip_on_a_step_boundary_is_measured() {
     let m = model(src);
     let minimum = m.steps((0.0, 1.0)).ends.windows(2).map(|w| m.at(ink_core::eval::span_mid((w[0], w[1]))).margin(0)).fold(f64::INFINITY, f64::min);
     near(minimum, -1.0, 1e-6, "margin at the bottom of the rating dip");
+    // A dip 2 microseconds wide, between every moment the steps read: bounded over each step, the one holding
+    // it is halved down to it, and a moment inside it fails (it was undecided, read at the moments alone).
     let narrow = src.replace("0.0016", "1000000").replace("t) 250", "t) 251.23");
-    assert_eq!(claims(&narrow)[0].1, Status::Unknown);
+    let a = asserts_at(&narrow, &[]).remove(0).check;
+    let t = a.motion.as_ref().and_then(|m| m.motion.t).unwrap_or(f64::NAN);
+    assert!(a.status == Status::Fails && (t - 0.25123).abs() < 1e-5, "{:?} at {t}", a.status);
     let point = &claims_at_moment(&narrow, 0.25123)[0];
     assert!(point.1 == Status::Fails && (point.3 + 1.0).abs() < 1e-6, "{point:?}");
-}
-
-/// A 1 kg slide held at rest against 10 N and a ripple of 0.00001 N on it,
-/// rated 10.000005 N: the moments read lie 0.000005 inside the rating, the
-/// ripple's crests between them 0.000005 past it, and the claim held.
-/// Nothing bounds an effort between moments; the steps are chosen so that a
-/// peak is read at most 4% low (`OFF_LINE`), so a margin under that of the
-/// peak decides nothing, and one over it holds.
-#[test]
-fn an_effort_inside_its_rating_by_less_than_a_peak_between_moments_may_add_is_undecided() {
-    let src = |rating: &str| {
-        format!(
-            r#"(import "std") (gravity 0 0 0) (t-span 0 1s)
-(body block (shape (box 50 50 50)) (attr mass 1000g))
-(assembly (axis (s 0)) (instance c block (at) (slide x s) (effort-limits -{rating}N {rating}N)))
-(assembly root (instance m (axis 0)))
-(load push root/m/c (force (* 1N (+ 10 (* 0.00001 (sin (* 32 180deg/s t))))) 0 0))"#
-        )
-    };
-    let effort = |rating: &str| asserts_at(&src(rating), &[]).into_iter().find(|x| x.name == "effort-limits:root/m/c").unwrap().check;
-    for (rating, want) in [("10.000005", Status::Unknown), ("10.3", Status::Unknown), ("10.5", Status::Holds), ("9.9", Status::Fails)] {
-        assert_eq!(effort(rating).status, want, "{rating}");
-    }
-    let basis = effort("10.3").motion.unwrap().basis.unwrap();
-    assert!(basis.contains("a peak between the moments read may lie over"), "{basis}");
 }
 
 /// A steel cylinder r 7.3, h 41.9 spun up at 8726.646 rad/s2 needs

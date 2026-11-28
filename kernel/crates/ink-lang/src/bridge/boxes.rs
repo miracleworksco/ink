@@ -101,7 +101,9 @@ fn covers(g: &mut Graph, s: [NodeId; 2], b: [NodeId; 2]) -> NodeId {
     g.max(a, b)
 }
 
-pub(super) fn unsupported(g: &mut Graph, f: NodeId, bed: NodeId, depth: NodeId, height: NodeId, limit: NodeId, step: NodeId) -> Option<NodeId> {
+/// Bridges are read along axis k where `axes[k]` (a direction asked).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn unsupported(g: &mut Graph, f: NodeId, bed: NodeId, depth: NodeId, height: NodeId, limit: NodeId, step: NodeId, axes: [bool; 2]) -> Option<NodeId> {
     if [bed, depth, height, limit, step].iter().any(|&n| g.depends_on(n, spatial)) {
         return None;
     }
@@ -160,7 +162,7 @@ pub(super) fn unsupported(g: &mut Graph, f: NodeId, bed: NodeId, depth: NodeId, 
         // of this open roof. Their longest reaches may be chosen
         // independently. Each end needs more than one sampling step of
         // overlap, so even the least favourable row has a bearing there.
-        for axis in 0..2 {
+        for axis in (0..2).filter(|&k| axes[k]) {
             let [lo, hi] = b[axis];
             let (mut left, mut right) = (lo, hi);
             for (s, &bearing) in list.iter().zip(&bearings) {

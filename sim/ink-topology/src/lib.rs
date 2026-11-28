@@ -415,12 +415,19 @@ mod tests {
         // the compliance's change with every design variable at once (the
         // filter one cell: each cell's own). Summing u^T A u over a pin's
         // cells counted its free turn: 61.04 against 0.0213 N mm.
+        // The probe is read on the thread the redesign ran on: the solve's.
         let run = |vf: f64| {
-            PROBE.with(|p| p.borrow_mut().clear());
             let (s, ctx) = pinned_beam();
             let top = Settings { volume_fraction: vf, iterations: 1, filter: Some(1.0), keep: None };
-            sim::solve_redesigned(&s, &ctx, &mut |a| optimize(a, &top, &ctx, s.tol).map(|_| ())).unwrap();
-            PROBE.with(|p| p.borrow()[0])
+            let mut probe = None;
+            sim::solve_redesigned(&s, &ctx, &mut |a| {
+                PROBE.with(|p| p.borrow_mut().clear());
+                optimize(a, &top, &ctx, s.tol)?;
+                probe = PROBE.with(|p| p.borrow().first().copied());
+                Ok(())
+            })
+            .unwrap();
+            probe.unwrap()
         };
         let (c, work, slope) = run(0.5);
         assert!((work / c - 1.0).abs() < 1e-6, "energies {work}, compliance {c}");
@@ -454,6 +461,25 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    /// A small grid's solves run on the threads it keeps busy, not the
+    /// caller's every thread (48 cells: one): the study's solve sizes its
+    /// threads to its grid.
+    #[test]
+    fn a_small_grid_runs_on_few_threads() {
+        let (s, ctx) = pinned_beam();
+        let top = Settings { volume_fraction: 0.5, iterations: 3, filter: Some(1.0), keep: None };
+        let wide = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let mut threads = 0;
+        wide.install(|| {
+            sim::solve_redesigned(&s, &ctx, &mut |a| {
+                threads = rayon::current_num_threads();
+                optimize(a, &top, &ctx, s.tol).map(|_| ())
+            })
+        })
+        .unwrap();
+        assert_eq!(threads, 1);
     }
 
     /// A kept region's cells come back at density 1, solid, whatever the

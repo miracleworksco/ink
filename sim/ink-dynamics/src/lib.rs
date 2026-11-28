@@ -9,7 +9,8 @@
 //! `effort-limits:PATH`: its effort, a value this package provides at each
 //! moment (a param no file writes), within its limits. Answers are
 //! estimates: the masses are measured, and a motion is sampled at steps
-//! chosen from it.
+//! chosen from it; but an effort claim on a mechanism model/bounded.rs
+//! covers is bounded over every moment of each step it settles.
 //! It depends on core, kernel, language and ink-carried (std's carried
 //! description), never on another package (../kernel/docs/CORE.md).
 

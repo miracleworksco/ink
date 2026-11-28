@@ -120,7 +120,14 @@ feature is two cells across, to an eighth of a cell: the solve says how many
 (`cells_refined`) and how fine (`refined_res`). A cell under 3% material (a
 sliver) is left out once splitting is done (`dropped_sliver_volume_mm3`),
 and one beside a split cell its size is split as it is: a sliver is one
-at the size of the cells round it.
+at the size of the cells round it. A sliver left out is sorted on the
+coarse grid by what it joins, as material the samples miss is: a cluster
+touching one connected group of kept cells whose every sliver lies within
+a sample of kept material is the part's own skin, and a tip of them
+changes nothing; a foil, web or ligament of slivers joining kept cells in
+two places apart on the grid, running beside them over more than a tip's
+cells, or joining none, leaves every claim on the solve unknown, naming
+the place.
 
 A piece disconnected from every fix or convection surface is included in
 transient heat: its initial temperature and heat capacity determine its
@@ -244,6 +251,28 @@ washers, below 1 mm cells): their claims are then unknown. Results:
   in elastic studies). The elastic check takes moments about the center
   of the part's bounds and scales them by the part's size and the loads
   and reactions;
+- where each landed, the setup's receipt: a force on the wrong end or a
+  clamp where the bolt is not reads at a glance. Each load's `kind` and
+  `landed`: `at`, where its force acts (its material's centroid, a
+  pressure's centre of force: for a flat face, `moment_nmm` is `at` x
+  `total`), `lo` and `hi`, the box of what it landed on (the surface
+  points a pressure took, else its material's cells: to within a cell),
+  `volume_mm3` or `area_mm2`, and a pressure's `pressure_mpa` (`min`,
+  `mean` by area, `max`). Each fix's `dofs` and `holds` (its directions,
+  and what it leaves free), `landed` (the part's surface in its region:
+  `area_mm2`, its centroid `at`, its box, to within half a cell at the
+  region's rim; `volume_mm3`, the material it holds; a cut of symmetry,
+  its `plane`), and `share`, its part of all the reactions' size. Elastic
+  moments are given again about `part_centroid_mm`, the centroid of the
+  material as the cells hold it (`moment_about_part_centroid_nmm`).
+  `material.from` says where each property came from (`(material petg)`,
+  or `(E 2000MPa)` as written), and `bodies` which of the model's bodies
+  the solve holds and which it left out, and why (outside the study's
+  shape, or joined to no fix and dropped), judged on points through each
+  body (one thinner than a sixteenth of its box is not judged; models
+  with more than 200 bodies say `unavailable`). `--plain` gives the
+  receipt and the headline results in words (it does not combine with
+  `--points` or `--render`);
 - the largest rotation (static elastic), solver statistics, warnings;
 - `accuracy: null`: every number is an estimate, as a claim on a study
   is (a claim compares three grids: Study claims).

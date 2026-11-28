@@ -2,9 +2,10 @@ use super::Trajectory;
 use super::following::{holds, rest};
 use super::forces::{Eval, forces, said};
 use super::linalg::modes_of;
+use super::masses::Sensitivity;
 use super::types::{Layout, Stepped};
 use super::{DEVIATION, PER_PERIOD, RESOLVE, UNRESOLVED};
-use crate::model::Model;
+use crate::model::{Model, ROUNDING};
 use std::sync::Mutex;
 
 /// Where a simulation has got to: its motion so far, and the integrator's
@@ -50,6 +51,9 @@ pub(super) struct Progress {
     /// Whether the call's time limit stopped the last stepping (its stop,
     /// in traj.stopped, is not the motion's: a later call steps on).
     pub(super) limited: bool,
+    /// The motion's sensitivity to what the masses are known to, carried
+    /// to the last knot (None: no source, or lost: traj.lost).
+    pub(super) sens: Option<Sensitivity>,
 }
 
 /// A mechanism (a model of states: Model::state) simulated over `span`,
@@ -108,7 +112,7 @@ impl Simulation {
             }
             let st = m.springs.as_ref().expect("the springs at a state of a model with springs");
             for j in 0..nr {
-                if m.gm[nq + j][nq + j] > 1e-9 * st.heft[j] {
+                if m.gm[nq + j][nq + j] > ROUNDING * m.heft[nq + j] {
                     w.push(j);
                 } else {
                     y.push(j);
@@ -192,6 +196,10 @@ impl Simulation {
                 }
             }
         }
+        let (sens, lost) = match Sensitivity::start(&model, &lay, t0, &y0, &ev, &still) {
+            Ok(s) => (s, None),
+            Err(why) => (None, Some((t0, why))),
+        };
         let f0 = deriv(&y0, &ev.acc);
         let fastest = y0[n..].iter().map(|v| v.abs()).collect();
         let scale = (ns..n).map(|i| lay.gyration[i] * y0[i].abs()).fold(0.0, f64::max);
@@ -203,6 +211,8 @@ impl Simulation {
             tensions: vec![ev.tensions.clone()],
             scale: vec![scale],
             gyration: lay.gyration.clone(),
+            mass: Vec::new(),
+            lost,
             springs: nr > 0,
             stopped: None,
             rejected: 0,
@@ -233,6 +243,7 @@ impl Simulation {
             inertia,
             fastest,
             limited: false,
+            sens,
         };
         Ok(Simulation { model, lay, span, progress: Mutex::new(progress) })
     }
@@ -336,6 +347,20 @@ impl Simulation {
             let k = traj.t.partition_point(|&x| x <= t).clamp(1, traj.t.len()) - 1;
             (UNRESOLVED + PER_PERIOD * periods) * DEVIATION.max(RESOLVE * traj.scale[k]) / traj.gyration[i]
         })
+    }
+
+    /// Stepped component i's band at t for what the bodies' masses are
+    /// known to (Trajectory::mass_band): its position's and first four
+    /// derivatives' reach either way.
+    pub fn mass_band(&self, i: usize, t: f64) -> [f64; 5] {
+        self.reach(t, |traj| traj.mass_band(i, t))
+    }
+
+    /// The widest a following error's spring force reads over the span to
+    /// `until`: its band there (the widest of it: band) and its masses'
+    /// largest (Trajectory::mass_most).
+    pub fn widest(&self, i: usize, until: f64) -> f64 {
+        self.band(i, until) + self.reach(until, |traj| traj.mass_most(i, until))
     }
 
     /// Stepped component i's own frequency (/s: Layout::own).

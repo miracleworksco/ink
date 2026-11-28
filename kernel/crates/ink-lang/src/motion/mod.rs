@@ -18,7 +18,7 @@ use ink_core::graph::{BinOp, DriveRead, MotionRead, Node, UnOp, Var};
 use ink_core::interval;
 use ink_core::tape::Tape;
 pub use ink_kernel::motion::{MAX_STEPS, Motion};
-use ink_kernel::rigid::Isometry;
+use ink_kernel::rigid::{Isometry, TurnBounds};
 
 // Module map:
 //   asked     Stepped, Search, Asked: a claim's answer and what may upgrade it

@@ -171,6 +171,13 @@ pub(super) fn connect(st: &Study, cells: &Cells, holds: &Holds, held: &HeldCells
             "material the cells' samples missed lies between them near {at:?} mm, and {what}: a web, foil or ligament thinner than a quarter of a cell the mesh does not hold. Make it at least two cells thick, or refine (res r) to a quarter of its thickness"
         )));
     }
+    if let Some((at, what)) = &cells.slivers.apart {
+        incomplete.push(Incomplete::Separation(format!(
+            "material in cells under {}% full that no cell beside it takes lies near {at:?} mm, and {what}: a foil, web or ligament the mesh drops as a sliver, so what it carries is lost. Make it thicker, or refine (res r) until it fills {}% of its cells",
+            100.0 * MIN_FRACTION,
+            100.0 * MIN_FRACTION
+        )));
+    }
     let mut insulated_notes = Vec::new();
     let keep: Vec<bool> = classified
         .iter()

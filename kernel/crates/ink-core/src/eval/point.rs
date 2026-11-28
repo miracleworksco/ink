@@ -212,10 +212,21 @@ fn grad_batches<const N: usize, const PICK: bool>(tape: &Tape, ctx: &Ctx, pts: &
                 }
                 Op::Var(Var::T) => s[o] = [[ctx.t; N], [0.0; N], [0.0; N], [0.0; N]],
                 Op::Var(Var::Param(p)) => s[o] = [[ctx.params[p as usize]; N], [0.0; N], [0.0; N], [0.0; N]],
-                Op::Un(op) => grad_lanes(&mut s, o, [ins.a as usize; 3], |x| {
-                    let (v, fa) = dun(op, x[0][0]);
-                    [v, mul0(fa, x[0][1]), mul0(fa, x[0][2]), mul0(fa, x[0][3])]
-                }),
+                Op::Un(op) => {
+                    let a = [ins.a as usize; 3];
+                    // Dispatch before the lane loop, as for Bin: a match
+                    // in each lane kept it scalar.
+                    match op {
+                        UnOp::Neg => un_grad(&mut s, o, a, |x| dun(UnOp::Neg, x)),
+                        UnOp::Abs => un_grad(&mut s, o, a, |x| dun(UnOp::Abs, x)),
+                        UnOp::Sqrt => un_grad(&mut s, o, a, |x| dun(UnOp::Sqrt, x)),
+                        UnOp::Square => un_grad(&mut s, o, a, |x| dun(UnOp::Square, x)),
+                        UnOp::Floor => un_grad(&mut s, o, a, |x| dun(UnOp::Floor, x)),
+                        UnOp::Rad => un_grad(&mut s, o, a, |x| dun(UnOp::Rad, x)),
+                        UnOp::Deg => un_grad(&mut s, o, a, |x| dun(UnOp::Deg, x)),
+                        _ => un_grad(&mut s, o, a, |x| dun(op, x)),
+                    }
+                }
                 Op::Bin(op) => {
                     let args = [ins.a as usize, ins.b as usize, ins.b as usize];
                     // Dispatch before the lane loop for the common ops,
@@ -292,6 +303,14 @@ fn grad_batches<const N: usize, const PICK: bool>(tape: &Tape, ctx: &Ctx, pts: &
         }
     }
     out
+}
+
+#[inline(always)]
+fn un_grad<const N: usize>(s: &mut [[[f64; N]; 4]], o: usize, args: [usize; 3], partial: impl Fn(f64) -> (f64, f64)) {
+    grad_lanes(s, o, args, |x| {
+        let (v, fa) = partial(x[0][0]);
+        [v, mul0(fa, x[0][1]), mul0(fa, x[0][2]), mul0(fa, x[0][3])]
+    });
 }
 
 #[inline(always)]

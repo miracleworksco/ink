@@ -13,7 +13,7 @@ resolver = "3"
 # (../kernel/Cargo.toml), the oldest toolchain these build and test with, and
 # clippy lints for no method newer.
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 rust-version = "1.95"
 
 # Lints, for every crate here (each says `[lints] workspace = true`).

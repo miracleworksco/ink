@@ -2,8 +2,9 @@ use super::Simulation;
 use super::forces::{Eval, forces, said};
 use super::linalg::{radius, solve};
 use super::simulation::{Progress, deriv};
-use super::types::Fail;
+use super::types::{Fail, Layout};
 use super::{DEVIATION, MAX_STAGES, RESOLVE, TOLERANCE, out_of_time};
+use crate::model::Model;
 
 impl Simulation {
     /// Why it stops at moment t, positions q and speeds v: `why`, unless it
@@ -24,35 +25,7 @@ impl Simulation {
     /// their speeds), along the simulated coordinates and their speeds by
     /// differences. Err: a state the differences step to, why.
     pub(super) fn jacobian(&self, p: &mut Progress, t: f64) -> Result<Vec<Vec<f64>>, (f64, Vec<f64>, String)> {
-        let (lay, n) = (&self.lay, self.lay.n());
-        let nn = 2 * n;
-        let mut jac = vec![vec![0.0; nn]; nn];
-        for i in 0..n {
-            jac[i][n + i] = 1.0;
-        }
-        let base = &p.last;
-        for j in 0..lay.w.len() {
-            let mut rhs = vec![0.0; n];
-            for l in 0..lay.w.len() {
-                rhs[lay.ns + l] = -1e6 * base.keff[l][j];
-            }
-            let col = solve(&base.mss, &rhs).unwrap_or_else(|| vec![0.0; n]);
-            for i in 0..n {
-                jac[n + i][lay.ns + j] = col[i];
-            }
-        }
-        for c in (0..lay.ns).chain(n..n + lay.ns) {
-            // The accelerations' own rounding is some 1e-14 of them.
-            let delta = 1e-7 * p.y[c].abs().max(1.0);
-            let mut y = p.y.clone();
-            y[c] += delta;
-            p.traj.evaluations += 1;
-            let ev = forces(&self.model, lay, t, &y[..n], &y[n..], &base.acc).map_err(|f| (t, y.clone(), said(&self.model, t, &y[n..], f)))?;
-            for i in 0..n {
-                jac[n + i][c] = (ev.acc[i] - base.acc[i]) / delta;
-            }
-        }
-        Ok(jac)
+        jacobian_at(&self.model, &self.lay, t, &p.y, &p.last, &mut p.traj.evaluations)
     }
 
     /// Steps on from the last knot until the motion reaches `until`: by
@@ -184,6 +157,7 @@ impl Simulation {
             p.traj.scale.push(p.scale);
             p.y = y1;
             p.last = ev;
+            self.carry(p, t1 - t);
             if p.reject {
                 hnew = hnew.min(h);
             }
@@ -224,6 +198,18 @@ impl Simulation {
         }
     }
 
+    /// The masses' sensitivity carried over the step h long just accepted,
+    /// to its knot (the last), and its band over the step kept (none kept
+    /// once lost: infinite there, Trajectory::mass_band).
+    fn carry(&self, p: &mut Progress, h: f64) {
+        let t = *p.traj.t.last().expect("a knot");
+        match p.sens.as_mut().map(|s| s.step(&self.model, &self.lay, t, h, &p.y, &p.last)) {
+            Some(Ok(groups)) => p.traj.push_mass(groups),
+            Some(Err(why)) => (p.sens, p.traj.lost) = (None, Some((t, why))),
+            None => {}
+        }
+    }
+
     /// Each component's error scale at a step of length h: its relative
     /// TOLERANCE, and its absolute one, a simulated coordinate's TOLERANCE,
     /// a deviation's a share RESOLVE of the largest deviation the springs
@@ -258,6 +244,39 @@ impl Simulation {
         let grows = stages.iter().any(|e| e.inertia.iter().zip(&p.last.inertia).any(|(v, last)| *v > 2.0 * last || *last > 2.0 * v));
         (grows && !across).then_some(Attempt::Reject(h * 0.5))
     }
+}
+
+/// f's Jacobian at state y, moment t, read there as `base` (Simulation::
+/// jacobian), each state its differences step to counted in `evaluations`.
+pub(super) fn jacobian_at(model: &Model, lay: &Layout, t: f64, y: &[f64], base: &Eval, evaluations: &mut usize) -> Result<Vec<Vec<f64>>, (f64, Vec<f64>, String)> {
+    let n = lay.n();
+    let nn = 2 * n;
+    let mut jac = vec![vec![0.0; nn]; nn];
+    for i in 0..n {
+        jac[i][n + i] = 1.0;
+    }
+    for j in 0..lay.w.len() {
+        let mut rhs = vec![0.0; n];
+        for l in 0..lay.w.len() {
+            rhs[lay.ns + l] = -1e6 * base.keff[l][j];
+        }
+        let col = solve(&base.mss, &rhs).unwrap_or_else(|| vec![0.0; n]);
+        for i in 0..n {
+            jac[n + i][lay.ns + j] = col[i];
+        }
+    }
+    for c in (0..lay.ns).chain(n..n + lay.ns) {
+        // The accelerations' own rounding is some 1e-14 of them.
+        let delta = 1e-7 * y[c].abs().max(1.0);
+        let mut y = y.to_vec();
+        y[c] += delta;
+        *evaluations += 1;
+        let ev = forces(model, lay, t, &y[..n], &y[n..], &base.acc).map_err(|f| (t, y.clone(), said(model, t, &y[n..], f)))?;
+        for i in 0..n {
+            jac[n + i][c] = (ev.acc[i] - base.acc[i]) / delta;
+        }
+    }
+    Ok(jac)
 }
 
 /// What a step's attempt comes to: its end state, the knot's state read

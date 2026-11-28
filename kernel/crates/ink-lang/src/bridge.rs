@@ -5,6 +5,7 @@ mod boxes;
 mod flank;
 mod footing;
 mod joints;
+mod prisms;
 mod rates;
 use ink_core::graph::Node;
 use rates::{LineNorm, Rate, Rates};
@@ -489,7 +490,17 @@ impl Doc {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn bridge_support(&mut self, f: NodeId, bed: NodeId, angle: NodeId, height: NodeId, depth: NodeId, limit: NodeId, step: NodeId) -> [NodeId; 3] {
+    pub(super) fn bridge_support(
+        &mut self,
+        f: NodeId,
+        bed: NodeId,
+        angle: NodeId,
+        height: NodeId,
+        depth: NodeId,
+        limit: NodeId,
+        step: NodeId,
+        dirs: &[[NodeId; 2]],
+    ) -> [NodeId; 3] {
         let g = &mut self.g;
         let f = joints::material(g, f);
         let high = g.var(Var::Z);
@@ -508,7 +519,20 @@ impl Doc {
         faces.bed = Some(bed);
         faces.memo.clear();
         let roof = faces.candidate(f, zero, false);
-        let boxes = boxes::unsupported(g, f, bed, depth, height, limit, step).unwrap_or(yes);
+        // Each certificate reads bridges only along the directions asked:
+        // boxes along an axis that is one of them, prisms (at any angle)
+        // where boxes has not already shown every ceiling bridged.
+        let axes = [0, 1].map(|k| {
+            dirs.iter().any(|d| {
+                let (on, off) = (prisms::constant(g, d[k]), prisms::constant(g, d[1 - k]));
+                off == Some(ink_core::interval::I::point(0.0)) && on.is_some_and(|v| v.lo == v.hi && v.lo.abs() == 1.0)
+            })
+        });
+        let boxes = boxes::unsupported(g, f, bed, depth, height, limit, step, axes).unwrap_or(yes);
+        let boxes = match prisms::constant(g, boxes) {
+            Some(shown) if shown.lo > 0.0 => boxes,
+            _ => prisms::unsupported(g, f, bed, depth, height, limit, step, dirs).map_or(boxes, |p| g.max(boxes, p)),
+        };
         let above = g.sub(high, bed);
         let above = g.max(zero, above);
         let half = g.constant(0.5);

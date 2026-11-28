@@ -122,14 +122,26 @@ impl Bound {
         let far = 1e-12 * p.iter().fold(0.0f64, |m, x| m.max(x.abs()));
         boxed.max(segment_distance(p, self.a, self.b) - self.radius) - self.slack - far
     }
+
+    /// Whether `at(p)` is below d, by squares (`far`: as `at` finds it).
+    fn below(&self, p: V3, far: f64, d: f64) -> bool {
+        let d = d + self.slack + far;
+        (0..3).map(|k| (self.lo[k] - p[k]).max(0.0).max(p[k] - self.hi[k]).powi(2)).sum::<f64>() < d * d && segment_d2(p, self.a, self.b) < (d + self.radius).powi(2)
+    }
 }
 
 /// The distance from p to the segment ab, in floats.
 fn segment_distance(p: V3, a: V3, b: V3) -> f64 {
+    segment_d2(p, a, b).sqrt()
+}
+
+/// Its square.
+fn segment_d2(p: V3, a: V3, b: V3) -> f64 {
     let ab = sub(b, a);
     let l = dot(ab, ab);
     let t = if l > 0.0 { (dot(sub(p, a), ab) / l).clamp(0.0, 1.0) } else { 0.0 };
-    norm(sub(p, [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]]))
+    let e = sub(p, [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]]);
+    dot(e, e)
 }
 
 /// Closest point on triangle (Ericson), and which feature: 0 face, 1..=3
@@ -177,6 +189,15 @@ fn closest_on_triangle(p: V3, a: V3, b: V3, c: V3) -> (V3, u8) {
 type Node = (V3, V3, u32, u32, bool);
 const EMPTY: V3 = [0.0; 3];
 
+/// A box turned to axes (orthonormal, in floats): what it holds lies
+/// between lo and hi along each. Across a slanted sliver it is as thin as
+/// the sliver, where its box is as wide as it is long.
+struct Oriented {
+    axes: [V3; 3],
+    lo: V3,
+    hi: V3,
+}
+
 /// Distance to a triangle mesh, in floats: signed by angle-weighted
 /// pseudo-normals (`distance`), and for a closed mesh by parity, the side
 /// of the solid it encloses (`signed`, `sample`).
@@ -191,6 +212,8 @@ pub struct MeshDistance {
     // AABB tree (`build`)
     nodes: Vec<Node>,
     order: Vec<u32>,
+    /// Each node's box turned to its largest triangle (`oriented`).
+    turned: Vec<Oriented>,
     /// Every edge in an even number of triangles (`odd_edges`).
     closed: bool,
     /// The edges in an odd number of triangles (`odd_edges`).
@@ -257,7 +280,7 @@ impl MeshDistance {
             }
         }
         let odd = edge_n.values().filter(|e| e.1 % 2 == 1).count();
-        let mut md = MeshDistance { verts, tris, face_n, vert_n, edge_n, nodes: Vec::new(), order: Vec::new(), closed: odd == 0, odd };
+        let mut md = MeshDistance { verts, tris, face_n, vert_n, edge_n, nodes: Vec::new(), order: Vec::new(), turned: Vec::new(), closed: odd == 0, odd };
         let mut order: Vec<u32> = (0..md.tris.len() as u32).collect();
         let boxes: Vec<(V3, V3)> = order.iter().map(|&t| md.tri_box(t)).collect();
         let mut sizes = std::collections::HashMap::new();
@@ -267,6 +290,10 @@ impl MeshDistance {
             return None;
         }
         (md.nodes, md.order) = (nodes, order);
+        md.turned = md.oriented();
+        if stopped() {
+            return None;
+        }
         Some(md)
     }
 
@@ -336,6 +363,80 @@ impl MeshDistance {
         }
     }
 
+    /// Each node's box turned to its largest triangle: along its longest
+    /// edge, its normal and their cross, each a little larger for the
+    /// rounding of its corners' coordinates there.
+    fn oriented(&self) -> Vec<Oriented> {
+        use rayon::prelude::*;
+        // Each node's run of `order`.
+        let mut runs = vec![(0u32, 0u32); self.nodes.len()];
+        fn run(nodes: &[Node], n: usize, runs: &mut [(u32, u32)]) -> (u32, u32) {
+            let (_, _, a, b, leaf) = nodes[n];
+            runs[n] = if leaf {
+                (a, a + b)
+            } else {
+                let (l, r) = (run(nodes, a as usize, runs), run(nodes, b as usize, runs));
+                (l.0, r.1)
+            };
+            runs[n]
+        }
+        if !self.nodes.is_empty() {
+            run(&self.nodes, 0, &mut runs);
+        }
+        let slack = 1e-12 * (1.0 + self.verts.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs())));
+        let corners = |t: u32| self.tris[t as usize].map(|i| self.verts[i as usize]);
+        let area: Vec<f64> = (0..self.tris.len() as u32).into_par_iter().map(|t| norm(normal(corners(t)))).collect();
+        runs.par_iter()
+            .map(|&(s, e)| {
+                let ts = &self.order[s as usize..e as usize];
+                let Some(&big) = ts.iter().max_by(|&&x, &&y| area[x as usize].total_cmp(&area[y as usize])) else {
+                    return Oriented { axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], lo: [f64::INFINITY; 3], hi: [f64::NEG_INFINITY; 3] };
+                };
+                let v = corners(big);
+                let len = |k: usize| norm(sub(v[(k + 1) % 3], v[k]));
+                let k = (0..3).max_by(|&x, &y| len(x).total_cmp(&len(y))).unwrap();
+                let unit = |x: V3| -> Option<V3> {
+                    let l = norm(x);
+                    (l > 0.0 && l.is_finite()).then(|| x.map(|c| c / l))
+                };
+                let axes = unit(sub(v[(k + 1) % 3], v[k]))
+                    .and_then(|u| {
+                        let n = normal(v);
+                        let along = dot(n, u);
+                        unit(std::array::from_fn(|a| n[a] - along * u[a])).map(|n| (u, n))
+                    })
+                    .map(|(u, n)| [u, n, [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]])
+                    .unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+                let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+                for &t in ts {
+                    for c in corners(t) {
+                        for a in 0..3 {
+                            let x = dot(axes[a], c);
+                            lo[a] = lo[a].min(x);
+                            hi[a] = hi[a].max(x);
+                        }
+                    }
+                }
+                Oriented { axes, lo: lo.map(|x| x - slack), hi: hi.map(|x| x + slack) }
+            })
+            .collect()
+    }
+
+    /// The squared distance from p to node n's boxes (the larger), no more
+    /// than to what it holds (`slack`: for the rounding of p's coordinates
+    /// along the turned axes, generously).
+    fn node_d2(&self, n: u32, p: V3, slack: f64) -> f64 {
+        let (lo, hi, ..) = self.nodes[n as usize];
+        let o = &self.turned[n as usize];
+        let (mut aa, mut oo) = (0.0, 0.0);
+        for a in 0..3 {
+            aa += (lo[a] - p[a]).max(0.0).max(p[a] - hi[a]).powi(2);
+            let x = dot(o.axes[a], p);
+            oo += ((o.lo[a] - x).max(x - o.hi[a]) - slack).max(0.0).powi(2);
+        }
+        aa.max(oo)
+    }
+
     /// The triangle nearest p, in floats: (squared distance, nearest point,
     /// triangle, feature as `closest_on_triangle`).
     fn closest(&self, p: V3) -> (f64, V3, u32, u8) {
@@ -345,13 +446,19 @@ impl MeshDistance {
     /// `closest`, given that a triangle lies within `reach` of p (only
     /// nearer ones are looked at).
     fn closest_within(&self, p: V3, reach: f64) -> (f64, V3, u32, u8) {
-        let mut best = (reach * reach * (1.0 + 1e-9), [0.0; 3], 0u32, 0u8);
+        self.closest_from(p, (reach * reach * (1.0 + 1e-9), [0.0; 3], 0u32, 0u8))
+    }
+
+    /// `closest`, from `best`: what a triangle gives (or a squared reach a
+    /// triangle lies within). Only nearer ones are looked at.
+    fn closest_from(&self, p: V3, mut best: (f64, V3, u32, u8)) -> (f64, V3, u32, u8) {
         let mut stack = Vec::with_capacity(64);
         stack.push(0u32);
-        let box_d2 = |lo: V3, hi: V3| -> f64 { (0..3).map(|a| (lo[a] - p[a]).max(0.0).max(p[a] - hi[a]).powi(2)).sum() };
+        let slack = 1e-12 * (1.0 + p.iter().fold(0.0f64, |m, x| m.max(x.abs())));
+        let box_d2 = |n: u32| self.node_d2(n, p, slack);
         while let Some(n) = stack.pop() {
-            let (lo, hi, a, b, leaf) = self.nodes[n as usize];
-            if box_d2(lo, hi) >= best.0 {
+            let (_, _, a, b, leaf) = self.nodes[n as usize];
+            if box_d2(n) >= best.0 {
                 continue;
             }
             if leaf {
@@ -364,7 +471,7 @@ impl MeshDistance {
                     }
                 }
             } else {
-                let (dl, dr) = (box_d2(self.nodes[a as usize].0, self.nodes[a as usize].1), box_d2(self.nodes[b as usize].0, self.nodes[b as usize].1));
+                let (dl, dr) = (box_d2(a), box_d2(b));
                 if dl < dr {
                     stack.push(b);
                     stack.push(a);
@@ -382,14 +489,15 @@ impl MeshDistance {
     /// box, and their `Bound` within reach + r of c. Each with its bound
     /// and that bound at c, nearest c first; None where more than `most`
     /// are.
-    fn near(&self, lo: V3, hi: V3, c: V3, r: f64, reach: f64, most: usize) -> Option<Vec<(f64, u32, Bound)>> {
+    fn near(&self, bounds: &[Bound], lo: V3, hi: V3, c: V3, r: f64, reach: f64, most: usize) -> Option<Vec<(f64, u32, Bound)>> {
         let apart = |a: V3, b: V3| -> f64 { (0..3).map(|k| (a[k] - hi[k]).max(lo[k] - b[k]).max(0.0).powi(2)).sum() };
         let r2 = reach * reach;
         let mut out = Vec::new();
         let mut stack = vec![0u32];
+        let slack = 1e-12 * (1.0 + c.iter().fold(0.0f64, |m, x| m.max(x.abs())));
         while let Some(n) = stack.pop() {
             let (nlo, nhi, a, b, leaf) = self.nodes[n as usize];
-            if apart(nlo, nhi) > r2 {
+            if apart(nlo, nhi) > r2 || self.node_d2(n, c, slack) > (reach + r) * (reach + r) {
                 continue;
             }
             if !leaf {
@@ -397,11 +505,10 @@ impl MeshDistance {
                 continue;
             }
             for &t in &self.order[a as usize..(a + b) as usize] {
-                let (tlo, thi) = self.tri_box(t);
-                if apart(tlo, thi) > r2 {
+                let bound = bounds[t as usize];
+                if apart(bound.lo, bound.hi) > r2 {
                     continue;
                 }
-                let bound = Bound::of(self.tris[t as usize].map(|i| self.verts[i as usize]), tlo, thi);
                 let at = bound.at(c);
                 if at <= reach + r {
                     if out.len() == most {
@@ -529,24 +636,35 @@ impl MeshDistance {
     /// and how many lines of it (along x) were signed by `distance` for
     /// being unclear (none for a mesh that is not closed: it is signed so
     /// throughout). A block of BLOCK^3 points gathers once the triangles
-    /// that may lie within d + 2r of a point of it (d its centre's
-    /// distance, r its half-diagonal: where the centre's distance is right,
-    /// every point's nearest), by a lower bound on their distance
-    /// (`Bound`). Each point reads those nearest the centre first by that
-    /// bound, passing over one bounded no nearer than its nearest so far
-    /// and stopping where the rest are, and keeps what it finds where that
-    /// is within the reach gathered: every triangle not gathered is
-    /// bounded farther from it. Else, or where the
-    /// block is near more than MOST triangles (far from the surface, where
-    /// a ball reaches much of it), it asks the tree itself.
+    /// that may lie within d + r of a point of it (d its centre's
+    /// distance, r its half-diagonal: no point is farther from the centre's
+    /// nearest), by a lower bound on their distance (`Bound`). Each point,
+    /// from the triangle nearest the point before it, reads those nearest
+    /// the centre first by that bound, passing over one bounded no nearer
+    /// than its nearest so far and stopping where the rest are, and keeps
+    /// what it finds where that is within the reach gathered: every
+    /// triangle not gathered is bounded farther from it. Else, or where
+    /// the block is near more than MOST triangles (far from the surface,
+    /// where a ball reaches much of it), it asks the tree itself, from that
+    /// triangle too.
     pub fn sample(&self, origin: V3, h: f64, dims: [usize; 3]) -> (Vec<f64>, usize) {
         use rayon::prelude::*;
         const BLOCK: usize = 4;
         // Triangles a block reads at most, past which its points ask the tree.
-        const MOST: usize = 1024;
+        const MOST: usize = 2048;
         let lines: Vec<Option<Vec<f64>>> =
             (0..dims[1] * dims[2]).into_par_iter().map(|r| self.crossings(origin[1] + h * (r % dims[1]) as f64, origin[2] + h * (r / dims[1]) as f64)).collect();
         let unclear = lines.iter().filter(|xs| self.closed && xs.is_none()).count();
+        if self.tris.is_empty() {
+            return (vec![f64::INFINITY; dims[0] * dims[1] * dims[2]], unclear);
+        }
+        let bounds: Vec<Bound> = (0..self.tris.len() as u32)
+            .into_par_iter()
+            .map(|t| {
+                let (lo, hi) = self.tri_box(t);
+                Bound::of(self.tris[t as usize].map(|i| self.verts[i as usize]), lo, hi)
+            })
+            .collect();
         let at = |i: usize, j: usize, k: usize| -> V3 { [origin[0] + h * i as f64, origin[1] + h * j as f64, origin[2] + h * k as f64] };
         let layer = dims[0] * dims[1];
         let mut values = vec![0.0; layer * dims[2]];
@@ -561,9 +679,11 @@ impl MeshDistance {
                     let c: V3 = [origin[0] + h * i0 as f64 + half(ni), origin[1] + h * j0 as f64 + half(nj), origin[2] + h * k0 as f64 + half(nk)];
                     let r = (half(ni).powi(2) + half(nj).powi(2) + half(nk).powi(2)).sqrt();
                     let (blo, bhi) = (at(i0, j0, k0), at(i0 + ni - 1, j0 + nj - 1, k0 + nk - 1));
-                    let reach = self.closest(c).0.sqrt() + 2.0 * r;
                     // The half-diagonal, rounded up generously.
-                    let near = self.near(blo, bhi, c, r * (1.0 + 1e-9), reach, MOST);
+                    let r = r * (1.0 + 1e-9);
+                    let (dc2, _, mut seed, _) = self.closest(c);
+                    let reach = (dc2.sqrt() + r) * (1.0 + 1e-9);
+                    let near = self.near(&bounds, blo, bhi, c, r, reach, MOST);
                     // Rounding in the distances to boxes from c and p's
                     // distance from c, generously.
                     let slack = 1e-12 * (1.0 + c.iter().fold(0.0f64, |m, x| m.max(x.abs())));
@@ -574,29 +694,46 @@ impl MeshDistance {
                             for i in i0..i0 + ni {
                                 let p = at(i, j, k0 + k);
                                 let pc = norm(sub(p, c));
+                                let far = 1e-12 * p.iter().fold(0.0f64, |m, x| m.max(x.abs()));
                                 let found = match (xs, &near) {
                                     (Some(xs), Some(near)) => {
-                                        let mut best = f64::INFINITY;
+                                        // From the triangle nearest the point before.
+                                        let v = self.tris[seed as usize].map(|i| self.verts[i as usize]);
+                                        let q = closest_on_triangle(p, v[0], v[1], v[2]).0;
+                                        let mut best = dot(sub(p, q), sub(p, q));
+                                        let mut root = best.sqrt();
                                         for (dc, t, bound) in near {
                                             // It, and those after it, at least this far from p.
-                                            if dc - pc - slack > best.sqrt() {
+                                            if dc - pc - slack > root {
                                                 break;
                                             }
-                                            if bound.at(p) >= best.sqrt() {
+                                            if !bound.below(p, far, root) {
                                                 continue;
                                             }
                                             let v = self.tris[*t as usize].map(|i| self.verts[i as usize]);
                                             let q = closest_on_triangle(p, v[0], v[1], v[2]).0;
-                                            best = best.min(dot(sub(p, q), sub(p, q)));
+                                            let d2 = dot(sub(p, q), sub(p, q));
+                                            if d2 < best {
+                                                (best, root, seed) = (d2, d2.sqrt(), *t);
+                                            }
                                         }
                                         let inside = xs.iter().filter(|&&x| x > p[0]).count() % 2 == 1;
                                         (best <= reach * reach).then(|| (if inside { -1.0 } else { 1.0 }) * best.sqrt())
                                     }
                                     _ => None,
                                 };
-                                slab[i + dims[0] * j + layer * k] = match found {
-                                    Some(v) => v,
-                                    None => self.signed_on(xs, p, f64::INFINITY),
+                                slab[i + dims[0] * j + layer * k] = match (found, xs) {
+                                    (Some(v), _) => v,
+                                    // The tree, from the triangle nearest the point before.
+                                    (None, Some(xs)) => {
+                                        let v = self.tris[seed as usize].map(|i| self.verts[i as usize]);
+                                        let (q, feat) = closest_on_triangle(p, v[0], v[1], v[2]);
+                                        let best = self.closest_from(p, (dot(sub(p, q), sub(p, q)), q, seed, feat));
+                                        seed = best.2;
+                                        let inside = xs.iter().filter(|&&x| x > p[0]).count() % 2 == 1;
+                                        (if inside { -1.0 } else { 1.0 }) * best.0.sqrt()
+                                    }
+                                    (None, None) => self.distance(p),
                                 };
                             }
                         }
@@ -612,10 +749,9 @@ impl MeshDistance {
 mod tests {
     use super::*;
 
-    /// A coin (radius 10, 1 thick) whose faces are fans of 720 slivers
+    /// A coin (radius 10, 1 thick) whose faces are fans of n slivers
     /// about its centre: each sliver's box overlaps hundreds of others'.
-    fn coin() -> Vec<[V3; 3]> {
-        let n = 720;
+    fn coin_of(n: usize) -> Vec<[V3; 3]> {
         let rim = |k: usize, z: f64| -> V3 {
             let a = 2.0 * std::f64::consts::PI * (k % n) as f64 / n as f64;
             [10.0 * a.cos(), 10.0 * a.sin(), z]
@@ -628,6 +764,10 @@ mod tests {
             t.push([rim(k, 0.0), rim(k + 1, 1.0), rim(k, 1.0)]);
         }
         t
+    }
+
+    fn coin() -> Vec<[V3; 3]> {
+        coin_of(720)
     }
 
     /// A block keeps a thin facet's nearness where `closest_on_triangle`
@@ -651,7 +791,7 @@ mod tests {
     }
 
     /// A grid's samples are each point's `signed`, to the bit, and near a
-    /// fan of slivers a point measures 19 triangles (each point's own
+    /// fan of slivers a point measures 16 triangles (each point's own
     /// search of the tree measured 260: the slivers' boxes overlap it).
     #[test]
     fn a_grid_near_slivers_measures_few_triangles_a_point() {
@@ -672,5 +812,93 @@ mod tests {
         }
         let points = values.len();
         assert!(measured < 60 * points, "{measured} triangles measured for {points} points");
+    }
+
+    /// Where a block is near more triangles than it gathers (the centre of
+    /// a coin of 4800 triangles, 2400 face slivers meeting at its centres),
+    /// its points ask the tree, and read as `signed` does, to the bit.
+    #[test]
+    fn a_block_near_too_many_triangles_reads_as_signed() {
+        let md = MeshDistance::new(&coin_of(1200));
+        let (origin, h, dims) = ([-0.4019, -0.3987, 0.1013], 0.05, [16, 16, 16]);
+        let (values, unclear) = md.sample(origin, h, dims);
+        assert_eq!(unclear, 0);
+        for (n, v) in values.iter().enumerate() {
+            let [i, j, k] = [n % dims[0], n / dims[0] % dims[1], n / (dims[0] * dims[1])];
+            let p = [origin[0] + h * i as f64, origin[1] + h * j as f64, origin[2] + h * k as f64];
+            assert_eq!(v.to_bits(), md.signed(p).to_bits(), "at {p:?}");
+        }
+    }
+
+    /// When a block is tiny relative to its distance from the mesh (`r << d`),
+    /// scaling the reach rounding allowance with `d + r` keeps tied triangles
+    /// from dropping out of the block's gather by rounding.
+    #[test]
+    fn a_blocks_reach_keeps_a_tied_triangle_on_a_tiny_grid() {
+        let tet = |apex: V3, sign: f64| -> [[V3; 3]; 4] {
+            let b = [apex[0] + sign * 1.0, apex[1] + sign * 0.2, apex[2] + sign * 0.2];
+            let c = [apex[0] + sign * 0.2, apex[1] + sign * 1.0, apex[2] + sign * 0.2];
+            let d = [apex[0] + sign * 0.2, apex[1] + sign * 0.2, apex[2] + sign * 1.0];
+            if sign < 0.0 { [[apex, b, c], [apex, c, d], [apex, d, b], [b, d, c]] } else { [[apex, c, b], [apex, d, c], [apex, b, d], [b, c, d]] }
+        };
+        let mut tris = Vec::new();
+        tris.extend_from_slice(&tet([1.5658009414360923, -2.827669168683515, -2.0668825626934093], -1.0));
+        tris.extend_from_slice(&tet([3.6435262642795645, -0.7499438458400433, 0.010842760150062785], 1.0));
+        let md = MeshDistance::new(&tris);
+        let (origin, h, dims) = ([2.604663576492978, -1.7888065336266292, -1.0280199276365236], 8.788283415904935e-9, [4, 4, 4]);
+        let (grid, _) = md.sample(origin, h, dims);
+        for (n, v) in grid.iter().enumerate() {
+            let p = [origin[0] + h * (n % 4) as f64, origin[1] + h * (n / 4 % 4) as f64, origin[2] + h * (n / 16) as f64];
+            assert_eq!(v.to_bits(), md.signed(p).to_bits(), "at {p:?}: {v}, signed {}", md.signed(p));
+        }
+    }
+
+    /// On a coin turned off all three axes, the oriented node boxes never
+    /// prune a closer triangle: `closest` matches a brute-force scan over
+    /// every triangle to the bit.
+    #[test]
+    fn a_rotated_coins_closest_matches_a_linear_scan() {
+        let (ca, sa) = (0.73_f64.cos(), 0.73_f64.sin());
+        let (cb, sb) = (1.11_f64.cos(), 1.11_f64.sin());
+        let rot = |p: V3| -> V3 {
+            let [x, y, z] = [p[0] * ca - p[1] * sa, p[0] * sa + p[1] * ca, p[2]];
+            [x, y * cb - z * sb, y * sb + z * cb]
+        };
+        let tris: Vec<[V3; 3]> = coin_of(120).into_iter().map(|t| t.map(rot)).collect();
+        let md = MeshDistance::new(&tris);
+        for k in 0..64 {
+            let a = 2.0 * std::f64::consts::PI * (k as f64 + 0.37) / 64.0;
+            let p = rot([6.3 * a.cos(), 6.3 * a.sin(), if k % 2 == 0 { 1.21 } else { -0.35 }]);
+            let got = md.closest(p).0;
+            let brute = tris
+                .iter()
+                .map(|v| {
+                    let q = closest_on_triangle(p, v[0], v[1], v[2]).0;
+                    dot(sub(p, q), sub(p, q))
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert_eq!(got.to_bits(), brute.to_bits(), "at {p:?}: tree {got}, brute {brute}");
+        }
+    }
+
+    /// Above a coin's face, away from its centre, a search of the tree
+    /// measures 41 triangles a point: its nodes' turned boxes are as thin
+    /// as the slivers across the axes, whose own boxes hold the point
+    /// below it (by those alone it measured 168).
+    #[test]
+    fn a_search_beside_slanted_slivers_measures_few_triangles() {
+        let md = MeshDistance::new(&coin());
+        let points: Vec<V3> = (0..64)
+            .map(|k| {
+                let a = 2.0 * std::f64::consts::PI * (k as f64 + 0.37) / 64.0;
+                [6.3 * a.cos(), 6.3 * a.sin(), 1.21]
+            })
+            .collect();
+        MEASURED.with(|m| m.set(0));
+        for p in &points {
+            assert!((md.closest(*p).0.sqrt() - 0.21).abs() < 1e-9);
+        }
+        let measured = MEASURED.with(|m| m.get());
+        assert!(measured < 60 * points.len(), "{measured} triangles measured for {} points", points.len());
     }
 }

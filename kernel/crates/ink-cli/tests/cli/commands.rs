@@ -49,11 +49,6 @@ pub fn max_value_at(model: &str, target: &str, points: &[Value]) -> f64 {
     records(&d["targets"][0]["results"]).iter().map(|r| num(&r["value"])).fold(f64::MIN, f64::max)
 }
 
-/// INK_NO_CACHE is set: checks of what the cache keeps are skipped.
-pub fn no_cache() -> bool {
-    std::env::var_os("INK_NO_CACHE").is_some()
-}
-
 /// The files under a cache directory's answers (kernel answers stored).
 pub fn files_under(dir: &std::path::Path) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };

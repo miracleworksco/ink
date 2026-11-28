@@ -34,7 +34,7 @@ fn a_rated_arm_is_answered_by_its_motion() {
     assert_eq!(code, 3, "{said}");
     assert!(line(&said, "motor-ok:").starts_with("motor-ok: NO, estimated"), "{said}");
     assert_eq!(line(&said, "motor-torque on"), "motor-torque on root/j/arm: YES, estimated, at 42 values of t  (arm.ink: (effort-limits -150 150))");
-    assert_eq!(line(&said, "the size of peak-torque on"), "the size of peak-torque on root/j/arm: 106.904 N*mm, between 106.817 and 111.267 N*mm, estimated  (ink effort on root)");
+    assert_eq!(line(&said, "the size of peak-torque on"), "the size of peak-torque on root/j/arm: 106.904 N*mm, between 106.865 and 111.219 N*mm, estimated  (ink effort on root)");
     assert!(line(&said, "weak-motor on").starts_with("weak-motor on root/j/arm: NO, estimated"), "{said}");
 }
 
@@ -49,8 +49,8 @@ fn two_assemblies_are_each_answered_over_their_own_motion() {
     assert!(line(&said, "swing-ok:").starts_with("swing-ok: NO, estimated") && line(&said, "raised-ok:").starts_with("raised-ok: YES, estimated"), "{said}");
     assert!(line(&said, "weak-motor on swing/j/arm").starts_with("weak-motor on swing/j/arm: NO, estimated"), "{said}");
     assert!(line(&said, "weak-motor on raised/j/arm").starts_with("weak-motor on raised/j/arm: YES, estimated"), "{said}");
-    assert!(said.contains("the size of peak-torque on swing/j/arm: 106.904 N*mm, between 106.817 and 111.267 N*mm, estimated  (ink effort on swing)"), "{said}");
-    assert!(said.contains("the size of peak-torque on raised/j/arm: 26.18 N*mm, between 26.159 and 27.249 N*mm, estimated  (ink effort on raised)"), "{said}");
+    assert!(said.contains("the size of peak-torque on swing/j/arm: 106.904 N*mm, between 106.865 and 111.219 N*mm, estimated  (ink effort on swing)"), "{said}");
+    assert!(said.contains("the size of peak-torque on raised/j/arm: 26.18 N*mm, between 26.174 and 27.233 N*mm, estimated  (ink effort on raised)"), "{said}");
 }
 
 #[test]

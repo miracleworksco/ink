@@ -111,8 +111,9 @@ fn forked_now(tape: &Tape, ctx: &Ctx, b: [I; 3], mut choices: Option<&mut [u8]>,
 
 /// `forked` over instructions `from..to`, which hold no jump, with Plain's
 /// step written out: the slots an argument the loop keeps in registers,
-/// not reloaded through the run's fields.
-#[inline(always)]
+/// not reloaded through the run's fields. One copy, its steps inline
+/// (`interval_ins`).
+#[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn plain_run(tape: &Tape, ctx: &Ctx, b: [I; 3], from: usize, to: usize, s: &mut [I], slopes: &mut Option<Slopes>, frames: &mut Frames, mut choices: Option<&mut [u8]>) {
     for (i, ins) in tape.code[from..to].iter().enumerate() {
@@ -211,8 +212,11 @@ pub(super) fn remainder_within(tape: &Tape, i: usize, slot: impl Fn(usize) -> I,
 /// from the values, so no rule of theirs touches it. None: a promise is
 /// read as its value. `slots`: `s` holds the tape's code's slots, so a
 /// min or max of a and a + c reads c's (Tape::apart) and is ordered by
-/// its sign.
+/// its sign. Inline in the loops that run it an instruction at a time:
+/// called, each instruction saved and restored 18 registers on an M4, a
+/// third of its own time on the Falcon swerve check.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub(super) fn interval_ins(
     tape: &Tape,
     ctx: &Ctx,

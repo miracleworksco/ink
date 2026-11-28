@@ -38,8 +38,7 @@ pub(super) fn shallow(v: &mut ModelView, f: u32, tol: f64, res: Option<f64>) -> 
 }
 
 pub(super) fn shallow_except(v: &mut ModelView, f: u32, except: Option<(u32, u32)>, tol: f64, res: Option<f64>) -> Check {
-    let (p, whole) = v.prove_except(f, except, res, tol);
-    let tape = v.clipped(f);
+    let (p, whole, tape) = v.prove_except(f, except, res, tol);
     let points = if p.exact { Vec::new() } else { Held::scoped(&p, &tape, &v.ctx) };
     let held = Some(Held::confirmed_at(p.exact, points, &tape, &v.ctx));
     Check { held, ..emptied(p, whole) }

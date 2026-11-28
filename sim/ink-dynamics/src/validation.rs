@@ -470,7 +470,7 @@ fn p16_corexy_lissajous() {
     // mechanism's inertia. The tensions leave nothing out.
     m.without_losses();
     assert!(m.unseparated.is_empty(), "what the tensions leave out: {:?}", m.unseparated);
-    let belts: Vec<(f64, f64)> = ["A", "B"].iter().map(|k| m.strip(&format!("root/xy/belt{k}"))).collect();
+    let belts: Vec<(f64, f64)> = ["A", "B"].iter().map(|k| m.strip(&format!("root/xy/belt{k}"))).map(|(lam, _, len)| (lam, len)).collect();
     let pi = std::f64::consts::PI;
     let (r, w, foot, h) = (20.0 / pi, 350.0, 350.0, 20.0);
     // Each route's length: 4 W + 2 H + 2 F - 2 h - 4 R + 3 pi R.
@@ -769,6 +769,57 @@ fn a_lossy_belt_drives_its_wheel_by_its_efficiency() {
         near(v, 100.0 + alpha * 0.005, 1e-9 * v, &format!("its speed at E = {e}"));
         near(x, 0.5 + 0.5 * alpha * 0.005 * 0.005, 1e-9, &format!("its angle at E = {e}"));
     }
+}
+
+/// An idler (3 g, its own diagonal 106 g mm^2) turned alone by a
+/// simulated coordinate, its spin-inertia `spin` g mm^2, posed `at`, its
+/// motor commanded `push` N mm: the model, and the source.
+fn idler(at: &str, spin: &str, push: &str) -> String {
+    format!(
+        r#"(import "std") (gravity 0 0 0) (t-span 0 0.01s)
+        (body idler (shape (cylinder-z 6 10)) (attr density 2.7g/cm3) (attr spin-inertia (* 1g*mm2 {spin})))
+        (assembly (drive (a 0)) (instance idler idler {at} (turn z a) (effort-limits -1000N*mm 1000N*mm)))
+        (assembly root (instance d (drive (simulate 0 100))))
+        (command root/d/idler {push})"#
+    )
+}
+
+/// An idler given no spin-inertia, posed where its centre measures a hair
+/// off its axis, sums m r^2 there and m r^2 less in its own inertia to a
+/// crumb above 0, below, or 0 exactly (each pose's, measured); a real
+/// 1e-12 g mm^2 is as little beside its heft. Each carries none: pushed,
+/// each is refused as having no inertia, and unpushed each keeps its speed.
+/// Before the fix the crumb above 0 took the push over it, 2e22 deg/s^2,
+/// and its steps shrank to nothing, where the one below was refused.
+#[test]
+fn an_inertia_within_rounding_of_its_heft_is_none_whatever_its_sign() {
+    let poses = [
+        ("(at (rot-x 37) (move 600 0 0))", "0"),
+        ("(at (rot-x 33.3) (rot-y 21.7) (move 123.4 56.7 89.1))", "0"),
+        ("(at (move 600 0 0))", "0"),
+        ("(at (rot-x 37) (move 600 0 0))", "1e-12"),
+    ];
+    let gm: Vec<f64> = poses.iter().map(|(at, spin)| states(&idler(at, spin, "1")).state_near(0.0, &[[0.0, 100.0, 0.0]]).gm[0][0]).collect();
+    assert!(gm[0] > 0.0 && gm[1] < 0.0 && gm[2] == 0.0 && gm[3] > 0.0, "the poses' crumbs: {gm:?}");
+    for (at, spin) in poses {
+        let why = simulate::simulate(states(&idler(at, spin, "1")), (0.0, 0.01), &[(0.0, 100.0)]).err().unwrap_or_default();
+        assert!(why.contains("nothing with mass moves along d.a"), "{at} {spin}: {why}");
+        let [x, v, a, ..] = simulated(states(&idler(at, spin, "0")), (0.0, 0.01), &[(0.0, 100.0)]).at(0, 0.005).unwrap();
+        assert!((x, v, a) == (0.5, 100.0, 0.0), "{at} {spin}: {x} {v} {a}");
+    }
+}
+
+/// The same idler with a small real spin-inertia, 1e-5 g mm^2 (a ten-
+/// millionth of its heft), posed as the crumb above 0 was, commanded 1e-8 N
+/// mm: alpha = tau / I, 1000 rad/s^2, to 1e-9.
+#[test]
+fn a_small_real_inertia_is_simulated() {
+    let traj = simulated(states(&idler("(at (rot-x 37) (move 600 0 0))", "1e-5", "1e-8")), (0.0, 0.01), &[(0.0, 100.0)]);
+    let alpha = 1000f64.to_degrees();
+    let [x, v, a, ..] = traj.at(0, 0.005).unwrap();
+    near(a, alpha, 1e-9 * alpha, "its acceleration");
+    near(v, 100.0 + alpha * 0.005, 1e-9 * v, "its speed");
+    near(x, 0.5 + 0.5 * alpha * 0.005 * 0.005, 1e-9, "its angle");
 }
 
 /// What inverse dynamics refuses stops a simulation, saying why (before
@@ -1181,4 +1232,115 @@ fn a_cord_between_carts_on_one_line_loses_nothing() {
     let at = m.at(0.5);
     near(at.effort[0], -49.992, 1e-9, "the drive, nothing lost");
     near(at.reactions[1].force[0] + at.reactions[2].force[0], at.reactions[0].force[0], 1e-9, "the carts' joints sum to the rail's");
+}
+
+/// What the masses are known to moves a simulated motion by its first-order
+/// sensitivity to each measured moment (simulate/masses.rs), checked against
+/// reruns with each moment moved to either side of its proven bounds (half
+/// their difference): a double pendulum swung from 50 and -30 degrees (its
+/// links' 20 moments, the motion nonlinear and coupled) over 1 s, and a
+/// 1 kg block (its mass measured) ringing on 100 N/mm over 25 periods, read
+/// at 200 moments: within 13% at each where its band is at least a
+/// twentieth of its largest (where a moment's change crosses 0 the two read
+/// apart), and 0.4% on the block. One-sided, a rerun at the far side reads
+/// the change's second-order part too: up to 1.8 times the band on the double
+/// pendulum where a change turns, at an extreme of a link's speed (2026-11-27).
+#[test]
+fn the_masses_band_is_what_each_measured_moment_moves_the_motion_by() {
+    let springs = |src: &str| {
+        let doc = Doc::load_str_in(&REGISTRY, src, "validation.ink", Path::new("."), &[]).unwrap_or_else(|e| panic!("{} at {}", e.message, e.line));
+        let reload = doc.reloader().unwrap();
+        crate::mechanism::springs_model(reload.with_states("root").unwrap(), &reload, "root", gravity(&doc).unwrap()).unwrap_or_else(|e| panic!("{}", e.message))
+    };
+    let double = r#"(import "std") (gravity 0 0 -9.81m/s2) (t-span 0 1s)
+        (body bar (shape (move (box 20 200 10) 0 100 0)) (attr density 2.7g/cm3) (frame end (at (move 0 200 0))))
+        (body tip (shape (move (box 16 150 8) 0 75 0)) (attr density 7.8g/cm3))
+        (def a (simulate 50))
+        (def b (simulate -30))
+        (assembly (double (p 0) (q 0)) (instance bar bar (at (rot-x -90)) (turn z p)) (instance tip tip (frame-of bar end) (turn z q)))
+        (assembly root (instance d (double a b)))"#;
+    let ringing = r#"(import "std") (gravity 0 0 -9.81m/s2) (t-span 0 0.5s)
+        (body b (shape (box 100 100 100)) (attr density 1g/cm3))
+        (assembly (axis (c 0)) (instance b b (at) (slide x c) (stiffness 100N/mm)))
+        (assembly root (instance a (axis (select (- (/ t 1s) 0.01) 5 0))))
+        (springs) (def lag (following-error root/a/b))"#;
+    let cases: [(&str, (f64, f64), Vec<(f64, f64)>, usize, f64); 2] = [(double, (0.0, 1.0), vec![(50.0, 0.0), (-30.0, 0.0)], 2, 0.13), (ringing, (0.0, 0.5), Vec::new(), 1, 0.004)];
+    for (src, span, start, components, within) in cases {
+        let build = |by: Option<(usize, f64)>| {
+            let mut m = if start.is_empty() { springs(src) } else { states(src) };
+            if let Some((j, by)) = by {
+                m.move_source(j, by);
+            }
+            simulated(m, span, &start)
+        };
+        let traj = build(None);
+        let n = states_or(src, &start, &springs);
+        let moved: Vec<[simulate::Trajectory; 2]> = (0..n).map(|j| [build(Some((j, 1.0))), build(Some((j, -1.0)))]).collect();
+        let at: Vec<f64> = (1..200).map(|k| span.0 + (span.1 - span.0) * k as f64 / 200.0).collect();
+        for i in 0..components {
+            for d in 0..2 {
+                let band: Vec<f64> = at.iter().map(|&t| traj.mass_band(i, t)[d]).collect();
+                let most = band.iter().fold(0.0f64, |a, b| a.max(*b));
+                for (&t, &b) in at.iter().zip(&band).filter(|x| *x.1 >= 0.05 * most) {
+                    let rerun: f64 = moved.iter().map(|[p, m]| 0.5 * (p.at(i, t).unwrap()[d] - m.at(i, t).unwrap()[d]).abs()).sum();
+                    assert!((rerun / b - 1.0).abs() < within, "component {i}'s derivative {d} at {t}: reruns move it {rerun}, its band {b}");
+                }
+            }
+        }
+    }
+}
+
+/// How many measured moments the model of `src` has (a springs model where it starts from none).
+fn states_or(src: &str, start: &[(f64, f64)], springs: &dyn Fn(&str) -> Model) -> usize {
+    if start.is_empty() { springs(src) } else { states(src) }.mass_source_count()
+}
+
+/// An actuator's limits bounded over a box of states (Model::limits_over)
+/// hold every limit read at a state inside it (limits_at): P4's pulley on
+/// its DC line and on one giving nothing from 300 to 301 rpm (600 to 602
+/// mm/s of the carriage), over speeds either way, across the band, inside
+/// it and either side, each box's ends and 400 states in it read; a
+/// constant limit reads no state and is its point.
+#[test]
+fn limits_bounded_over_speeds_hold_every_speed_in_them() {
+    use ink_core::interval::I;
+    let rate = "(+ 0deg/s (diff (rad->deg (/ x r)) t))";
+    let notch = format!("(let ((s (/ (+ 0deg/s (abs {rate})) 1rpm))) (select (- s 300) 400 (select (- s 301) -1 400)))");
+    let model = |limits: &str| {
+        states(&format!(
+            r#"(import "std") (gravity 0 0 -9.81m/s2) (def r (/ 60 pi))
+            (body carriage (shape (box 40 40 20)) (attr density 1g/cm3))
+            (assembly (axis (x 0)) (instance c carriage (at) (slide x x))
+              (instance m carriage (at (move 0 100 0)) (turn z (rad->deg (/ x r))) (effort-limits {limits})))
+            (assembly root (instance a (axis (* 300 (/ t 1s)))))"#
+        ))
+    };
+    let line = format!("(dc-torque-min 1470.997N*mm 330rpm 1 1 {rate}) (dc-torque-max 1470.997N*mm 330rpm 1 1 {rate})");
+    for (limits, reads) in [(line, true), (format!("(* 1N*mm (neg {notch})) (* 1N*mm {notch})"), true), ("-400N*mm 400N*mm".to_string(), false)] {
+        let m = model(&limits);
+        assert_eq!(m.limits_read_state(), [reads], "{limits}");
+        for (v0, v1) in [(0.0, 50.0), (-120.0, 80.0), (-700.0, -650.0), (590.0, 599.0), (599.0, 603.0), (600.5, 601.5), (603.0, 700.0), (1000.0, 1100.0)] {
+            let state = |v: I| [[I::new(10.0, 12.0), v, I::point(0.0)]];
+            let over = m.limits_over(0.5, &state(I::new(v0, v1))).unwrap()[0];
+            for k in 0..=400 {
+                let v = v0 + (v1 - v0) * k as f64 / 400.0;
+                for x in [10.0, 11.0, 12.0] {
+                    let (lo, hi) = m.limits_at(0.5, &[[x, v, 0.0]]).unwrap().0[0];
+                    assert!(over.0.lo <= lo && lo <= over.0.hi && over.1.lo <= hi && hi <= over.1.hi, "{limits} over [{v0}, {v1}] at {v}: ({lo}, {hi}) outside {over:?}");
+                }
+            }
+            if !reads {
+                assert_eq!(over, (I::point(-400.0), I::point(400.0)), "a constant is its point");
+            }
+        }
+        // Across the band its limits cross somewhere: no effort holds over it.
+        if limits.contains("select") {
+            for (v0, v1) in [(599.0, 603.0), (590.0, 700.0), (-603.0, -599.0)] {
+                let over = m.limits_over(0.5, &[[I::point(10.0), I::new(v0, v1), I::point(0.0)]]).unwrap()[0];
+                assert!(over.0.hi > over.1.lo, "over [{v0}, {v1}] the band's limits cross: {over:?}");
+            }
+            let below = m.limits_over(0.5, &[[I::point(10.0), I::new(0.0, 599.0), I::point(0.0)]]).unwrap()[0];
+            assert!(below.0.hi <= -399.0 && below.1.lo >= 399.0, "below the band all of it: {below:?}");
+        }
+    }
 }

@@ -1,22 +1,30 @@
 use super::couplings::unfed_need;
 use super::drives::effort_split;
 use super::spin::about_axis;
-use super::{Coupled, M3, Model, Moment, Num, ROUNDING, Rides, V3, Wrench, dot_n, mul, mv, rot, split, tr, vee};
+use super::{Coupled, M3, Model, Moment, Num, ROUNDING, Rides, Strip, V3, Wrench, dot_n, mul, mv, rot, split, tr, vee};
 use ink_core::eval::Ctx;
 use ink_core::v3::{cross, dot, norm};
 use std::sync::Arc;
 
 /// What the bodies sum into at a moment: the effort along each coordinate
 /// (N mm per unit of it), its rounding's scale, and the generalized
-/// inertia (g mm^2 per unit^2); each reaction's wrench (Wrench: force N,
-/// moment N mm about the world's origin) and the scales of its rounding;
-/// gravity in mm/s^2.
+/// inertia (g mm^2 per unit^2) and its diagonal's heft (Moment::heft;
+/// None: not kept); each reaction's wrench (Wrench: force N, moment N mm
+/// about the world's origin) and the scales of its rounding; gravity in
+/// mm/s^2.
 struct Sums<'a> {
     f: &'a mut [f64],
     scale: &'a mut [f64],
     gm: &'a mut [Vec<f64>],
+    heft: Option<&'a mut [f64]>,
     wr: &'a mut [Wrench],
     gv: V3,
+}
+
+/// A share `x` at unit mass, at mass `err`: none where it is none, whatever
+/// `err` (infinite: a mass not known).
+fn by(err: f64, x: f64) -> f64 {
+    if x == 0.0 { 0.0 } else { err * x }
 }
 
 /// Magnitudes of the terms actually projected onto this coordinate.
@@ -53,6 +61,9 @@ impl Sums<'_> {
             for &(l, kv) in dq {
                 self.gm[k][l] += mass * dot(jv, kv);
             }
+            if let Some(h) = self.heft.as_deref_mut() {
+                h[k] += mass * dot(jv, jv);
+            }
         }
         self.react(of, x, force, [0.0; 3], (size, 0.0));
     }
@@ -81,26 +92,13 @@ impl Sums<'_> {
     }
 
     /// A rigid body's share: its mass (g), centre and inertia about it in
-    /// its frame, at the moment its placement's rotation, the rotation's
-    /// rate and its translation, its numbers' second t-derivatives, their
-    /// partials along the coordinates that move it, and the reactions it is
-    /// of.
-    fn rigid(&mut self, mass: f64, c: V3, inertia: &M3, r: &[f64], dr: &[f64], p: &[f64], dt2: &[f64], dq: &[(usize, &[f64])], of: &[usize]) {
-        let (r, rd) = (rot(r), rot(dr));
-        let (rdd, pdd) = split(dt2);
-        let rt = tr(&r);
-        let x: V3 = std::array::from_fn(|k| mv(&r, &c)[k] + p[k]);
-        let a: V3 = std::array::from_fn(|k| mv(&rdd, &c)[k] + pdd[k]);
-        let w = vee(&mul(&rd, &rt));
-        let al = {
-            let (x, y) = (mul(&rdd, &rt), mul(&rd, &tr(&rd)));
-            vee(&std::array::from_fn(|i| std::array::from_fn(|j| x[i][j] + y[i][j])))
-        };
-        let iw = mul(&mul(&r, inertia), &rt);
-        // N, and N mm: g mm/s^2 and g mm^2/s^2 are 1e-6 of them.
-        let force: V3 = std::array::from_fn(|k| 1e-6 * mass * (a[k] - self.gv[k]));
-        let spin = cross(w, mv(&iw, &w));
-        let torque: V3 = std::array::from_fn(|k| 1e-6 * (mv(&iw, &al)[k] + spin[k]));
+    /// its frame, at the moment its placement (Posed), and the reactions it
+    /// is of.
+    fn rigid(&mut self, posed: &Posed, mass: f64, c: V3, inertia: &M3, of: &[usize]) {
+        let Posed { r, rd, rdd, pdd, w, .. } = posed;
+        let Share { x, a, iw, force, torque, partial } = posed.share(mass, c, inertia, self.gv);
+        let (w, al) = (*w, posed.al);
+        let diagonal = (0..3).map(|i| iw[i][i].abs()).sum::<f64>();
         let big = iw.iter().flatten().map(|x| x * x).sum::<f64>().sqrt();
         let size = (1e-6 * mass * (norm(a) + norm(self.gv)), 1e-6 * big * (norm(al) + norm(w) * norm(w)));
         // A steady spin's angular acceleration is a cancellation inside
@@ -117,23 +115,109 @@ impl Sums<'_> {
             let (j, k) = ((i + 1) % 3, (i + 2) % 3);
             1e-6 * (angular[i] + w[j].abs() * momentum[k] + w[k].abs() * momentum[j])
         });
-        let partial: Vec<(usize, V3, V3)> = dq
-            .iter()
-            .map(|(k, d)| {
-                let (dr, dp) = split(d);
-                let jv: V3 = std::array::from_fn(|i| mv(&dr, &c)[i] + dp[i]);
-                (*k, jv, vee(&mul(&dr, &rt)))
-            })
-            .collect();
+        let turned: Vec<V3> = partial.iter().map(|(_, _, kw)| mv(&iw, kw)).collect();
         for &(k, jv, jw) in &partial {
             self.f[k] += dot(jv, force) + dot(jw, torque);
             self.scale[k] += projected_size(jv, force_terms) + projected_size(jw, torque_terms);
-            for &(l, kv, kw) in &partial {
-                self.gm[k][l] += mass * dot(jv, kv) + dot(jw, mv(&iw, &kw));
+            for (&(l, kv, _), iwkw) in partial.iter().zip(&turned) {
+                self.gm[k][l] += mass * dot(jv, kv) + dot(jw, *iwkw);
+            }
+            if let Some(h) = self.heft.as_deref_mut() {
+                h[k] += mass * dot(jv, jv) + dot(jw, jw) * diagonal;
             }
         }
         self.react(of, x, force, torque, size);
     }
+}
+
+/// A rigid body's placement at a moment, as Sums::rigid reads it, kept
+/// for its share at other masses, centres and inertias (what each of its
+/// measured moments changes, Body::measure): the terms that rest on the
+/// placement alone, worked out once.
+struct Posed<'a> {
+    r: M3,
+    rd: M3,
+    rt: M3,
+    rdd: M3,
+    pdd: V3,
+    p: &'a [f64],
+    w: V3,
+    al: V3,
+    /// Each partial: its coordinate, its rotation's and translation's
+    /// partials, and its angular partial velocity.
+    partial: Vec<(usize, M3, V3, V3)>,
+}
+
+impl<'a> Posed<'a> {
+    fn new(r: &[f64], dr: &[f64], p: &'a [f64], dt2: &[f64], dq: &[(usize, &[f64])]) -> Self {
+        let (r, rd) = (rot(r), rot(dr));
+        let (rdd, pdd) = split(dt2);
+        let rt = tr(&r);
+        let w = vee(&mul(&rd, &rt));
+        let al = {
+            let (x, y) = (mul(&rdd, &rt), mul(&rd, &tr(&rd)));
+            vee(&std::array::from_fn(|i| std::array::from_fn(|j| x[i][j] + y[i][j])))
+        };
+        let partial = dq
+            .iter()
+            .map(|(k, d)| {
+                let (dr, dp) = split(d);
+                (*k, dr, dp, vee(&mul(&dr, &rt)))
+            })
+            .collect();
+        Posed { r, rd, rt, rdd, pdd, p, w, al, partial }
+    }
+
+    /// The body's share at this mass (g), centre and inertia in its frame,
+    /// under gravity `gv` (mm/s^2): its centre's place and acceleration,
+    /// its inertia in the world's axes, the force and torque it needs (N,
+    /// N mm: g mm/s^2 and g mm^2/s^2 are 1e-6 of them), and its partial
+    /// velocities and angular ones along each coordinate.
+    fn share(&self, mass: f64, c: V3, inertia: &M3, gv: V3) -> Share {
+        let Posed { r, rt, rdd, pdd, p, w, al, .. } = self;
+        let (rc, rddc) = (mv(r, &c), mv(rdd, &c));
+        let x: V3 = std::array::from_fn(|k| rc[k] + p[k]);
+        let a: V3 = std::array::from_fn(|k| rddc[k] + pdd[k]);
+        let iw = mul(&mul(r, inertia), rt);
+        let force: V3 = std::array::from_fn(|k| 1e-6 * mass * (a[k] - gv[k]));
+        let spin = cross(*w, mv(&iw, w));
+        let ial = mv(&iw, al);
+        let torque: V3 = std::array::from_fn(|k| 1e-6 * (ial[k] + spin[k]));
+        let partial = self
+            .partial
+            .iter()
+            .map(|&(k, dr, dp, jw)| {
+                let drc = mv(&dr, &c);
+                (k, std::array::from_fn(|i| drc[i] + dp[i]), jw)
+            })
+            .collect();
+        Share { x, a, iw, force, torque, partial }
+    }
+
+    /// Sums::rigid's effort along each coordinate (added to `f`) and force
+    /// and moment about the world's origin of the body alone at this mass
+    /// (g), centre and inertia, worked as it works them: the same numbers,
+    /// without the inertia, the heft and the roundings' scales, which no
+    /// change of a measure reads.
+    fn alone(&self, mass: f64, c: V3, inertia: &M3, gv: V3, f: &mut [f64]) -> (V3, V3) {
+        let Share { x, force, torque, partial, .. } = self.share(mass, c, inertia, gv);
+        for (k, jv, jw) in partial {
+            f[k] += dot(jv, force) + dot(jw, torque);
+        }
+        // (As Sums::react sums them into a wrench at none.)
+        let moment = cross(x, force);
+        (std::array::from_fn(|k| 0.0 + force[k]), std::array::from_fn(|k| 0.0 + (torque[k] + moment[k])))
+    }
+}
+
+/// A rigid body's share at a moment (Posed::share).
+struct Share {
+    x: V3,
+    a: V3,
+    iw: M3,
+    force: V3,
+    torque: V3,
+    partial: Vec<(usize, V3, V3)>,
 }
 
 /// Gauss-Legendre nodes on -1..1 and weights: 2 integrate a line's
@@ -144,7 +228,218 @@ const GAUSS2: [(f64, f64); 2] = [(-0.5773502691896257, 1.0), (0.5773502691896257
 const GAUSS4: [(f64, f64); 4] =
     [(-0.8611363115940526, 0.3478548451374538), (-0.3399810435848563, 0.6521451548625461), (0.3399810435848563, 0.6521451548625461), (0.8611363115940526, 0.3478548451374538)];
 
+/// A body's placement at a moment (Placement's entries there): its rotation
+/// and translation, their partials along each coordinate and each joint
+/// released for springs (by its row, after the coordinates: its unit
+/// motion), and their first and second rates along t.
+struct Placed {
+    r: Vec<f64>,
+    p: Vec<f64>,
+    dq: Vec<(usize, Vec<f64>)>,
+    dr: Vec<f64>,
+    dt2: Vec<f64>,
+}
+
 impl Model {
+    fn placed(&self, b: &super::Body, ctx: &Ctx, frames: &[(V3, V3, bool)]) -> Placed {
+        let vals = |n: &[Num]| -> Vec<f64> { n.iter().map(|e| e.at(ctx)).collect() };
+        let at = &b.at;
+        let (r, p) = (vals(&at.r), vals(&at.p));
+        let mut dq: Vec<(usize, Vec<f64>)> = at.dq.iter().map(|(k, d)| (*k, vals(d))).collect();
+        dq.extend(b.released.iter().map(|&i| (self.coords.len() + i, self.unit_motion(frames, i, &r, &p).to_vec())));
+        Placed { r, p, dq, dr: vals(&at.dr), dt2: vals(&at.dt2) }
+    }
+
+    /// At a state of a simulation (Model::state_near's), what each measured
+    /// moment of each body (Body::measure, the bodies in order), alone at
+    /// the far side of its proven bounds, changes the equations of motion
+    /// by along each coordinate and each joint released for springs (n
+    /// rows, Moment::f's then fr's): the effort the body needs there at the
+    /// state's accelerations, and its inertia's along the released joints
+    /// accelerating at `released` (no state of the model reads them: their
+    /// inertia enters by M). Each is linear in the moments, so each moment
+    /// moves them by its own change, whatever the others' (as Moment::mass).
+    /// Infinite along what a moment not measured moves. After a spinning
+    /// body's moments, its departure from round within what its measure is
+    /// known to (Body::unknown), which may lie at any angle across its
+    /// spin's axis: its centre that far off the axis along each of two ways
+    /// across it, and its second moment not round about it along each of
+    /// four (any angle's change a combination of theirs, each at most 1,
+    /// so within the sum of their sizes). After the bodies, each carried
+    /// body's mass per mm at the far side of what it is known to
+    /// (Strip::err). Err: the state is not found (its loop does not close).
+    pub(crate) fn mass_sources(&self, t: f64, q: &[[f64; 3]], released: &[f64]) -> Result<Vec<Vec<f64>>, String> {
+        let ctx = self.near_ctx(t, q)?;
+        let nq = self.coords.len();
+        let n = nq + released.len();
+        let gv = self.gravity.map(|x| 1000.0 * x);
+        let frames = self.spring_frames(&ctx);
+        let mut out = Vec::new();
+        for b in self.bodies.iter().filter(|b| !b.measure.is_empty() || b.unknown != [0.0; 2]) {
+            let Placed { r, p, dq, dr, dt2 } = self.placed(b, &ctx, &frames);
+            let dq: Vec<(usize, &[f64])> = dq.iter().map(|(k, d)| (*k, &d[..])).collect();
+            let posed = Posed::new(&r, &dr, &p, &dt2, &dq);
+            // What it needs along each row, and that sum's rounding (ROUNDING of
+            // the magnitudes summed): a change within 16 of it, as the
+            // accelerations' own residual is held to (simulate::forces), is none
+            // (a body falling free, m (a - g), moves by none of its mass).
+            let alone = |mass: f64, c: V3, inertia: &M3| -> Vec<(f64, f64)> {
+                let (mut f, mut scale, mut gm) = (vec![0.0; n], vec![0.0; n], vec![vec![0.0; n]; n]);
+                let mut wr = [Wrench { force: [0.0; 3], moment: [0.0; 3], frame: [0.0; 12], noise: (0.0, 0.0) }];
+                Sums { f: &mut f, scale: &mut scale, gm: &mut gm, heft: None, wr: &mut wr, gv }.rigid(&posed, mass, c, inertia, &[0]);
+                (0..n)
+                    .map(|k| {
+                        let terms = released.iter().enumerate().map(|(j, a)| 1e-6 * gm[k][nq + j] * a);
+                        (f[k] + terms.clone().sum::<f64>(), ROUNDING * (scale[k] + terms.map(f64::abs).sum::<f64>()))
+                    })
+                    .collect()
+            };
+            let base = alone(b.mass, b.center, &b.inertia);
+            let change =
+                |moved: Vec<(f64, f64)>| -> Vec<f64> { moved.iter().zip(&base).map(|(x, y)| if (x.0 - y.0).abs() <= 16.0 * x.1.max(y.1) { 0.0 } else { x.0 - y.0 }).collect() };
+            for (dm, dc, di) in &b.measure {
+                if !dm.is_finite() {
+                    out.push((0..n).map(|k| if dq.iter().any(|d| d.0 == k) { f64::INFINITY } else { 0.0 }).collect());
+                    continue;
+                }
+                out.push(change(alone(b.mass + dm, std::array::from_fn(|k| b.center[k] + dc[k]), &std::array::from_fn(|i| std::array::from_fn(|j| b.inertia[i][j] + di[i][j])))));
+            }
+            if let Some((_, (_, u))) = b.spin.filter(|_| b.unknown != [0.0; 2] && b.mass > 0.0) {
+                let u = u.map(|x| x / norm(u));
+                let least = (0..3).min_by(|&i, &j| u[i].abs().total_cmp(&u[j].abs())).expect("an axis");
+                let a = cross(u, std::array::from_fn(|k| f64::from(u8::from(k == least))));
+                let a = a.map(|x| x / norm(a));
+                let w = cross(u, a);
+                let [first, second] = b.unknown;
+                let pair = |x: V3, y: V3| -> M3 { std::array::from_fn(|i| std::array::from_fn(|j| second * (x[i] * y[j] + y[i] * x[j]))) };
+                let off = |e: V3| -> V3 { std::array::from_fn(|k| b.center[k] + first / b.mass * e[k]) };
+                let plus = |d: M3| -> M3 { std::array::from_fn(|i| std::array::from_fn(|j| b.inertia[i][j] + d[i][j])) };
+                let flat: M3 = std::array::from_fn(|i| std::array::from_fn(|j| second * (a[i] * a[j] - w[i] * w[j])));
+                let departed = [alone(b.mass, off(a), &b.inertia), alone(b.mass, off(w), &b.inertia)]
+                    .into_iter()
+                    .chain([pair(a, u), pair(w, u), flat, pair(a, w)].map(|d| alone(b.mass, b.center, &plus(d))));
+                out.extend(departed.map(change));
+            }
+        }
+        // A carried body's mass per mm at the far side of what it is known to (Strip::err): its share at
+        // that much, linear in it, within 16 of the share's own rounding none. Non-finite/negative error
+        // fails closed to infinity rather than reading as exact.
+        for s in self.strips.iter().filter(|s| s.err != 0.0) {
+            let err = if s.err >= 0.0 { s.err } else { f64::INFINITY };
+            let (f, scale, gm, _) = self.carried_alone(s, &ctx, n, gv);
+            out.push(
+                (0..n)
+                    .map(|k| {
+                        let terms = released.iter().enumerate().map(|(j, a)| 1e-6 * gm[k][nq + j] * a);
+                        let (x, rounding) = (f[k] + terms.clone().sum::<f64>(), ROUNDING * (scale[k] + terms.map(f64::abs).sum::<f64>()));
+                        if x.abs() <= 16.0 * rounding { 0.0 } else { by(err, x) }
+                    })
+                    .collect(),
+            );
+        }
+        Ok(out)
+    }
+
+    /// A carried body's share at `mass` g per mm of its material: its
+    /// material, path stations [shift, shift + length] (a loop's round its
+    /// length, an open path's first and last pieces running on), on each
+    /// piece the material covers, at x mm along the piece.
+    fn carry(&self, s: &Strip, ctx: &Ctx, mass: f64, sums: &mut Sums) {
+        let v3 = |n: &[Num; 3]| -> V3 { n.each_ref().map(|e| e.at(ctx)) };
+        let (shift, length, total) = (s.shift.at(ctx), s.length.at(ctx), s.total.at(ctx));
+        let n = s.pieces.len();
+        let turns = if s.closed && total > 0.0 { (shift / total).floor() as i64..=((shift + length) / total).floor() as i64 } else { 0..=0 };
+        for i in 0..n {
+            let len = s.lengths[i].at(ctx);
+            if len <= 0.0 {
+                continue;
+            }
+            // Its nodes (x along it, and the mm of material each stands for).
+            let (mut pts, mut ws) = (Vec::new(), Vec::new());
+            for turn in turns.clone() {
+                let start = s.starts[i].at(ctx) + turn as f64 * total;
+                let lo = if !s.closed && i == 0 { f64::NEG_INFINITY } else { start };
+                let hi = if !s.closed && i + 1 == n { f64::INFINITY } else { start + len };
+                let (a, b) = (lo.max(shift), hi.min(shift + length));
+                if !(b > a) {
+                    continue;
+                }
+                // A line's two nodes; an arc's four per quarter turn.
+                let (rule, parts): (&[(f64, f64)], usize) = match &s.sweeps[i] {
+                    None => (&GAUSS2, 1),
+                    Some(sw) => (&GAUSS4, ((b - a) * sw.at(ctx).abs() / len / std::f64::consts::FRAC_PI_2).ceil().max(1.0) as usize),
+                };
+                let h = (b - a) / parts as f64;
+                for part in 0..parts {
+                    let mid = a + h * (part as f64 + 0.5);
+                    for &(node, weight) in rule {
+                        pts.push([mid + 0.5 * h * node - start, 0.0, 0.0]);
+                        ws.push(0.5 * h * weight);
+                    }
+                }
+            }
+            if pts.is_empty() {
+                continue;
+            }
+            let p = &s.pieces[i];
+            let mut col = Vec::new();
+            // Each number at every node: by node, then number.
+            let mut at = |n: &[Num; 3]| -> Vec<V3> {
+                let mut out = vec![[0.0; 3]; pts.len()];
+                for (k, e) in n.iter().enumerate() {
+                    e.at_points(ctx, &pts, &mut col);
+                    for (o, v) in out.iter_mut().zip(&col) {
+                        o[k] = *v;
+                    }
+                }
+                out
+            };
+            let (pos, acc) = (at(&p.pos), at(&p.acc));
+            let dq: Vec<(usize, Vec<V3>)> = p.dq.iter().map(|(k, d)| (*k, at(d))).collect();
+            for (j, w) in ws.iter().enumerate() {
+                let dq: Vec<(usize, V3)> = dq.iter().map(|(k, d)| (*k, d[j])).collect();
+                sums.point(w * mass, pos[j], acc[j], &dq, &s.of);
+            }
+            // Its material on the parts its span or wrap is on: a wrap's
+            // where it is; a span's on its two ends, at them, by where it
+            // is along it (a string's load shared between its ends), and
+            // past an end (an open belt's tail at its clamp) on that end.
+            if let Some(&rides) = s.on.get(i) {
+                let nr = sums.wr.len();
+                let on = |c: &Coupled, e: usize, x: f64| -> Vec<(usize, f64)> { (0..nr).filter(|&r| c.carries[r][e] && !s.of.contains(&r)).map(|r| (r, x)).collect() };
+                for (j, w) in ws.iter().enumerate() {
+                    match rides {
+                        Rides::Span(c, l) => {
+                            let c = &self.couplings[c];
+                            let (q, u, _, len) = &c.lines[l];
+                            let (q, u, len) = (v3(q), v3(u), len.at(ctx));
+                            let n = norm(u);
+                            let along = (0..3).map(|k| (pos[j][k] - q[k]) * u[k] / n).sum::<f64>() / len;
+                            if (0.0..=1.0).contains(&along) {
+                                let a_end: V3 = std::array::from_fn(|k| q[k] + u[k] / n * len);
+                                sums.held(w * mass, a_end, acc[j], &on(c, 0, along));
+                                sums.held(w * mass, q, acc[j], &on(c, 1, 1.0 - along));
+                            } else {
+                                sums.held(w * mass, pos[j], acc[j], &on(c, usize::from(along < 0.0), 1.0));
+                            }
+                        }
+                        Rides::Wrap(c, _, e) => sums.held(w * mass, pos[j], acc[j], &on(&self.couplings[c], e, 1.0)),
+                    }
+                }
+            }
+        }
+    }
+
+    /// A carried body's share alone at 1 g per mm of its material (Model::carry), along `n` rows
+    /// (the coordinates, then the joints released for springs): its effort, that sum's rounding's
+    /// scale, its generalized inertia and each reaction's wrench. Linear in the mass.
+    fn carried_alone(&self, s: &Strip, ctx: &Ctx, n: usize, gv: V3) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>, Vec<Wrench>) {
+        let (mut f, mut scale, mut gm) = (vec![0.0; n], vec![0.0; n], vec![vec![0.0; n]; n]);
+        let mut wr: Vec<Wrench> = self.reactions.iter().map(|_| Wrench { force: [0.0; 3], moment: [0.0; 3], frame: [0.0; 12], noise: (0.0, 0.0) }).collect();
+        self.carry(s, ctx, 1.0, &mut Sums { f: &mut f, scale: &mut scale, gm: &mut gm, heft: None, wr: &mut wr, gv });
+        (f, scale, gm, wr)
+    }
+
     /// The model at moment t as `at` gives it, not kept: a client reading
     /// each of many moments once (a viewer's frames) keeps none of them.
     pub fn at_once(&self, t: f64) -> Moment {
@@ -221,6 +516,7 @@ impl Model {
                     bm: vec![vec![nan; nq]; na],
                     sites: Vec::new(),
                     gm: vec![vec![nan; nq + nr]; nq + nr],
+                    heft: vec![nan; nq + nr],
                     command: vec![None; na],
                     fr: vec![nan; nr],
                     noise_r: vec![0.0; nr],
@@ -234,7 +530,7 @@ impl Model {
         // body they carry moved by its unit motion: springs.rs).
         let n = nq + nr;
         let frames = self.spring_frames(&ctx);
-        let (mut heft, mut carried) = (vec![0.0; nr], vec![0.0; nr]);
+        let mut carried = vec![0.0; nr];
         let mut f = vec![0.0; n];
         // How large the products summed into each f are (|J| |F|: a dot
         // product of vectors at right angles rounds to that's 1e-16, not
@@ -244,11 +540,12 @@ impl Model {
         let mut scale = vec![0.0; n];
         // Generalized inertia, g mm^2 per unit^2 of the coordinates.
         let mut gm = vec![vec![0.0; n]; n];
+        let mut heft = vec![0.0; n];
         let vals = |n: &[Num]| -> Vec<f64> { n.iter().map(|e| e.at(&ctx)).collect() };
         let v3 = |n: &[Num; 3]| -> V3 { n.each_ref().map(|e| e.at(&ctx)) };
         let mut reactions: Vec<Wrench> =
             self.reactions.iter().map(|r| Wrench { force: [0.0; 3], moment: [0.0; 3], frame: std::array::from_fn(|k| r.frame[k].at(&ctx)), noise: (0.0, 0.0) }).collect();
-        let mut sums = Sums { f: &mut f, scale: &mut scale, gm: &mut gm, wr: &mut reactions, gv };
+        let mut sums = Sums { f: &mut f, scale: &mut scale, gm: &mut gm, heft: Some(&mut heft), wr: &mut reactions, gv };
         // What the unseparated bodies need along each coordinate.
         let mut apart = vec![0.0; nq];
         let mut add_apart = |before: &[f64], after: &[f64]| {
@@ -260,7 +557,7 @@ impl Model {
         let mut mass_f = vec![0.0; n];
         // Each body's measured moment's change, as the reactions carrying it take it.
         let mut changes: Vec<Vec<(usize, V3, V3)>> = Vec::new();
-        let mut alone = (vec![0.0; n], vec![0.0; n], vec![vec![0.0; n]; n], [Wrench { force: [0.0; 3], moment: [0.0; 3], frame: [0.0; 12], noise: (0.0, 0.0) }]);
+        let (mut base_f, mut moved_f) = (vec![0.0; n], vec![0.0; n]);
         for b in &self.bodies {
             let before = if b.apart { sums.f.to_vec() } else { Vec::new() };
             // A member of a group read round: its mass averaged about the
@@ -270,33 +567,16 @@ impl Model {
                 _ => (c, *inertia),
             };
             let (c, inertia) = round(b.mass, b.center, &b.inertia);
-            let p = &b.at;
-            let (r, pp) = (vals(&p.r), vals(&p.p));
-            let mut dq: Vec<(usize, Vec<f64>)> = p.dq.iter().map(|(k, d)| (*k, vals(d))).collect();
+            let Placed { r, p: pp, dq, dr, dt2 } = self.placed(b, &ctx, &frames);
             for &i in &b.released {
-                dq.push((nq + i, self.unit_motion(&frames, i, &r, &pp).to_vec()));
                 carried[i] += b.mass;
-                let (_, o, turn) = frames[i];
-                heft[i] += if turn {
-                    let x: V3 = std::array::from_fn(|k| mv(&rot(&r), &c)[k] + pp[k] - o[k]);
-                    b.mass * dot(x, x) + inertia[0][0] + inertia[1][1] + inertia[2][2]
-                } else {
-                    b.mass
-                };
             }
             let dq: Vec<(usize, &[f64])> = dq.iter().map(|(k, d)| (*k, &d[..])).collect();
-            let (dr, dt2) = (vals(&p.dr), vals(&p.dt2));
-            sums.rigid(b.mass, c, &inertia, &r, &dr, &pp, &dt2, &dq, &b.of);
+            let posed = Posed::new(&r, &dr, &pp, &dt2, &dq);
+            sums.rigid(&posed, b.mass, c, &inertia, &b.of);
             if !b.measure.is_empty() {
-                let mut along = |mass: f64, c: V3, inertia: &M3| -> (Vec<f64>, V3, V3) {
-                    alone.0.fill(0.0);
-                    alone.3[0].force = [0.0; 3];
-                    alone.3[0].moment = [0.0; 3];
-                    let mut s = Sums { f: &mut alone.0, scale: &mut alone.1, gm: &mut alone.2, wr: &mut alone.3, gv };
-                    s.rigid(mass, c, inertia, &r, &dr, &pp, &dt2, &dq, &[0]);
-                    (alone.0.clone(), alone.3[0].force, alone.3[0].moment)
-                };
-                let base = along(b.mass, c, &inertia);
+                base_f.fill(0.0);
+                let base = posed.alone(b.mass, c, &inertia, gv, &mut base_f);
                 for (dm, dc, di) in &b.measure {
                     // (A moment not measured: nothing it moves is known.)
                     if !dm.is_finite() {
@@ -306,12 +586,13 @@ impl Model {
                     }
                     let (c, inertia) =
                         round(b.mass + dm, std::array::from_fn(|k| b.center[k] + dc[k]), &std::array::from_fn(|i| std::array::from_fn(|j| b.inertia[i][j] + di[i][j])));
-                    let (f, force, moment) = along(b.mass + dm, c, &inertia);
-                    for (x, (y, z)) in mass_f.iter_mut().zip(f.iter().zip(&base.0)) {
+                    moved_f.fill(0.0);
+                    let (force, moment) = posed.alone(b.mass + dm, c, &inertia, gv, &mut moved_f);
+                    for (x, (y, z)) in mass_f.iter_mut().zip(moved_f.iter().zip(&base_f)) {
                         *x += (y - z).abs();
                     }
                     let gap = |a: V3, b: V3| -> V3 { std::array::from_fn(|k| a[k] - b[k]) };
-                    changes.push(b.of.iter().map(|&r| (r, gap(force, base.1), gap(moment, base.2))).collect());
+                    changes.push(b.of.iter().map(|&r| (r, gap(force, base.0), gap(moment, base.1))).collect());
                 }
             }
             if b.apart {
@@ -343,93 +624,24 @@ impl Model {
                 add_apart(&before, sums.f);
             }
         }
-        // A carried body: its material, path stations
-        // [shift, shift + length] (a loop's round its length, an open path's
-        // first and last pieces running on), on each piece the material
-        // covers, at x mm along the piece.
+        // A carried body: its material at its mass per mm (Model::carry), and what that is known to
+        // (Strip::err) moving it by its share at that much, linear in it.
         for s in &self.strips {
             let before = if s.apart { sums.f.to_vec() } else { Vec::new() };
-            let (shift, length, total) = (s.shift.at(&ctx), s.length.at(&ctx), s.total.at(&ctx));
-            let n = s.pieces.len();
-            let turns = if s.closed && total > 0.0 { (shift / total).floor() as i64..=((shift + length) / total).floor() as i64 } else { 0..=0 };
-            for i in 0..n {
-                let len = s.lengths[i].at(&ctx);
-                if len <= 0.0 {
-                    continue;
+            self.carry(s, &ctx, s.mass, &mut sums);
+            if s.err != 0.0 {
+                let err = if s.err >= 0.0 { s.err } else { f64::INFINITY };
+                let (f, _, _, wr) = self.carried_alone(s, &ctx, n, gv);
+                for (x, y) in mass_f.iter_mut().zip(&f) {
+                    *x += by(err, *y).abs();
                 }
-                // Its nodes (x along it, and the mm of material each stands for).
-                let (mut pts, mut ws) = (Vec::new(), Vec::new());
-                for turn in turns.clone() {
-                    let start = s.starts[i].at(&ctx) + turn as f64 * total;
-                    let lo = if !s.closed && i == 0 { f64::NEG_INFINITY } else { start };
-                    let hi = if !s.closed && i + 1 == n { f64::INFINITY } else { start + len };
-                    let (a, b) = (lo.max(shift), hi.min(shift + length));
-                    if !(b > a) {
-                        continue;
-                    }
-                    // A line's two nodes; an arc's four per quarter turn.
-                    let (rule, parts): (&[(f64, f64)], usize) = match &s.sweeps[i] {
-                        None => (&GAUSS2, 1),
-                        Some(sw) => (&GAUSS4, ((b - a) * sw.at(&ctx).abs() / len / std::f64::consts::FRAC_PI_2).ceil().max(1.0) as usize),
-                    };
-                    let h = (b - a) / parts as f64;
-                    for part in 0..parts {
-                        let mid = a + h * (part as f64 + 0.5);
-                        for &(node, weight) in rule {
-                            pts.push([mid + 0.5 * h * node - start, 0.0, 0.0]);
-                            ws.push(0.5 * h * weight);
-                        }
-                    }
-                }
-                if pts.is_empty() {
-                    continue;
-                }
-                let p = &s.pieces[i];
-                let mut col = Vec::new();
-                // Each number at every node: by node, then number.
-                let mut at = |n: &[Num; 3]| -> Vec<V3> {
-                    let mut out = vec![[0.0; 3]; pts.len()];
-                    for (k, e) in n.iter().enumerate() {
-                        e.at_points(&ctx, &pts, &mut col);
-                        for (o, v) in out.iter_mut().zip(&col) {
-                            o[k] = *v;
-                        }
-                    }
-                    out
-                };
-                let (pos, acc) = (at(&p.pos), at(&p.acc));
-                let dq: Vec<(usize, Vec<V3>)> = p.dq.iter().map(|(k, d)| (*k, at(d))).collect();
-                for (j, w) in ws.iter().enumerate() {
-                    let dq: Vec<(usize, V3)> = dq.iter().map(|(k, d)| (*k, d[j])).collect();
-                    sums.point(w * s.mass, pos[j], acc[j], &dq, &s.of);
-                }
-                // Its material on the parts its span or wrap is on: a wrap's
-                // where it is; a span's on its two ends, at them, by where it
-                // is along it (a string's load shared between its ends), and
-                // past an end (an open belt's tail at its clamp) on that end.
-                if let Some(&rides) = s.on.get(i) {
-                    let nr = sums.wr.len();
-                    let on = |c: &Coupled, e: usize, x: f64| -> Vec<(usize, f64)> { (0..nr).filter(|&r| c.carries[r][e] && !s.of.contains(&r)).map(|r| (r, x)).collect() };
-                    for (j, w) in ws.iter().enumerate() {
-                        match rides {
-                            Rides::Span(c, l) => {
-                                let c = &self.couplings[c];
-                                let (q, u, _, len) = &c.lines[l];
-                                let (q, u, len) = (v3(q), v3(u), len.at(&ctx));
-                                let n = norm(u);
-                                let along = (0..3).map(|k| (pos[j][k] - q[k]) * u[k] / n).sum::<f64>() / len;
-                                if (0.0..=1.0).contains(&along) {
-                                    let a_end: V3 = std::array::from_fn(|k| q[k] + u[k] / n * len);
-                                    sums.held(w * s.mass, a_end, acc[j], &on(c, 0, along));
-                                    sums.held(w * s.mass, q, acc[j], &on(c, 1, 1.0 - along));
-                                } else {
-                                    sums.held(w * s.mass, pos[j], acc[j], &on(c, usize::from(along < 0.0), 1.0));
-                                }
-                            }
-                            Rides::Wrap(c, _, e) => sums.held(w * s.mass, pos[j], acc[j], &on(&self.couplings[c], e, 1.0)),
-                        }
-                    }
-                }
+                changes.push(
+                    wr.iter()
+                        .enumerate()
+                        .filter(|(_, w)| w.force != [0.0; 3] || w.moment != [0.0; 3])
+                        .map(|(r, w)| (r, w.force.map(|x| by(err, x)), w.moment.map(|x| by(err, x))))
+                        .collect(),
+                );
             }
             if s.apart {
                 add_apart(&before, sums.f);
@@ -437,7 +649,7 @@ impl Model {
         }
         let fr = f.split_off(nq);
         let noise_r: Vec<f64> = scale.split_off(nq).iter().map(|s| ROUNDING * s).collect();
-        let springs = self.springs.as_ref().map(|_| Arc::new(self.springs_at(&ctx, &frames, heft, carried)));
+        let springs = self.springs.as_ref().map(|_| Arc::new(self.springs_at(&ctx, &frames, carried)));
         let f_ideal = f.clone();
         let mut frictions = Vec::new();
         let mut tension_noise = Vec::new();
@@ -587,10 +799,62 @@ impl Model {
             sites,
             command: self.actuators.iter().map(|a| a.command.as_ref().map(at)).collect(),
             gm,
+            heft,
             fr,
             noise_r,
             springs,
             unsolved: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{M3, Posed, Sums, V3, Wrench};
+
+    /// What a measure changes is read off the body's share alone
+    /// (Posed::alone): the same numbers, to the bit, as Sums::rigid sums
+    /// for that body by itself, over placements of every turn, spin,
+    /// offset and size.
+    #[test]
+    fn a_body_alone_is_its_rigid_share_to_the_bit() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |scale: f64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            scale * ((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5)
+        };
+        for case in 0..500 {
+            let size = [1e-3, 1.0, 1e3, 1e6][case % 4];
+            let (u, v) = ([next(2.0), next(2.0), next(2.0)], next(6.3));
+            let n = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+            let u = u.map(|x| x / n);
+            let (s, c) = v.sin_cos();
+            let r: Vec<f64> = (0..9)
+                .map(|e| (e / 3, e % 3))
+                .map(|(i, j)| u[i] * u[j] * (1.0 - c) + if i == j { c } else { [0.0, -u[2], u[1], u[2], 0.0, -u[0], -u[1], u[0], 0.0][3 * i + j] * s })
+                .collect();
+            let dr: Vec<f64> = (0..9).map(|_| next(10.0)).collect();
+            let p: Vec<f64> = (0..3).map(|_| next(size)).collect();
+            let dt2: Vec<f64> = (0..12).map(|_| next(1e4)).collect();
+            let parts: Vec<(usize, Vec<f64>)> = (0..1 + case % 4).map(|k| (k, (0..12).map(|_| next(2.0)).collect())).collect();
+            let dq: Vec<(usize, &[f64])> = parts.iter().map(|(k, d)| (*k, &d[..])).collect();
+            let posed = Posed::new(&r, &dr, &p, &dt2, &dq);
+            let mass = next(1e3).abs();
+            let centre: V3 = std::array::from_fn(|_| next(size));
+            let inertia: M3 = std::array::from_fn(|_| std::array::from_fn(|_| next(size * size)));
+            let gv: V3 = [0.0, 0.0, -9810.0];
+            let n = 4;
+            let (mut f, mut scale, mut gm) = (vec![0.0; n], vec![0.0; n], vec![vec![0.0; n]; n]);
+            let mut wr = [Wrench { force: [0.0; 3], moment: [0.0; 3], frame: [0.0; 12], noise: (0.0, 0.0) }];
+            Sums { f: &mut f, scale: &mut scale, gm: &mut gm, heft: None, wr: &mut wr, gv }.rigid(&posed, mass, centre, &inertia, &[0]);
+            let mut g = vec![0.0; n];
+            let (force, moment) = posed.alone(mass, centre, &inertia, gv, &mut g);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<u64>>();
+            assert_eq!(bits(&f), bits(&g), "case {case}: effort");
+            assert_eq!(bits(&wr[0].force), bits(&force), "case {case}: force");
+            assert_eq!(bits(&wr[0].moment), bits(&moment), "case {case}: moment");
         }
     }
 }

@@ -15,6 +15,8 @@ pub(crate) fn read_study(r: &mut Reader, form: &Sexp, args: &[Sexp]) -> R<Study>
     r.new_result_name(name, &n)?;
     let (mut shape, mut physics, mut gravity, mut res, mut margin, mut modes) = (None, None, None, None, None, None);
     let mut property_sites = std::collections::HashMap::new();
+    // (each material property and where it came from: as written, or the material named)
+    let mut material_from: Vec<(String, String)> = Vec::new();
     let mut transient = None;
     // (the first held temperature that reads t: a transient's alone)
     let mut timed_held: Option<Sexp> = None;
@@ -44,10 +46,14 @@ pub(crate) fn read_study(r: &mut Reader, form: &Sexp, args: &[Sexp]) -> R<Study>
                     nu = num("nu").map(|v| r.graph().constant(v));
                     density = num("density").map(|v| r.graph().constant(v));
                     ys = num("yield").map(|v| r.graph().constant(v));
+                    material_from = from_material(&m, ["E", "nu", "density", "yield"], &kv);
+                } else {
+                    material_from.clear();
                 }
                 property_sites.clear();
                 for (k, v) in kv {
                     property_sites.insert(k.clone(), v.clone());
+                    said(&mut material_from, &k, &v);
                     match k.as_str() {
                         "material" => {}
                         "E" => e = Some(r.material_field(&v, Quantity::Pressure, "E")?),
@@ -76,15 +82,19 @@ pub(crate) fn read_study(r: &mut Reader, form: &Sexp, args: &[Sexp]) -> R<Study>
                     k = num("k").map(|v| r.graph().constant(v));
                     density = num("density").map(|v| r.graph().constant(v));
                     capacity = num("capacity");
+                    material_from = from_material(&m, ["k", "density", "capacity"], &kv);
                     if !kv.iter().any(|(key, _)| key == "capacity")
                         && let Some(why) = capacity.and_then(|v| materials::CAPACITY.error(v))
                     {
                         return Err(r.err(c, why));
                     }
+                } else {
+                    material_from.clear();
                 }
                 property_sites.clear();
                 for (key, v) in kv {
                     property_sites.insert(key.clone(), v.clone());
+                    said(&mut material_from, &key, &v);
                     match key.as_str() {
                         "material" => {}
                         "k" => k = Some(r.material_field(&v, Quantity::Conductivity, "k")?),
@@ -385,5 +395,21 @@ pub(crate) fn read_study(r: &mut Reader, form: &Sexp, args: &[Sexp]) -> R<Study>
     if moves && modes.is_some() {
         return Err(r.err(form, "a fix's (move ...) applies to static elastic studies (a modal study takes no loads)"));
     }
-    Ok(Study { name: n, shape, physics, fixes, loads, gravity, res, support_margin: margin, modes, transient, moved: moves })
+    Ok(Study { name: n, shape, physics, fixes, loads, gravity, res, support_margin: margin, modes, transient, moved: moves, material_from })
+}
+
+/// The properties `keys` a `(material m)` gives (`m` its data), each said to
+/// come from it as written in `kv`.
+fn from_material<const N: usize>(m: &serde_json::Value, keys: [&str; N], kv: &[(String, Sexp)]) -> Vec<(String, String)> {
+    let written = kv.iter().find(|(k, _)| k == "material").map_or_else(String::new, |(_, v)| format!("(material {v})"));
+    keys.iter().filter(|k| m.get(**k).is_some_and(|v| v.is_number())).map(|k| (k.to_string(), written.clone())).collect()
+}
+
+/// A property written in the study: from there, as written.
+fn said(from: &mut Vec<(String, String)>, key: &str, v: &Sexp) {
+    if key == "material" {
+        return;
+    }
+    from.retain(|(k, _)| k != key);
+    from.push((key.to_string(), format!("({key} {v})")));
 }

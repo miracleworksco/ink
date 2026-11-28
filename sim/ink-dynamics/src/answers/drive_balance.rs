@@ -1,6 +1,6 @@
 //! How drives share effort, and when they cannot supply it.
 
-use super::{BAR, claim_value, claims, claims_at_moment, model};
+use super::{BAR, asserts_at, claim_value, claims, claims_at_moment, model};
 use ink_lang::claims::Status;
 
 /// Two actuators on one shaft, limits 10 and 1000 N mm: the split weights
@@ -204,8 +204,10 @@ fn nearly_parallel_drives_cannot_pass_as_redundant() {
 
 /// The idler translates on the cart. Its turn s + |100-s| is constant
 /// throughout the travel, but its calculated partial sometimes differs
-/// from zero by a rounding step. The two 100 g masses need at most 2.01 N
-/// (read at their measured centres and inertias: 2.009937).
+/// from zero by a rounding step. The two 100 g masses need at most
+/// 0.2 kg x (10 + 0.05) m/s^2 = 2.01 N, each its published mass exactly
+/// (read as the density it implies times the volume the dynamics
+/// measures, the cylinder made it 2.009937).
 #[test]
 fn a_cancelling_idler_partial_resolves_the_cart_rating() {
     let src = r#"(import "std") (gravity 0 -10m/s2 0) (t-span 0 12s)
@@ -215,12 +217,14 @@ fn a_cancelling_idler_partial_resolves_the_cart_rating() {
           (instance cart cart (at) (slide y s) (effort-limits -4N 4N))
           (instance idler wheel (frame-of cart) (turn z (rad->deg (+ s (sqrt (square (- 100 s))))))))
         (assembly root (instance a (axis (* 50 (sin (* 1rad/s t))))))"#;
-    claim_value(src, "effort-limits:root/a/cart", Status::Holds, 1.990063, 1e-6);
+    claim_value(src, "effort-limits:root/a/cart", Status::Holds, 1.99, 1e-6);
 }
 
 /// The small partial is the only one the side load acts through. Its
 /// narrow peak falls between the starting samples. Scaling its resolution
 /// by 1e-9 of the unit x-partial alone gives a false hold over the span.
+/// Bounded over each step, the step holding the peak is halved down to it,
+/// and a moment there fails (read at its moments alone, it was undecided).
 #[test]
 fn a_tiny_partial_with_a_real_load_peak_is_still_checked() {
     let src = r#"(import "std") (gravity 0 0 0) (t-span 0 1s)
@@ -230,8 +234,9 @@ fn a_tiny_partial_with_a_real_load_peak_is_still_checked() {
           (instance load block (at (move q (* q 1e-20 (exp (neg (square (* 10000 (- (/ t 1s) 0.015625)))))) 0))))
         (assembly root (instance s (stage 0)))
         (load side root/s/load (force 0 1e22N 0))"#;
-    let cs = claims(src);
-    assert_eq!(cs[0].1, Status::Unknown, "{cs:?}");
+    let a = asserts_at(src, &[]).remove(0).check;
+    let t = a.motion.as_ref().and_then(|m| m.motion.t).unwrap_or(f64::NAN);
+    assert!(a.status == Status::Fails && (t - 0.015625).abs() < 1e-4, "{:?} at {t}", a.status);
     let cs = claims_at_moment(src, 0.015625);
     assert!(cs[0].1 == Status::Fails && (cs[0].3 + 50.0).abs() < 1e-10, "{cs:?}");
 }

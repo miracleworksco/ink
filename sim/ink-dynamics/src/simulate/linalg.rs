@@ -164,3 +164,39 @@ pub(super) fn radius(j: &[Vec<f64>]) -> f64 {
     }
     (log / 40.0).exp()
 }
+
+/// e^X and phi1(X) = (e^X - I) X^-1 (its series, sum X^k / (k + 1)!, where
+/// X is singular) of a square matrix X: each's Taylor series to the 16th
+/// power of Y = X / 2^s, the least s putting Y's norm at most 1/2, then
+/// doubled s times, e^2Y = (e^Y)^2 and phi1(2Y) = phi1(Y) (e^Y + I) / 2
+/// (scaling and squaring: Higham, Functions of Matrices, 10.3).
+pub(super) fn exp_phi(x: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let n = x.len();
+    let norm = (0..n).map(|j| (0..n).map(|i| x[i][j].abs()).sum::<f64>()).fold(0.0, f64::max);
+    if !norm.is_finite() {
+        return (vec![vec![f64::NAN; n]; n], vec![vec![f64::NAN; n]; n]);
+    }
+    let s = if norm > 0.5 { (2.0 * norm).log2().ceil() as i32 } else { 0 };
+    let y: Vec<Vec<f64>> = x.iter().map(|r| r.iter().map(|v| v / 2f64.powi(s)).collect()).collect();
+    let mul = |a: &[Vec<f64>], b: &[Vec<f64>]| -> Vec<Vec<f64>> { (0..n).map(|i| (0..n).map(|j| (0..n).map(|k| a[i][k] * b[k][j]).sum()).collect()).collect() };
+    // I + Y / k (I + Y / (k + 1) (... (I + Y / (k + 15)))).
+    let series = |k: usize| {
+        let mut acc: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| f64::from(u8::from(i == j))).collect()).collect();
+        for d in (k..k + 16).rev() {
+            acc = mul(&y, &acc);
+            for (i, row) in acc.iter_mut().enumerate() {
+                row.iter_mut().for_each(|v| *v /= d as f64);
+                row[i] += 1.0;
+            }
+        }
+        acc
+    };
+    let (mut e, mut phi) = (series(1), series(2));
+    for _ in 0..s {
+        let mut plus = e.clone();
+        (0..n).for_each(|i| plus[i][i] += 1.0);
+        phi = mul(&phi, &plus).into_iter().map(|r| r.into_iter().map(|v| 0.5 * v).collect()).collect();
+        e = mul(&e, &e);
+    }
+    (e, phi)
+}

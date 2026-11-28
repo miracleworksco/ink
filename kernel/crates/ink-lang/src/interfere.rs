@@ -51,6 +51,10 @@ pub struct Plan {
     items: Vec<Item>,
     candidates: Vec<(usize, usize)>,
     regions: Vec<(V3, V3)>,
+    /// Each pair's region holds all of its intersection at every moment of
+    /// the motion: it is its parts' boxes' (one of them is bounded), each
+    /// holding its part at every moment (motion::boxes_of).
+    boxed: Vec<bool>,
     facts: Vec<Facts>,
     zones: Vec<Option<u32>>,
     unsolved: Vec<Option<String>>,
@@ -289,6 +293,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
         regions.push(r);
         pair_whole.push(w);
     }
+    let boxed: Vec<bool> = candidates.iter().map(|&(i, j)| whole[i] || whole[j]).collect();
     // Narrow phase: each pair's field as a graph node now (cheap); it is
     // compiled inside the parallel proof and focused on the pair's region at
     // once, so a pair against a huge union (a screen of 10 000 holes) holds
@@ -408,6 +413,7 @@ pub fn plan(v: &mut ModelView, all: Vec<Item>, target: Option<&crate::Target>, r
         items,
         candidates,
         regions,
+        boxed,
         facts,
         zones,
         unsolved,
@@ -499,6 +505,114 @@ fn report(p: Pair, row: &Row) -> Pair {
     p
 }
 
+/// How many moving pairs past the one being checked are judged ahead
+/// (`Judging`): a fixed number, so what is built in the graph, and in what
+/// order, is the same on every machine.
+const AHEAD: usize = 64;
+
+/// What a judgement found ahead sends back: its pair's place in the order,
+/// the reach (None: begun past the call's time limit, or once the call
+/// stopped judging) or its panic, and whether the cache did not answer it.
+type Judged = (usize, std::thread::Result<Option<crate::Reach>>, bool);
+
+/// A moving pair's judgement over the motion, as its check asks it
+/// (validity::outside: a box holding its intersection over the span, to
+/// learn its farthest coordinate): its region where that holds all of it
+/// at every moment (Plan::boxed) and is inside ink's range, so that it
+/// judges the pair as a still pair's region does (validity::outside_region);
+/// else the reach of its intersection over the span, searched.
+enum Judgement {
+    Region(crate::Reach),
+    Search(crate::view::ReachSearch),
+}
+
+/// The moving pairs' judgements over the motion, found ahead of their
+/// checks. Each check judges its pair's range there first
+/// (claims::validate): with no region to judge it on, a search of its own
+/// before the pair is measured, which, one pair after another, kept one
+/// thread busy while the rest of the pool sat idle. Here the judgements of
+/// the next AHEAD pairs are found, those searched on the runners
+/// (ink_kernel::runners), side by side, while the view checks the pairs
+/// before them, and each is handed to its pair's check
+/// (ModelView::found_ahead), which takes it in place of searching. Those
+/// still queued once the call stops judging (it has its answer, past its
+/// time limit, or it is unwound) are not begun (`stop`).
+struct Judging {
+    tx: std::sync::mpsc::Sender<Judged>,
+    rx: std::sync::mpsc::Receiver<Judged>,
+    /// The cells its pairs' accuracy reaches (ClaimOptions::res).
+    res: Option<f64>,
+    /// The call stopped judging (Drop).
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The pairs judged ahead so far (their places in the order: moving[..sent]).
+    sent: usize,
+    /// Each judgement begun, by its pair's place, with its key in the view.
+    keys: HashMap<usize, (u32, crate::view::Scope)>,
+    /// Those back, not yet handed to their checks.
+    back: HashMap<usize, (Option<crate::Reach>, bool)>,
+}
+
+impl Judging {
+    fn new(res: Option<f64>) -> Judging {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Judging { tx, rx, res, stop: Default::default(), sent: 0, keys: HashMap::new(), back: HashMap::new() }
+    }
+
+    /// The judgement of the pair at place p in `moving`, handed to the view
+    /// for its check, once back (it is begun now if it was not), the next
+    /// AHEAD pairs' begun: whether the cache did not answer it.
+    fn before(&mut self, plan: &Plan, v: &mut ModelView, moving: &[usize], p: usize) -> bool {
+        while self.sent < moving.len().min(p + 1 + AHEAD) {
+            let q = self.sent;
+            match plan.judge_ahead(v, moving[q], self.res) {
+                Some((key, Judgement::Region(r))) => {
+                    self.keys.insert(q, key);
+                    self.back.insert(q, (Some(r), false));
+                }
+                Some((key, Judgement::Search(search))) => {
+                    judge(q, move || search.run(), &self.tx, &self.stop);
+                    self.keys.insert(q, key);
+                }
+                None => {}
+            }
+            self.sent += 1;
+        }
+        let Some(key) = self.keys.remove(&p) else { return false };
+        while !self.back.contains_key(&p) {
+            let (q, r, computed) = self.rx.recv().expect("a judgement sends what it found");
+            // A panic in it raised here, as it would have been in its check.
+            self.back.insert(q, (r.unwrap_or_else(|p| std::panic::resume_unwind(p)), computed));
+        }
+        let (r, computed) = self.back.remove(&p).expect("its judgement is back");
+        if let Some(r) = r {
+            v.found_ahead(key, r);
+        }
+        computed
+    }
+}
+
+impl Drop for Judging {
+    /// The call has its answer, or is unwound: what is still queued is not
+    /// begun, and what runs is not waited for (past the time limit it
+    /// stops; else no pair is left to check).
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The judgement of the pair at place q, `search`, run on a runner, what it
+/// found sent back, a panic too, as `beside` sends a search's: not begun
+/// past the call's time limit, nor once its caller stopped judging (`stop`).
+fn judge(q: usize, search: impl FnOnce() -> crate::Reach + Send + 'static, tx: &std::sync::mpsc::Sender<Judged>, stop: &Arc<std::sync::atomic::AtomicBool>) {
+    let (tx, stop) = (tx.clone(), stop.clone());
+    ink_kernel::runners::spawn(move || {
+        let before = ink_kernel::cache::here().0;
+        let begun = || !stop.load(std::sync::atomic::Ordering::Relaxed) && !ink_kernel::stop::reached();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| begun().then(search)));
+        _ = tx.send((q, r, ink_kernel::cache::here().0 > before));
+    });
+}
+
 /// What a moving pair's search sends back: the pair, what it found (or its
 /// panic), its wall time, and whether the cache did not answer it.
 type Sent = (usize, std::thread::Result<Found>, Duration, bool);
@@ -565,6 +679,34 @@ impl Plan {
         out
     }
 
+    /// Moving pair k's judgement over the motion at cells `res`, as its
+    /// check asks it (validity::outside: a box holding its intersection over
+    /// the span, which its claim searches, disjoint or outside its zones),
+    /// to find ahead (`Judging`): its key (ModelView::reach_ahead) and its
+    /// region, else its reach's search. None: no motion, the view has it,
+    /// or one asked otherwise: a pair reading a solve on t is judged over
+    /// what that sets ranged (claims::judged_scope).
+    fn judge_ahead(&self, v: &mut ModelView, k: usize, res: Option<f64>) -> Option<((u32, crate::view::Scope), Judgement)> {
+        v.motion?;
+        let (i, j) = self.candidates[k];
+        let (a, b) = (v.doc.placed_field(&self.items[i]), v.doc.placed_field(&self.items[j]));
+        let roots: Vec<u32> = [a, b].into_iter().chain(self.zones[k]).collect();
+        if v.doc.solves_read(&roots).iter().any(|&s| v.doc.solves[s].on_t) {
+            return None;
+        }
+        let f = v.doc.g.max(a, b);
+        let at = crate::validity::scope(v);
+        let key = v.reach_ahead(&at, f)?;
+        // Its region holds all of its intersection at every moment, proven
+        // (no part's box an estimate's): the judgement its check makes of
+        // a box holding it, which, inside ink's range, is the still pair's.
+        let region = self.regions[k];
+        if self.boxed[k] && !self.facts[k].inexact.any() && crate::validity::outside_region(&v.doc, &at, region, None, self.tols[k], res).is_none() {
+            return Some((key, Judgement::Region(crate::Reach { lo: region.0, hi: region.1, whole: true })));
+        }
+        Some((key, Judgement::Search(v.reach_search(&at, f))))
+    }
+
     /// Pair k's question where it lies, its fields placed.
     fn world_question(&self, v: &mut ModelView, k: usize) -> Question {
         let (i, j) = self.candidates[k];
@@ -628,7 +770,8 @@ impl Plan {
         let mut flying: HashMap<u128, Vec<(usize, Search)>> = HashMap::new();
         let cap = 2 * rayon::current_num_threads();
         let moving: Vec<usize> = (0..n).filter(|&k| self.unsolved[k].is_none() && rows[k].is_none()).collect();
-        let mut queue = moving.into_iter();
+        let mut queue = moving.iter().copied().enumerate();
+        let mut judging = Judging::new(res);
         // Searches that may replace a pair's answer (motion::Upgrade: t
         // ranged after its sampled answer), begun once every pair has an
         // answer, as runners free, until the call's time limit: what each
@@ -642,17 +785,19 @@ impl Plan {
                 // assert's claims (a pair's setup alone, its shapes and joint,
                 // is milliseconds: tens of thousands of them would run ten
                 // minutes on).
-                Some(k) if ink_kernel::stop::reached() => {
+                Some((_, k)) if ink_kernel::stop::reached() => {
                     rows[k] = Some(report(self.facts[k].pair(Answer::NotBegun, None, None), row));
                     continue;
                 }
-                Some(k) => {
-                    let (start, before) = (Instant::now(), misses());
+                Some((p, k)) => {
+                    let start = Instant::now();
+                    let ahead = judging.before(&self, v, &moving, p);
+                    let before = misses();
                     claims::progress(serde_json::json!({"running": self.facts[k].items}));
                     let (i, j) = self.candidates[k];
                     let (a, b) = (v.doc.placed_field(&self.items[i]), v.doc.placed_field(&self.items[j]));
                     let asked = over_motion(v, (a, b), self.zones[k], ClaimOptions { accuracy: Some(self.tols[k]), ..opts })?;
-                    (k, asked, start.elapsed(), misses() > before)
+                    (k, asked, start.elapsed(), ahead || misses() > before)
                 }
                 // Every pair answered: an upgrade begun as a runner frees.
                 None if waiting.len() < cap && !deferred.is_empty() && !ink_kernel::stop::reached() => {
@@ -713,6 +858,7 @@ impl Plan {
                 }
             }
         }
+        drop(judging);
         Ok(rows
             .into_iter()
             .enumerate()
@@ -903,6 +1049,97 @@ mod tests {
         beside(7, || panic!("a search's bug"), &tx);
         let (k, found, ..) = rx.recv_timeout(Duration::from_secs(60)).expect("sent back");
         assert!(k == 7 && found.is_err());
+    }
+
+    /// Two cubes, b moving 1 mm along x over a second, overlapping at
+    /// every moment, `at` mm from the origin along x, planned: the view and
+    /// its plan.
+    fn moving_cubes(at: f64) -> (ModelView, Result<Plan, InkError>) {
+        static CORE: crate::Registry = crate::Registry::new(&[]);
+        let src = format!(
+            "(import \"std\")\n(t-span 0 1s)\n(body cube (shape (box 2 2 2)))\n\
+             (assembly root (instance a cube (at (move {at} 0 0))) (instance b cube (at (move (+ {at} (* 1mm/s t)) 0 0))))"
+        );
+        let doc = crate::Doc::load_str_in(&CORE, &src, "t", std::path::Path::new("."), &[]).unwrap();
+        let (ctx, _) = doc.ctx_at(&[], 0.0).unwrap();
+        let mut v = ModelView::new(doc, ctx);
+        v.set_motion(Some((0.0, 1.0))).unwrap();
+        let (items, target) = (v.doc.items("root").unwrap(), v.doc.target("root"));
+        let plan = plan(&mut v, items, target.as_ref(), None, None);
+        (v, plan)
+    }
+
+    /// Pair 0's check over the motion, as Plan::run asks it.
+    fn check_moving(v: &mut ModelView, plan: &Plan) -> Check {
+        let (a, b) = (v.doc.placed_field(&plan.items[0]), v.doc.placed_field(&plan.items[1]));
+        let opts = ClaimOptions { accuracy: Some(plan.tols[0]), beside: true, ..Default::default() };
+        match over_motion(v, (a, b), plan.zones[0], opts).unwrap().wait(v).unwrap() {
+            Answer::Moving { check } => check,
+            _ => unreachable!("a moving pair's answer"),
+        }
+    }
+
+    /// A moving pair whose parts are boxed over the motion is judged on its
+    /// region (no search), and its check reads that judgement, found ahead
+    /// (Judging): the cubes' check fails as it does judged by its own
+    /// reach; handed a reach out past ink's range instead, it answers that
+    /// it is outside the range, as it would had it found that reach itself.
+    #[test]
+    fn a_moving_pair_boxed_over_the_motion_is_judged_on_its_region() {
+        let (mut v, plan) = moving_cubes(0.0);
+        let plan = plan.unwrap();
+        assert_eq!(plan.candidates.len(), 1);
+        assert_eq!(check_moving(&mut v, &plan).status, Status::Fails);
+        let Some((key, Judgement::Region(r))) = plan.judge_ahead(&mut v, 0, None) else { panic!("judged on its region") };
+        assert_eq!((r.lo, r.hi), plan.regions[0]);
+        v.found_ahead(key, r);
+        assert_eq!(check_moving(&mut v, &plan).status, Status::Fails);
+        let (key, _) = plan.judge_ahead(&mut v, 0, None).expect("judged ahead");
+        v.found_ahead(key, crate::Reach { lo: [-1e12; 3], hi: [1e12; 3], whole: true });
+        let c = check_moving(&mut v, &plan);
+        assert!(c.status == Status::Unknown && matches!(&c.evidence, claims::Evidence::Outside(why) if why.contains("outside ink's range")), "{:?}", c.evidence);
+    }
+
+    /// One whose region is not inside ink's range is judged by its reach,
+    /// searched, as its check would search it (ModelView::reach over the
+    /// span); so is one whose region does not hold all of it.
+    #[test]
+    fn a_moving_pair_judged_otherwise_searches_the_views_reach() {
+        let (mut v, plan) = moving_cubes(0.0);
+        let mut plan = plan.unwrap();
+        let (a, b) = (v.doc.placed_field(&plan.items[0]), v.doc.placed_field(&plan.items[1]));
+        let f = v.doc.g.max(a, b);
+        let at = crate::validity::scope(&v);
+        let reach = v.at_point(at.clone(), |v| v.reach(f));
+        for (region, boxed) in [(([6e7; 3], [6e7 + 2.0; 3]), true), (plan.regions[0], false)] {
+            (plan.regions[0], plan.boxed[0]) = (region, boxed);
+            let Some((_, Judgement::Search(search))) = plan.judge_ahead(&mut v, 0, None) else { panic!("searched") };
+            assert_eq!(search.run(), reach);
+        }
+    }
+
+    /// A moving part 60 km from the origin is outside ink's range at the
+    /// accuracy asked: refused, as its box is.
+    #[test]
+    fn a_moving_part_60_km_away_is_outside_the_range() {
+        let (_, plan) = moving_cubes(6e7);
+        let e = plan.err().expect("refused");
+        assert!(e.message.contains("outside ink's range"), "{}", e.message);
+    }
+
+    /// A judgement that panics is sent back, for the view to raise, as a
+    /// search's is; one queued once its caller stops judging is not begun.
+    #[test]
+    fn a_judgement_that_panics_is_sent_back_and_one_stopped_is_not_begun() {
+        let (tx, rx) = std::sync::mpsc::channel::<Judged>();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        judge(3, || panic!("a judgement's bug"), &tx, &stop);
+        let (q, r, _) = rx.recv_timeout(Duration::from_secs(60)).expect("sent back");
+        assert!(q == 3 && r.is_err());
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        judge(4, || panic!("begun"), &tx, &stop);
+        let (q, r, _) = rx.recv_timeout(Duration::from_secs(60)).expect("sent back");
+        assert!(q == 4 && matches!(r, Ok(None)));
     }
 
     /// A library caller's view is pointwise: plan scopes it over the

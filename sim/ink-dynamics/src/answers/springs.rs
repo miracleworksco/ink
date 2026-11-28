@@ -123,7 +123,7 @@ fn a_late_settling_claim_is_undecided_where_the_ringing_is_damped_away() {
 #[test]
 fn a_springs_effort_claim_reads_its_spring() {
     let src = r#"(import "std") (gravity 0 0 -9.81m/s2) (t-span 0 0.1s)
-        (body b (shape (box 100 100 100)) (attr density 1g/cm3))
+        (body b (shape (box 100 100 100)) (attr mass 1000g))
         (assembly (axis (c 0)) (instance b b (at) (slide x c) (stiffness 100N/mm) (effort-limits -15N 15N)))
         (assembly root (instance a (axis (* 0.1 (- 1 (cos (* (sqrt 100000) (/ t 1s))))))))
         (springs) (def lag (following-error root/a/b))"#;
@@ -152,6 +152,15 @@ fn a_springs_effort_claim_reads_its_spring() {
     assert_eq!(status(peak + 0.005, "63.8872"), (Status::Unknown, Status::Unknown));
     assert_eq!(status(peak - 0.005, "63.8874"), (Status::Unknown, Status::Unknown));
     assert_eq!(status(peak + 0.05, "63.92"), (Status::Holds, Status::Holds));
+    // Its mass published, exact (the slide reads no centre or inertia); one
+    // measured to its bounds (1 kg of 1 g/cm3, known to 1%) moves its spring's
+    // force by about that share too, 1.5 N here: a claim 0.05 N past it is
+    // not settled, one past both bands holds.
+    let measured = |limits: f64| {
+        let src = src.replace("(attr mass 1000g)", "(attr density 1g/cm3)").replace("(effort-limits -15N 15N)", &format!("(effort-limits -{limits}N {limits}N)"));
+        asserts_at(&src, &[]).into_iter().find(|x| x.name == "effort-limits:root/a/b").unwrap().check.status
+    };
+    assert_eq!((measured(peak + 0.05), measured(peak + 1.6)), (Status::Unknown, Status::Holds));
     let behind = r#"(import "std") (gravity 0 0 -9.81m/s2) (t-span 0 0.1s)
         (body b (shape (box 100 100 100)) (attr density 1g/cm3))
         (assembly (axis (c 0))
@@ -175,7 +184,9 @@ fn a_springs_effort_claim_reads_its_spring() {
 /// rigid simulation, its claims decided and the motor's effort the rigid
 /// model's, as before springs (they were refused: the cart tied to the
 /// rotor by their drives alone); read a following error and the springs
-/// are simulated, the tie refused, saying so.
+/// are simulated, the tie refused, saying so. The motor's effort claim
+/// reads the model of every coordinate, the pendulum's too, whose band
+/// (its bar's masses) its solve does not carry: not settled.
 #[test]
 fn springs_enter_a_simulation_where_a_following_error_is_read() {
     let src = |extra: &str| {
@@ -192,8 +203,8 @@ fn springs_enter_a_simulation_where_a_following_error_is_read() {
         )
     };
     let a = asserts_at(&src(""), &[]);
-    let status = |n: &str| a.iter().find(|x| x.name == n).map(|x| x.check.status).unwrap();
-    assert_eq!((status("swing-within"), status("effort-limits:root/a/motor/rotor")), (Status::Holds, Status::Holds));
+    let status = |n: &str| a.iter().find(|x| x.name == n).map(|x| (x.check.status, format!("{:?}", x.check.evidence).contains("through a solve"))).unwrap();
+    assert_eq!((status("swing-within"), status("effort-limits:root/a/motor/rotor")), ((Status::Holds, false), (Status::Unknown, true)));
     let sim = crate::simulation(&doc(&src(""))).unwrap().unwrap();
     assert!(sim.model().released().is_empty());
     // A file simulating nothing asks no simulation of its efforts (it would
